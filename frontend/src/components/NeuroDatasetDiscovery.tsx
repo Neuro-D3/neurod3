@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { fetchDatasets } from '../services/api';
 
 // Lightweight icon stand-ins (avoid external deps in preview)
 const IconWrapper: React.FC<{ className?: string; children: React.ReactNode }> = ({
@@ -70,6 +71,7 @@ type DatasetGroup = {
 export default function NeuroDatasetDiscovery() {
   const [datasets, setDatasets] = useState<DatasetGroup[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<'citations' | 'title' | 'id' | 'source' | 'modality'>(
     'citations',
   );
@@ -110,18 +112,12 @@ export default function NeuroDatasetDiscovery() {
 
   const fetchAllDatasets = async () => {
     setLoading(true);
+    setError(null);
 
     try {
-      const [dandiData, kaggleData, openneuroData, physionetData] = await Promise.allSettled<
-        Dataset[]
-      >([fetchDANDI(), fetchKaggle(), fetchOpenNeuro(), fetchPhysioNet()]);
-
-      let allDatasets: Dataset[] = [];
-
-      if (dandiData.status === 'fulfilled') allDatasets = allDatasets.concat(dandiData.value);
-      if (kaggleData.status === 'fulfilled') allDatasets = allDatasets.concat(kaggleData.value);
-      if (openneuroData.status === 'fulfilled') allDatasets = allDatasets.concat(openneuroData.value);
-      if (physionetData.status === 'fulfilled') allDatasets = allDatasets.concat(physionetData.value);
+      // Fetch datasets from backend API
+      const response = await fetchDatasets();
+      const allDatasets: Dataset[] = response.datasets;
 
       const groupedDatasets = groupDuplicates(allDatasets);
 
@@ -138,215 +134,11 @@ export default function NeuroDatasetDiscovery() {
       calculateStats(allDatasets, groupedDatasets);
       setLoading(false);
     } catch (err) {
-      console.error('Error fetching datasets:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to connect to database';
+      console.error('Error fetching datasets from database:', err);
+      setError(`Database connection error: ${errorMessage}. Please ensure the API server is running.`);
       setLoading(false);
     }
-  };
-
-  const fetchDANDI = async (): Promise<Dataset[]> => {
-    return [
-      {
-        source: 'DANDI',
-        id: '000004',
-        title:
-          'A NWB-based dataset and processing pipeline of human single-neuron activity during a declarative memory task',
-        modality: 'iEEG, Behavioral',
-        citations: 127,
-        url: 'https://dandiarchive.org/dandiset/000004',
-      },
-      {
-        source: 'DANDI',
-        id: '000207',
-        title:
-          'Dataset of human medial temporal lobe neurons, scalp and intracranial EEG during a verbal working memory task',
-        modality: 'EEG, iEEG',
-        citations: 89,
-        url: 'https://dandiarchive.org/dandiset/000207',
-      },
-      {
-        source: 'DANDI',
-        id: '000341',
-        title: 'AJILE12: Long-term naturalistic human intracranial neural recordings and pose',
-        modality: 'iEEG, Behavioral',
-        citations: 45,
-        url: 'https://dandiarchive.org/dandiset/000341',
-      },
-      {
-        source: 'DANDI',
-        id: '000540',
-        title: 'Sleep stage classification from multi-channel EEG recordings',
-        modality: 'EEG, Behavioral',
-        citations: 67,
-        url: 'https://dandiarchive.org/dandiset/000540',
-      },
-      {
-        source: 'DANDI',
-        id: '000620',
-        title: 'Motor cortex and supplementary motor area recordings during movement',
-        modality: 'ECoG, EMG',
-        citations: 52,
-        url: 'https://dandiarchive.org/dandiset/000620',
-      },
-    ];
-  };
-
-  const fetchKaggle = async (): Promise<Dataset[]> => {
-    return [
-      {
-        source: 'Kaggle',
-        id: 'broach/button-tone-sz',
-        title: 'EEG Brain Wave for Confusion',
-        modality: 'EEG',
-        citations: 34,
-        url: 'https://kaggle.com/datasets/broach/button-tone-sz',
-      },
-      {
-        source: 'Kaggle',
-        id: 'berkeley-biosense/synchronized-brainwave',
-        title: 'Synchronized Brainwave Dataset',
-        modality: 'EEG, Behavioral',
-        citations: 18,
-        url: 'https://kaggle.com/datasets/berkeley-biosense/synchronized-brainwave',
-      },
-      {
-        source: 'Kaggle',
-        id: 'birdy654/eeg-brainwave-dataset-feeling-emotions',
-        title: 'EEG Brainwave Dataset: Feeling Emotions',
-        modality: 'EEG',
-        citations: 76,
-        url: 'https://kaggle.com/datasets/birdy654/eeg-brainwave-dataset-feeling-emotions',
-      },
-      {
-        source: 'Kaggle',
-        id: 'inancigdem/eeg-data-for-mental-attention-state',
-        title: 'EEG Data for Mental Attention State Detection',
-        modality: 'EEG, Behavioral',
-        citations: 42,
-        url: 'https://kaggle.com/datasets/inancigdem/eeg-data-for-mental-attention-state',
-      },
-      {
-        source: 'Kaggle',
-        id: 'harunshimanto/sleep-stage-classification',
-        title: 'Sleep Stage Classification EEG Signals',
-        modality: 'EEG',
-        citations: 28,
-        url: 'https://kaggle.com/datasets/harunshimanto/sleep-stage-classification',
-      },
-      {
-        source: 'Kaggle',
-        id: 'c1a1s1a1/basic-bci-music',
-        title: 'Motor Movement/Imagery EEG BCI Dataset',
-        modality: 'EEG, Behavioral',
-        citations: 156,
-        url: 'https://kaggle.com/datasets/c1a1s1a1/basic-bci-music',
-      },
-    ];
-  };
-
-  const fetchOpenNeuro = async (): Promise<Dataset[]> => {
-    return [
-      {
-        source: 'OpenNeuro',
-        id: 'ds003775',
-        title: 'EEG visual working memory dataset',
-        modality: 'EEG, Behavioral',
-        citations: 91,
-        url: 'https://openneuro.org/datasets/ds003775',
-      },
-      {
-        source: 'OpenNeuro',
-        id: 'ds002778',
-        title: 'A multi-subject, multi-modal human neuroimaging dataset',
-        modality: 'EEG, fMRI, MEG',
-        citations: 134,
-        url: 'https://openneuro.org/datasets/ds002778',
-      },
-      {
-        source: 'OpenNeuro',
-        id: 'ds003490',
-        title: 'Sleep stage classification from single-channel EEG',
-        modality: 'EEG',
-        citations: 54,
-        url: 'https://openneuro.org/datasets/ds003490',
-      },
-      {
-        source: 'OpenNeuro',
-        id: 'ds002691',
-        title: 'Mother Of Unification Studies (MOUS) - EEG',
-        modality: 'EEG, Behavioral',
-        citations: 112,
-        url: 'https://openneuro.org/datasets/ds002691',
-      },
-      {
-        source: 'OpenNeuro',
-        id: 'ds003761',
-        title: 'Attention and executive function EEG dataset',
-        modality: 'EEG, Behavioral',
-        citations: 67,
-        url: 'https://openneuro.org/datasets/ds003761',
-      },
-      {
-        source: 'OpenNeuro',
-        id: 'ds002723',
-        title: 'Auditory steady state responses EEG',
-        modality: 'EEG',
-        citations: 48,
-        url: 'https://openneuro.org/datasets/ds002723',
-      },
-    ];
-  };
-
-  const fetchPhysioNet = async (): Promise<Dataset[]> => {
-    return [
-      {
-        source: 'PhysioNet',
-        id: 'eegmmidb',
-        title: 'EEG Motor Movement/Imagery Dataset',
-        modality: 'EEG, Behavioral',
-        citations: 3847,
-        url: 'https://physionet.org/content/eegmmidb/',
-      },
-      {
-        source: 'PhysioNet',
-        id: 'chbmit',
-        title: 'CHB-MIT Scalp EEG Database - Pediatric Seizure Detection',
-        modality: 'EEG',
-        citations: 1256,
-        url: 'https://physionet.org/content/chbmit/',
-      },
-      {
-        source: 'PhysioNet',
-        id: 'sleep-edfx',
-        title: 'Sleep-EDF Database Expanded',
-        modality: 'EEG, EMG',
-        citations: 2134,
-        url: 'https://physionet.org/content/sleep-edfx/',
-      },
-      {
-        source: 'PhysioNet',
-        id: 'eegmat',
-        title: 'EEG During Mental Arithmetic Tasks',
-        modality: 'EEG, Behavioral',
-        citations: 189,
-        url: 'https://physionet.org/content/eegmat/',
-      },
-      {
-        source: 'PhysioNet',
-        id: 'sleep-accel',
-        title: 'Sleep Stage Classification with EEG and Accelerometry',
-        modality: 'EEG, Accelerometry',
-        citations: 78,
-        url: 'https://physionet.org/content/sleep-accel/',
-      },
-      {
-        source: 'PhysioNet',
-        id: 'tuh-eeg',
-        title: 'TUH EEG Corpus - Large Clinical EEG Dataset',
-        modality: 'EEG',
-        citations: 567,
-        url: 'https://physionet.org/content/tuh-eeg/',
-      },
-    ];
   };
 
   const groupDuplicates = (all: Dataset[]): DatasetGroup[] => {
@@ -695,7 +487,29 @@ export default function NeuroDatasetDiscovery() {
         </div>
 
         {/* Table */}
-        {loading ? (
+        {error ? (
+          <div
+            className={
+              darkMode
+                ? 'rounded-2xl shadow-xl p-12 text-center backdrop-blur-xl bg-red-900/20 border border-red-500/30'
+                : 'rounded-2xl shadow-xl p-12 text-center backdrop-blur-xl bg-red-50 border border-red-200'
+            }
+          >
+            <div className="text-red-600 mb-4 text-5xl">⚠️</div>
+            <h3 className={darkMode ? 'text-red-400 font-semibold mb-2' : 'text-red-700 font-semibold mb-2'}>
+              Connection Error
+            </h3>
+            <p className={darkMode ? 'text-gray-300 mb-4' : 'text-gray-600 mb-4'}>
+              {error}
+            </p>
+            <button
+              onClick={fetchAllDatasets}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Retry Connection
+            </button>
+          </div>
+        ) : loading ? (
           <div
             className={
               darkMode
@@ -705,7 +519,7 @@ export default function NeuroDatasetDiscovery() {
           >
             <div className="inline-block animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600 mb-4"></div>
             <p className={darkMode ? 'text-gray-300' : 'text-gray-600'}>
-              Loading datasets from all sources...
+              Loading datasets from database...
             </p>
           </div>
         ) : (
