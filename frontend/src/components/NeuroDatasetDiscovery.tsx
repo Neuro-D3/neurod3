@@ -134,9 +134,9 @@ export default function NeuroDatasetDiscovery() {
       calculateStats(allDatasets, groupedDatasets);
       setLoading(false);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to connect to database';
-      console.error('Error fetching datasets from database:', err);
-      setError(`Database connection error: ${errorMessage}. Please ensure the API server is running.`);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to connect to API';
+      console.error('Error fetching datasets from API:', err);
+      setError(`API connection error: ${errorMessage}. Please ensure the backend service is running.`);
       setLoading(false);
     }
   };
