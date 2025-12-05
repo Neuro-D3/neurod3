@@ -4,7 +4,7 @@ Provides REST endpoints to fetch neuroscience datasets from PostgreSQL.
 """
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from typing import Optional
 import psycopg
 from psycopg.rows import dict_row
 import os
@@ -21,8 +21,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://frontend:3000"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
 # Database configuration
@@ -67,7 +67,10 @@ async def health_check():
         return {"status": "healthy", "database": "connected"}
     except Exception as e:
         logger.error(f"Health check failed: {e}")
-        return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "unhealthy", "database": "disconnected", "error": str(e)}
+        )
 
 
 @app.get("/api/datasets")
