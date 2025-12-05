@@ -8,8 +8,7 @@ COPY package*.json ./
 # Clear npm cache and install all dependencies
 RUN npm cache clean --force && \
     npm install --legacy-peer-deps && \
-    ls -la node_modules/@types/react* || echo "Checking types..." && \
-    npm list @types/react @types/react-dom
+    npm list @types/react @types/react-dom ajv ajv-keywords || true
 
 # Copy source code
 COPY . .
