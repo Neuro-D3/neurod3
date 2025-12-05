@@ -5,7 +5,7 @@ This DAG fetches data from DANDI, Kaggle, OpenNeuro, and PhysioNet and stores it
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from utils.database import get_db_connection, execute_update
+from utils.database import get_db_connection
 import logging
 
 logger = logging.getLogger(__name__)
