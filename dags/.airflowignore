@@ -1,0 +1,5 @@
+# Ignore utility files - they are not DAGs
+utils/
+__pycache__/
+*.pyc
+

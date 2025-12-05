@@ -1,0 +1,9 @@
+# Database dependencies
+psycopg2-binary==2.9.9
+# Note: Airflow 2.8.0 uses SQLAlchemy 1.4.x, so we don't override it
+# If you need SQLAlchemy 2.x features, upgrade Airflow to 2.9+
+
+# Data processing (optional)
+# pandas==2.0.3
+# requests==2.31.0
+

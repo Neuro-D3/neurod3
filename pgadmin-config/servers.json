@@ -1,0 +1,33 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Local PostgreSQL - Airflow",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "airflow",
+      "Username": "airflow",
+      "Password": "airflow",
+      "SSLMode": "prefer",
+      "Comment": "Airflow metadata database",
+      "PassFile": "",
+      "Shared": false
+    },
+    "2": {
+      "Name": "Local PostgreSQL - DAG Data",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "dag_data",
+      "Username": "airflow",
+      "Password": "airflow",
+      "SSLMode": "prefer",
+      "Comment": "DAG data storage database",
+      "PassFile": "",
+      "Shared": false
+    }
+  }
+}
+
+
+
