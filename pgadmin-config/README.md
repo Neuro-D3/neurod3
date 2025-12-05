@@ -2,10 +2,19 @@
 
 This directory contains the pre-configured server connections for pgAdmin.
 
+## Automatic Configuration
+
+The `servers.json` file is automatically loaded by pgAdmin when the container is first started. The Docker Compose configuration mounts this file to `/pgadmin4/servers.json`, which is the default location pgAdmin checks for server definitions.
+
+**Important Notes:**
+- Servers are automatically added on first startup (when pgAdmin's configuration database is created)
+- Password fields in `servers.json` are not imported by pgAdmin for security reasons
+- On first connection to each server, you'll need to enter the password (`airflow`), which will then be saved
+
 ## Files
 
-- `servers.json` - Server connection definitions
-- `init-pgadmin.sh` - Initialization script that copies the config on startup
+- `servers.json` - Server connection definitions (automatically loaded on first startup)
+- `README.md` - This documentation file
 
 ## Troubleshooting
 
