@@ -99,16 +99,15 @@ services:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: admin
       PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
     ports:
       - "5050:80"
     volumes:
       - pgadmin-data:/var/lib/pgadmin
-      - ./pgadmin-config:/pgadmin-config:ro
+      - ./pgadmin-config/servers.json:/pgadmin4/servers.json:ro
     depends_on:
       - postgres
     restart: always
-    # Note: Server auto-configuration via API is complex. 
-    # Use scripts/add-pgadmin-servers.ps1 from host machine instead.
 
   frontend:
     build:

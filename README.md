@@ -36,11 +36,15 @@ This project provides a Docker-based setup for running Apache Airflow locally.
    - Open your browser and go to: http://localhost:5050
    - Email: `admin@admin.com`
    - Password: `admin`
-   - **Add servers automatically** (recommended):
-     ```powershell
-     .\scripts\add-pgadmin-servers.ps1
-     ```
-   - **Or add servers manually**:
+   - **Database servers are automatically configured!** You should see:
+     - `Local PostgreSQL - Airflow` (airflow database)
+     - `Local PostgreSQL - DAG Data` (dag_data database)
+   - **First time connecting to a server:**
+     - Click on a server name
+     - Enter the password: `airflow`
+     - Check "Save password" to avoid entering it again
+   - If servers don't appear, try refreshing the browser (Ctrl+Shift+R or Cmd+Shift+R)
+   - **Manual server addition** (if needed):
      - Right-click "Servers" → "Register" → "Server"
      - Name: `Local PostgreSQL - Airflow` or `Local PostgreSQL - DAG Data`
      - Host: `postgres` (important: use `postgres`, not `localhost`)
