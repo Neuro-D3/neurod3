@@ -31,39 +31,6 @@ dag = DAG(
 )
 
 
-def create_datasets_table():
-    """Ensure the datasets table exists."""
-    create_table_sql = """
-    CREATE TABLE IF NOT EXISTS neuroscience_datasets (
-        id SERIAL PRIMARY KEY,
-        source VARCHAR(50) NOT NULL,
-        dataset_id VARCHAR(255) NOT NULL,
-        title TEXT NOT NULL,
-        modality VARCHAR(100) NOT NULL,
-        citations INTEGER DEFAULT 0,
-        url TEXT NOT NULL,
-        description TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(source, dataset_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_datasets_source ON neuroscience_datasets(source);
-    CREATE INDEX IF NOT EXISTS idx_datasets_modality ON neuroscience_datasets(modality);
-    CREATE INDEX IF NOT EXISTS idx_datasets_citations ON neuroscience_datasets(citations DESC);
-    """
-
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(create_table_sql)
-                conn.commit()
-        logger.info("Datasets table created or verified successfully")
-    except Exception as e:
-        logger.error(f"Error creating table: {e}")
-        raise
-
-
 def insert_datasets():
     """Insert or update datasets from all sources."""
 
@@ -332,12 +299,6 @@ def verify_data():
 
 
 # Define tasks
-create_table_task = PythonOperator(
-    task_id='create_datasets_table',
-    python_callable=create_datasets_table,
-    dag=dag,
-)
-
 insert_datasets_task = PythonOperator(
     task_id='insert_datasets',
     python_callable=insert_datasets,
@@ -351,4 +312,4 @@ verify_data_task = PythonOperator(
 )
 
 # Set task dependencies
-create_table_task >> insert_datasets_task >> verify_data_task
+insert_datasets_task >> verify_data_task
