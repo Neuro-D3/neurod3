@@ -38,55 +38,67 @@ export async function fetchDatasets(params?: {
   modality?: string;
   search?: string;
 }): Promise<DatasetsResponse> {
-  const queryParams = new URLSearchParams();
+  try {
+    const queryParams = new URLSearchParams();
 
-  if (params?.source) {
-    queryParams.append('source', params.source);
+    if (params?.source) {
+      queryParams.append('source', params.source);
+    }
+    if (params?.modality) {
+      queryParams.append('modality', params.modality);
+    }
+    if (params?.search) {
+      queryParams.append('search', params.search);
+    }
+
+    const url = `${API_BASE_URL}/api/datasets${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch datasets: ${response.statusText}`);
+    }
+
+    return response.json();
+  } catch (error: any) {
+    throw new Error(`Network error while fetching datasets: ${error?.message || error}`);
   }
-  if (params?.modality) {
-    queryParams.append('modality', params.modality);
-  }
-  if (params?.search) {
-    queryParams.append('search', params.search);
-  }
-
-  const url = `${API_BASE_URL}/api/datasets${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
-
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch datasets: ${response.statusText}`);
-  }
-
-  return response.json();
 }
 
 /**
  * Fetch dataset statistics from the backend API.
  */
 export async function fetchDatasetStats(): Promise<DatasetStats> {
-  const url = `${API_BASE_URL}/api/datasets/stats`;
+  try {
+    const url = `${API_BASE_URL}/api/datasets/stats`;
 
-  const response = await fetch(url);
+    const response = await fetch(url);
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch dataset stats: ${response.statusText}`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch dataset stats: ${response.statusText}`);
+    }
+
+    return response.json();
+  } catch (error: any) {
+    throw new Error(`Network error while fetching dataset stats: ${error?.message || error}`);
   }
-
-  return response.json();
 }
 
 /**
  * Check API health and database connectivity.
  */
 export async function checkApiHealth(): Promise<ApiHealthResponse> {
-  const url = `${API_BASE_URL}/api/health`;
+  try {
+    const url = `${API_BASE_URL}/api/health`;
 
-  const response = await fetch(url);
+    const response = await fetch(url);
 
-  if (!response.ok) {
-    throw new Error(`API health check failed: ${response.statusText}`);
+    if (!response.ok) {
+      throw new Error(`API health check failed: ${response.statusText}`);
+    }
+
+    return response.json();
+  } catch (error: any) {
+    throw new Error(`Network error while checking API health: ${error?.message || error}`);
   }
-
-  return response.json();
 }
