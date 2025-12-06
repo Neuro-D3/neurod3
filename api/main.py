@@ -108,10 +108,14 @@ async def get_datasets(
                 params = []
 
                 if source:
+                    if source not in ALLOWED_SOURCES:
+                        raise HTTPException(status_code=400, detail=f"Invalid source: {source}")
                     query += " AND source = %s"
                     params.append(source)
 
                 if modality:
+                    if modality not in ALLOWED_MODALITIES:
+                        raise HTTPException(status_code=400, detail=f"Invalid modality: {modality}")
                     query += " AND modality = %s"
                     params.append(modality)
 
