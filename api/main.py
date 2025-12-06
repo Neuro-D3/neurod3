@@ -16,6 +16,21 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="NeuroD3 API", version="1.0.0")
 
+# Allowed filter values
+ALLOWED_SOURCES = {"DANDI", "Kaggle", "OpenNeuro", "PhysioNet"}
+ALLOWED_MODALITIES = {
+    "Behavioral",
+    "Calcium Imaging",
+    "Clinical",
+    "ECG",
+    "EEG",
+    "Electrophysiology",
+    "fMRI",
+    "MRI",
+    "Survey",
+    "X-ray",
+}
+
 # CORS configuration to allow frontend to access the API
 app.add_middleware(
     CORSMiddleware,
