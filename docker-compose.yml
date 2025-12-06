@@ -35,7 +35,7 @@ services:
       POSTGRES_DB: airflow
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
-      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+      - ./database/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     restart: always
     ports:
       - "5432:5432"
@@ -104,7 +104,23 @@ services:
       - "5050:80"
     volumes:
       - pgadmin-data:/var/lib/pgadmin
-      - ./pgadmin-config/servers.json:/pgadmin4/servers.json:ro
+      - ./database/pgadmin-servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      - postgres
+    restart: always
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=dag_data
+      - DB_USER=airflow
+      - DB_PASSWORD=airflow
     depends_on:
       - postgres
     restart: always
@@ -117,12 +133,13 @@ services:
       - "3000:3000"
     environment:
       - CHOKIDAR_USEPOLLING=true
-      - REACT_APP_API_URL=http://localhost:3000
+      - REACT_APP_API_URL=http://localhost:8000
     volumes:
       - ./frontend:/app
       - /app/node_modules
     depends_on:
       - postgres
+      - api
     restart: always
 
 volumes:
