@@ -195,22 +195,33 @@ The `utils/environment.py` module automatically detects if you're running locall
 - `example_dag.py`: Basic Airflow example
 - `database_example_dag.py`: Demonstrates database operations with environment detection
 
+## API Backend
+
+The project includes a FastAPI backend that provides REST endpoints for accessing neuroscience datasets.
+
+### Accessing the API
+
+- **API Documentation (Swagger UI)**: http://localhost:8000/docs
+- **Alternative Docs (ReDoc)**: http://localhost:8000/redoc
+- **Base URL**: http://localhost:8000
+
+### Available Endpoints
+
+- `GET /` - Health check
+- `GET /api/health` - Database health check
+- `GET /api/datasets` - Fetch datasets with optional filters (source, modality, search)
+- `GET /api/datasets/stats` - Get dataset statistics
+
+For detailed information on using the API, including how to test endpoints with the interactive documentation and curl commands, see [docs/API_USAGE.md](docs/API_USAGE.md).
+
 ## Frontend Development
 
-The React frontend is set up with TypeScript and will eventually connect to the PostgreSQL database to display data from your Airflow pipelines.
+The React frontend is set up with TypeScript and connects to the FastAPI backend to display neuroscience datasets.
 
 ### Frontend Structure
 
-- **TypeScript file**: `frontend/src/types/data.ts` - Empty file ready for your data type definitions
 - **Main component**: `frontend/src/App.tsx` - Main React component
 - **Hot reload**: Enabled in Docker for development
-
-### Connecting to the Database
-
-The frontend will need a backend API to connect to PostgreSQL. You can:
-1. Create a backend API service (Node.js, Python Flask/FastAPI, etc.)
-2. Use the existing TypeScript file (`frontend/src/types/data.ts`) to define your data types
-3. Add API calls to fetch data from your backend
 
 ### Development
 
