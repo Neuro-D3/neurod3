@@ -31,6 +31,176 @@ dag = DAG(
 )
 
 
+def create_neuroscience_datasets_table(**context):
+    """Check if neuroscience_datasets table exists and create it if it doesn't."""
+    create_table_sql = """
+    CREATE TABLE IF NOT EXISTS neuroscience_datasets (
+        id SERIAL PRIMARY KEY,
+        source VARCHAR(50) NOT NULL,
+        dataset_id VARCHAR(255) NOT NULL,
+        title TEXT NOT NULL,
+        modality VARCHAR(100) NOT NULL,
+        citations INTEGER DEFAULT 0,
+        url TEXT NOT NULL,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(source, dataset_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_datasets_source ON neuroscience_datasets(source);
+    CREATE INDEX IF NOT EXISTS idx_datasets_modality ON neuroscience_datasets(modality);
+    CREATE INDEX IF NOT EXISTS idx_datasets_citations ON neuroscience_datasets(citations DESC);
+    """
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # Check if table exists
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'neuroscience_datasets'
+                    );
+                """)
+                table_exists = cursor.fetchone()[0]
+
+                if table_exists:
+                    logger.info("neuroscience_datasets table already exists")
+                else:
+                    logger.info("neuroscience_datasets table does not exist, creating it...")
+                    cursor.execute(create_table_sql)
+                    conn.commit()
+                    logger.info("Successfully created neuroscience_datasets table")
+    except Exception as e:
+        logger.error("Error checking/creating neuroscience_datasets table: %s", e)
+        raise
+
+
+def create_unified_datasets_view(**context):
+    """Create or replace the unified_datasets view that combines dandi_dataset and neuroscience_datasets."""
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # Check if tables exist
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'dandi_dataset'
+                    );
+                """)
+                dandi_table_exists = cursor.fetchone()[0]
+                
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'neuroscience_datasets'
+                    );
+                """)
+                neuro_table_exists = cursor.fetchone()[0]
+                
+                # Build view SQL based on which tables exist
+                if dandi_table_exists and neuro_table_exists:
+                    create_view_sql = """
+                    CREATE OR REPLACE VIEW unified_datasets AS
+                    SELECT
+                        'DANDI'::text AS source,
+                        dataset_id,
+                        title,
+                        modality,
+                        citations,
+                        url,
+                        description,
+                        created_at,
+                        updated_at,
+                        version
+                    FROM dandi_dataset
+                    
+                    UNION ALL
+                    
+                    SELECT
+                        source::text,
+                        dataset_id,
+                        title,
+                        modality,
+                        citations,
+                        url,
+                        description,
+                        created_at,
+                        updated_at,
+                        NULL::VARCHAR(64) AS version
+                    FROM neuroscience_datasets
+                    WHERE source != 'DANDI';
+                    """
+                elif dandi_table_exists:
+                    # Only dandi_dataset exists
+                    create_view_sql = """
+                    CREATE OR REPLACE VIEW unified_datasets AS
+                    SELECT
+                        'DANDI'::text AS source,
+                        dataset_id,
+                        title,
+                        modality,
+                        citations,
+                        url,
+                        description,
+                        created_at,
+                        updated_at,
+                        version
+                    FROM dandi_dataset;
+                    """
+                elif neuro_table_exists:
+                    # Only neuroscience_datasets exists
+                    create_view_sql = """
+                    CREATE OR REPLACE VIEW unified_datasets AS
+                    SELECT
+                        source::text,
+                        dataset_id,
+                        title,
+                        modality,
+                        citations,
+                        url,
+                        description,
+                        created_at,
+                        updated_at,
+                        NULL::VARCHAR(64) AS version
+                    FROM neuroscience_datasets;
+                    """
+                else:
+                    logger.warning("Neither dandi_dataset nor neuroscience_datasets tables exist. Cannot create view.")
+                    return
+                
+                # Check if view exists
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.views 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'unified_datasets'
+                    );
+                """)
+                view_exists = cursor.fetchone()[0]
+
+                cursor.execute(create_view_sql)
+                conn.commit()
+                
+                # Verify view was created and get row count
+                cursor.execute("SELECT COUNT(*) FROM unified_datasets")
+                row_count = cursor.fetchone()[0]
+
+                if view_exists:
+                    logger.info(f"Successfully replaced unified_datasets view ({row_count} rows)")
+                else:
+                    logger.info(f"Successfully created unified_datasets view ({row_count} rows)")
+                    
+    except Exception as e:
+        logger.error("Error creating/replacing unified_datasets view: %s", e)
+        raise
+
+
 def insert_datasets():
     """Insert or update datasets from all sources."""
 
@@ -299,6 +469,18 @@ def verify_data():
 
 
 # Define tasks
+create_table_task = PythonOperator(
+    task_id='create_neuroscience_datasets_table',
+    python_callable=create_neuroscience_datasets_table,
+    dag=dag,
+)
+
+create_view_task = PythonOperator(
+    task_id='create_unified_datasets_view',
+    python_callable=create_unified_datasets_view,
+    dag=dag,
+)
+
 insert_datasets_task = PythonOperator(
     task_id='insert_datasets',
     python_callable=insert_datasets,
@@ -312,4 +494,4 @@ verify_data_task = PythonOperator(
 )
 
 # Set task dependencies
-insert_datasets_task >> verify_data_task
+create_table_task >> create_view_task >> insert_datasets_task >> verify_data_task

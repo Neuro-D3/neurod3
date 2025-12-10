@@ -164,6 +164,23 @@ with DAG(
 
 ## Database Setup
 
+### Database Tables and Views
+
+The project uses two main tables for storing neuroscience datasets:
+
+1. **`dandi_dataset`**: Stores datasets fetched from DANDI Archive API
+   - Created by: `dandi_ingestion` DAG
+   - Columns: `dataset_id`, `title`, `modality`, `citations`, `url`, `description`, `created_at`, `updated_at`, `version`
+
+2. **`neuroscience_datasets`**: Stores datasets from other sources (Kaggle, OpenNeuro, PhysioNet)
+   - Created by: `populate_neuroscience_datasets` DAG
+   - Columns: `source`, `dataset_id`, `title`, `modality`, `citations`, `url`, `description`, `created_at`, `updated_at`
+
+3. **`unified_datasets`** (VIEW): A SQL view that combines data from both tables
+   - Automatically created by both DAGs
+   - Provides a unified interface to query all datasets regardless of source
+   - The API uses this view by default (falls back to `neuroscience_datasets` table if view doesn't exist)
+
 ### Using the Database in Your DAGs
 
 The project includes utility functions for database operations and environment detection:
@@ -194,6 +211,8 @@ The `utils/environment.py` module automatically detects if you're running locall
 
 - `example_dag.py`: Basic Airflow example
 - `database_example_dag.py`: Demonstrates database operations with environment detection
+- `dandi_ingestion.py`: Fetches and ingests datasets from DANDI Archive
+- `populate_datasets_dag.py`: Populates neuroscience datasets from multiple sources
 
 ## API Backend
 
@@ -208,11 +227,30 @@ The project includes a FastAPI backend that provides REST endpoints for accessin
 ### Available Endpoints
 
 - `GET /` - Health check
-- `GET /api/health` - Database health check
+- `GET /api/health` - Database health check (includes view status)
 - `GET /api/datasets` - Fetch datasets with optional filters (source, modality, search)
 - `GET /api/datasets/stats` - Get dataset statistics
+- `POST /api/refresh-view` - Manually create or refresh the unified_datasets view
+- `GET /api/debug/view-info` - Debug endpoint to check view status and data sources
 
 For detailed information on using the API, including how to test endpoints with the interactive documentation and curl commands, see [docs/API_USAGE.md](docs/API_USAGE.md).
+
+### Database Schema and Unified View
+
+The backend uses a **unified view** (`unified_datasets`) that combines data from multiple source tables:
+
+- **`dandi_dataset`**: Datasets from DANDI Archive
+- **`neuroscience_datasets`**: Datasets from Kaggle, OpenNeuro, and PhysioNet
+
+The `unified_datasets` view automatically combines data from both tables using a SQL UNION, making it easy to query all datasets regardless of their source. The view is automatically created/updated when:
+- The `populate_neuroscience_datasets` DAG runs (after table creation)
+- The `dandi_ingestion` DAG runs (after DANDI data insertion)
+
+**If you only see data from one source in the frontend:**
+1. Check view status: `GET http://localhost:8000/api/debug/view-info`
+2. Refresh the view: `POST http://localhost:8000/api/refresh-view`
+3. Verify both tables have data in pgAdmin
+4. Check API logs to see which table/view is being queried
 
 ## Frontend Development
 
@@ -236,6 +274,19 @@ The React frontend is set up with TypeScript and connects to the FastAPI backend
 - **Port 3000 already in use**: Change the port in `docker-compose.yml` under `frontend` ports
 - **DAGs not appearing**: Check the scheduler logs and ensure your DAG files are in the `dags/` directory
 - **Frontend not loading**: Check frontend logs with `docker-compose logs -f frontend`
+- **Only seeing data from one source in frontend**:
+  - Check if the `unified_datasets` view exists: Visit `http://localhost:8000/api/debug/view-info`
+  - Refresh the view: `POST http://localhost:8000/api/refresh-view` (use curl or Postman)
+  - Verify both `dandi_dataset` and `neuroscience_datasets` tables have data in pgAdmin
+  - Check backend logs to see which table/view is being queried
+  - Ensure both DAGs have run successfully (`dandi_ingestion` and `populate_neuroscience_datasets`)
+- **API connection errors**: 
+  - Check if backend is running: `docker-compose logs -f api`
+  - Verify database connection in `/api/health` endpoint
+  - Check if tables exist in pgAdmin
+- **Empty datasets in frontend**:
+  - The frontend now shows a "No Datasets Found" message with a retry button if the database is empty
+  - Run the DAGs to populate data: `populate_neuroscience_datasets` and `dandi_ingestion`
 
 ## Notes
 
