@@ -132,9 +132,6 @@ def create_dandi_table(**context):
     CREATE INDEX IF NOT EXISTS idx_dandi_citations ON dandi_dataset(citations DESC);
     CREATE INDEX IF NOT EXISTS idx_dandi_version ON dandi_dataset(version);
     """
-    ...
-
-
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
