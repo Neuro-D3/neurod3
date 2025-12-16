@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 import os
 from contextlib import contextmanager
@@ -88,7 +89,10 @@ async def health_check():
                         AND table_name = 'unified_datasets'
                     );
                 """)
-                view_exists = cursor.fetchone()[0]
+                view_row = cursor.fetchone()
+                view_exists = bool(
+                    view_row[0] if isinstance(view_row, tuple) else view_row.get("exists") or list(view_row.values())[0]
+                )
                 
                 if view_exists:
                     cursor.execute("SELECT COUNT(*) FROM unified_datasets")
@@ -138,7 +142,30 @@ async def get_datasets(
                         AND table_name = 'unified_datasets'
                     );
                 """)
-                view_exists = cursor.fetchone()[0]
+                view_row = cursor.fetchone()
+                view_exists = bool(
+                    view_row[0] if isinstance(view_row, tuple) else view_row.get("exists") or list(view_row.values())[0]
+                )
+                
+                # Check if neuroscience_datasets table exists (fallback target)
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'neuroscience_datasets'
+                    );
+                """)
+                neuro_row = cursor.fetchone()
+                neuro_table_exists = bool(
+                    neuro_row[0] if isinstance(neuro_row, tuple) else neuro_row.get("exists") or list(neuro_row.values())[0]
+                )
+                
+                if not view_exists and not neuro_table_exists:
+                    # Database is missing both view and base table (likely fresh or reset DB)
+                    raise HTTPException(
+                        status_code=503,
+                        detail="No dataset tables or view found. Run the populate_neuroscience_datasets and dandi_ingestion DAGs or POST /api/refresh-view after tables exist."
+                    )
                 
                 # Build dynamic query based on filters
                 if view_exists:
@@ -207,10 +234,10 @@ async def get_datasets(
                 }
 
     except psycopg.Error as e:
-        logger.error(f"Database query error: {e}")
+        logger.exception("Database query error")
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.exception("Unexpected error in /api/datasets")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
@@ -233,30 +260,62 @@ async def get_dataset_stats():
                 """)
                 view_exists = cursor.fetchone()[0]
                 
+                # Whitelist of allowed table/view names for safety
+                ALLOWED_TABLE_NAMES = {"unified_datasets", "neuroscience_datasets"}
+                
                 table_name = "unified_datasets" if view_exists else "neuroscience_datasets"
                 if not view_exists:
                     logger.warning("unified_datasets view does not exist, using neuroscience_datasets table for stats")
                 
+                # Validate table name against whitelist
+                if table_name not in ALLOWED_TABLE_NAMES:
+                    raise ValueError(f"Invalid table name: {table_name}")
+                
+                # Ensure the chosen table/view actually exists before querying
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = %s
+                    ) OR EXISTS (
+                        SELECT FROM information_schema.views 
+                        WHERE table_schema = 'public' 
+                        AND table_name = %s
+                    );
+                """, (table_name, table_name))
+                target_exists = cursor.fetchone()[0]
+                if not target_exists:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Dataset view/table not found. Run the populate_neuroscience_datasets and dandi_ingestion DAGs or POST /api/refresh-view after tables exist."
+                    )
+                
+                # Use psycopg.sql.Identifier() for safe table name construction
+                table_identifier = sql.Identifier(table_name)
+                
                 # Get counts by source
-                cursor.execute(f"""
+                query_source = sql.SQL("""
                     SELECT source, COUNT(*) as count
-                    FROM {table_name}
+                    FROM {}
                     GROUP BY source
                     ORDER BY count DESC
-                """)
+                """).format(table_identifier)
+                cursor.execute(query_source)
                 by_source = {row['source']: row['count'] for row in cursor.fetchall()}
 
                 # Get counts by modality
-                cursor.execute(f"""
+                query_modality = sql.SQL("""
                     SELECT modality, COUNT(*) as count
-                    FROM {table_name}
+                    FROM {}
                     GROUP BY modality
                     ORDER BY count DESC
-                """)
+                """).format(table_identifier)
+                cursor.execute(query_modality)
                 by_modality = {row['modality']: row['count'] for row in cursor.fetchall()}
 
                 # Get total count
-                cursor.execute(f"SELECT COUNT(*) as total FROM {table_name}")
+                query_total = sql.SQL("SELECT COUNT(*) as total FROM {}").format(table_identifier)
+                cursor.execute(query_total)
                 total = cursor.fetchone()['total']
 
                 return {
@@ -266,11 +325,127 @@ async def get_dataset_stats():
                 }
 
     except psycopg.Error as e:
-        logger.error(f"Database query error: {e}")
+        logger.exception("Database query error in /api/datasets/stats")
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.exception("Unexpected error in /api/datasets/stats")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+def _create_unified_datasets_view_api(cursor):
+    """
+    Create or replace the unified_datasets view (API version using psycopg).
+    
+    NOTE: This function should match the logic in dags/utils/database.py::create_unified_datasets_view()
+    but is kept here as a local implementation since the API uses psycopg (not psycopg2).
+    If the view creation logic changes, update both locations to maintain consistency.
+    """
+    # Check if tables exist
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name = 'dandi_dataset'
+        );
+    """)
+    dandi_table_exists = cursor.fetchone()[0]
+    
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name = 'neuroscience_datasets'
+        );
+    """)
+    neuro_table_exists = cursor.fetchone()[0]
+    
+    if not dandi_table_exists and not neuro_table_exists:
+        raise ValueError("Neither dandi_dataset nor neuroscience_datasets tables exist")
+    
+    # Build view SQL based on which tables exist
+    if dandi_table_exists and neuro_table_exists:
+        create_view_sql = """
+        CREATE OR REPLACE VIEW unified_datasets AS
+        SELECT
+            'DANDI'::text AS source,
+            dataset_id,
+            title,
+            modality,
+            citations,
+            url,
+            description,
+            created_at,
+            updated_at,
+            version
+        FROM dandi_dataset
+        
+        UNION ALL
+        
+        SELECT
+            source::text,
+            dataset_id,
+            title,
+            modality,
+            citations,
+            url,
+            description,
+            created_at,
+            updated_at,
+            NULL::VARCHAR(64) AS version
+        FROM neuroscience_datasets
+        WHERE source != 'DANDI';
+        """
+    elif dandi_table_exists:
+        create_view_sql = """
+        CREATE OR REPLACE VIEW unified_datasets AS
+        SELECT
+            'DANDI'::text AS source,
+            dataset_id,
+            title,
+            modality,
+            citations,
+            url,
+            description,
+            created_at,
+            updated_at,
+            version
+        FROM dandi_dataset;
+        """
+    else:
+        create_view_sql = """
+        CREATE OR REPLACE VIEW unified_datasets AS
+        SELECT
+            source::text,
+            dataset_id,
+            title,
+            modality,
+            citations,
+            url,
+            description,
+            created_at,
+            updated_at,
+            NULL::VARCHAR(64) AS version
+        FROM neuroscience_datasets;
+        """
+    
+    cursor.execute(create_view_sql)
+    
+    # Get statistics
+    cursor.execute("SELECT COUNT(*) FROM unified_datasets")
+    total_count = cursor.fetchone()[0]
+    
+    cursor.execute("""
+        SELECT source, COUNT(*) as count 
+        FROM unified_datasets 
+        GROUP BY source 
+        ORDER BY source
+    """)
+    source_counts = {row[0]: row[1] for row in cursor.fetchall()}
+    
+    return {
+        "total_rows": total_count,
+        "rows_by_source": source_counts,
+    }
 
 
 @app.post("/api/refresh-view")
@@ -279,118 +454,18 @@ async def refresh_unified_view():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # Check if tables exist
-                cursor.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_schema = 'public' 
-                        AND table_name = 'dandi_dataset'
-                    );
-                """)
-                dandi_table_exists = cursor.fetchone()[0]
-                
-                cursor.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_schema = 'public' 
-                        AND table_name = 'neuroscience_datasets'
-                    );
-                """)
-                neuro_table_exists = cursor.fetchone()[0]
-                
-                if not dandi_table_exists and not neuro_table_exists:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail="Neither dandi_dataset nor neuroscience_datasets tables exist"
-                    )
-                
-                # Build view SQL based on which tables exist
-                if dandi_table_exists and neuro_table_exists:
-                    create_view_sql = """
-                    CREATE OR REPLACE VIEW unified_datasets AS
-                    SELECT
-                        'DANDI'::text AS source,
-                        dataset_id,
-                        title,
-                        modality,
-                        citations,
-                        url,
-                        description,
-                        created_at,
-                        updated_at,
-                        version
-                    FROM dandi_dataset
-                    
-                    UNION ALL
-                    
-                    SELECT
-                        source::text,
-                        dataset_id,
-                        title,
-                        modality,
-                        citations,
-                        url,
-                        description,
-                        created_at,
-                        updated_at,
-                        NULL::VARCHAR(64) AS version
-                    FROM neuroscience_datasets
-                    WHERE source != 'DANDI';
-                    """
-                elif dandi_table_exists:
-                    create_view_sql = """
-                    CREATE OR REPLACE VIEW unified_datasets AS
-                    SELECT
-                        'DANDI'::text AS source,
-                        dataset_id,
-                        title,
-                        modality,
-                        citations,
-                        url,
-                        description,
-                        created_at,
-                        updated_at,
-                        version
-                    FROM dandi_dataset;
-                    """
-                else:
-                    create_view_sql = """
-                    CREATE OR REPLACE VIEW unified_datasets AS
-                    SELECT
-                        source::text,
-                        dataset_id,
-                        title,
-                        modality,
-                        citations,
-                        url,
-                        description,
-                        created_at,
-                        updated_at,
-                        NULL::VARCHAR(64) AS version
-                    FROM neuroscience_datasets;
-                    """
-                
-                cursor.execute(create_view_sql)
+                result = _create_unified_datasets_view_api(cursor)
                 conn.commit()
-                
-                # Verify view and get counts
-                cursor.execute("SELECT COUNT(*) FROM unified_datasets")
-                total_count = cursor.fetchone()[0]
-                
-                cursor.execute("""
-                    SELECT source, COUNT(*) as count 
-                    FROM unified_datasets 
-                    GROUP BY source 
-                    ORDER BY source
-                """)
-                source_counts = {row[0]: row[1] for row in cursor.fetchall()}
                 
         return {
             "status": "success",
             "message": "unified_datasets view created/refreshed",
-            "total_rows": total_count,
-            "rows_by_source": source_counts
+            "total_rows": result["total_rows"],
+            "rows_by_source": result["rows_by_source"]
         }
+    except ValueError as e:
+        logger.error(f"Error creating view: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except psycopg.Error as e:
         logger.error(f"Database error creating view: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

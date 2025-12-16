@@ -5,7 +5,7 @@ This DAG fetches data from DANDI, Kaggle, OpenNeuro, and PhysioNet and stores it
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from utils.database import get_db_connection
+from utils.database import get_db_connection, create_unified_datasets_view
 import logging
 
 logger = logging.getLogger(__name__)
@@ -78,124 +78,14 @@ def create_neuroscience_datasets_table(**context):
         raise
 
 
-def create_unified_datasets_view(**context):
+def create_unified_datasets_view_task(**context):
     """Create or replace the unified_datasets view that combines dandi_dataset and neuroscience_datasets."""
-    
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # Check if tables exist
-                cursor.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_schema = 'public' 
-                        AND table_name = 'dandi_dataset'
-                    );
-                """)
-                dandi_table_exists = cursor.fetchone()[0]
-                
-                cursor.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_schema = 'public' 
-                        AND table_name = 'neuroscience_datasets'
-                    );
-                """)
-                neuro_table_exists = cursor.fetchone()[0]
-                
-                # Build view SQL based on which tables exist
-                if dandi_table_exists and neuro_table_exists:
-                    create_view_sql = """
-                    CREATE OR REPLACE VIEW unified_datasets AS
-                    SELECT
-                        'DANDI'::text AS source,
-                        dataset_id,
-                        title,
-                        modality,
-                        citations,
-                        url,
-                        description,
-                        created_at,
-                        updated_at,
-                        version
-                    FROM dandi_dataset
-                    
-                    UNION ALL
-                    
-                    SELECT
-                        source::text,
-                        dataset_id,
-                        title,
-                        modality,
-                        citations,
-                        url,
-                        description,
-                        created_at,
-                        updated_at,
-                        NULL::VARCHAR(64) AS version
-                    FROM neuroscience_datasets
-                    WHERE source != 'DANDI';
-                    """
-                elif dandi_table_exists:
-                    # Only dandi_dataset exists
-                    create_view_sql = """
-                    CREATE OR REPLACE VIEW unified_datasets AS
-                    SELECT
-                        'DANDI'::text AS source,
-                        dataset_id,
-                        title,
-                        modality,
-                        citations,
-                        url,
-                        description,
-                        created_at,
-                        updated_at,
-                        version
-                    FROM dandi_dataset;
-                    """
-                elif neuro_table_exists:
-                    # Only neuroscience_datasets exists
-                    create_view_sql = """
-                    CREATE OR REPLACE VIEW unified_datasets AS
-                    SELECT
-                        source::text,
-                        dataset_id,
-                        title,
-                        modality,
-                        citations,
-                        url,
-                        description,
-                        created_at,
-                        updated_at,
-                        NULL::VARCHAR(64) AS version
-                    FROM neuroscience_datasets;
-                    """
-                else:
-                    logger.warning("Neither dandi_dataset nor neuroscience_datasets tables exist. Cannot create view.")
-                    return
-                
-                # Check if view exists
-                cursor.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.views 
-                        WHERE table_schema = 'public' 
-                        AND table_name = 'unified_datasets'
-                    );
-                """)
-                view_exists = cursor.fetchone()[0]
-
-                cursor.execute(create_view_sql)
+                result = create_unified_datasets_view(cursor)
                 conn.commit()
-                
-                # Verify view was created and get row count
-                cursor.execute("SELECT COUNT(*) FROM unified_datasets")
-                row_count = cursor.fetchone()[0]
-
-                if view_exists:
-                    logger.info(f"Successfully replaced unified_datasets view ({row_count} rows)")
-                else:
-                    logger.info(f"Successfully created unified_datasets view ({row_count} rows)")
-                    
+                return result
     except Exception as e:
         logger.error("Error creating/replacing unified_datasets view: %s", e)
         raise
@@ -477,7 +367,7 @@ create_table_task = PythonOperator(
 
 create_view_task = PythonOperator(
     task_id='create_unified_datasets_view',
-    python_callable=create_unified_datasets_view,
+    python_callable=create_unified_datasets_view_task,
     dag=dag,
 )
 

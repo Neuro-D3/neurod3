@@ -135,7 +135,8 @@ export default function NeuroDatasetDiscovery() {
 
       const modalitiesSet = new Set<string>();
       allDatasets.forEach((ds) => {
-        ds.modality.split(',').forEach((mod) => {
+        const modalityValue = ds.modality || '';
+        modalityValue.split(',').forEach((mod) => {
           const cleaned = mod.trim();
           if (cleaned) modalitiesSet.add(cleaned);
         });
