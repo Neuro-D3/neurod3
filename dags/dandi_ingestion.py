@@ -477,6 +477,7 @@ def insert_dandi_datasets(**context):
         created_at = EXCLUDED.created_at,
         updated_at = EXCLUDED.updated_at,
         version = EXCLUDED.version
+    RETURNING (xmax = 0) AS inserted;
     """
 
     try:
@@ -496,18 +497,13 @@ def insert_dandi_datasets(**context):
                         )
                         dataset["modality"] = modality_val[:255]
 
-                    cursor.execute(
-                        "SELECT dataset_id FROM dandi_dataset WHERE dataset_id = %s",
-                        (dataset['dataset_id'],),
-                    )
-                    exists = cursor.fetchone()
-
                     cursor.execute(insert_sql, dataset)
-
-                    if exists:
-                        updated_count += 1
-                    else:
+                    # Use RETURNING inserted flag to distinguish insert vs update without a pre-check
+                    inserted_flag = cursor.fetchone()[0]
+                    if inserted_flag:
                         inserted_count += 1
+                    else:
+                        updated_count += 1
 
                 conn.commit()
 
