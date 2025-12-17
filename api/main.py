@@ -349,8 +349,8 @@ async def refresh_unified_view():
                 
         if not result.get("view_created", False):
             raise HTTPException(
-                status_code=400, 
-                detail="Cannot create view: No source tables exist"
+                status_code=503, 
+                detail="Cannot create view: No source tables (dandi_dataset or neuroscience_datasets) exist. Run the DAGs first to populate data."
             )
                 
         return {
