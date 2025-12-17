@@ -256,7 +256,7 @@ async def get_dataset_stats():
                         AND table_name = 'unified_datasets'
                     );
                 """)
-                view_exists = cursor.fetchone()[0]
+                view_exists = cursor.fetchone()['exists']
                 
                 # Whitelist of allowed table/view names for safety
                 ALLOWED_TABLE_NAMES = {"unified_datasets", "neuroscience_datasets"}
