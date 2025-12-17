@@ -90,9 +90,7 @@ async def health_check():
                     );
                 """)
                 view_row = cursor.fetchone()
-                view_exists = bool(
-                    view_row[0] if isinstance(view_row, tuple) else view_row.get("exists") or list(view_row.values())[0]
-                )
+                view_exists = bool(view_row[0])
                 
                 if view_exists:
                     cursor.execute("SELECT COUNT(*) FROM unified_datasets")
