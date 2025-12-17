@@ -487,15 +487,6 @@ def insert_dandi_datasets(**context):
                 updated_count = 0
 
                 for dataset in datasets:
-                    # Defensive: ensure modality fits into VARCHAR(255) if the column is still that type
-                    modality_val = dataset.get("modality")
-                    if isinstance(modality_val, str) and len(modality_val) > 255:
-                        logger.warning(
-                            "Truncating modality for dataset %s from %d to 255 characters",
-                            dataset.get("dataset_id"),
-                            len(modality_val),
-                        )
-                        dataset["modality"] = modality_val[:255]
 
                     cursor.execute(insert_sql, dataset)
                     # Use RETURNING inserted flag to distinguish insert vs update without a pre-check
