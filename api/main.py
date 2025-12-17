@@ -271,17 +271,19 @@ async def get_dataset_stats():
                 
                 # Ensure the chosen table/view actually exists before querying
                 cursor.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_schema = 'public' 
-                        AND table_name = %s
-                    ) OR EXISTS (
-                        SELECT FROM information_schema.views 
-                        WHERE table_schema = 'public' 
-                        AND table_name = %s
-                    );
+                    SELECT (
+                        EXISTS (
+                            SELECT FROM information_schema.tables 
+                            WHERE table_schema = 'public' 
+                            AND table_name = %s
+                        ) OR EXISTS (
+                            SELECT FROM information_schema.views 
+                            WHERE table_schema = 'public' 
+                            AND table_name = %s
+                        )
+                    ) AS exists;
                 """, (table_name, table_name))
-                target_exists = cursor.fetchone()[0]
+                target_exists = cursor.fetchone()["exists"]
                 if not target_exists:
                     raise HTTPException(
                         status_code=503,
