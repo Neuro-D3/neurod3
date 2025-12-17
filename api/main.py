@@ -9,8 +9,17 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 import os
+import sys
+from pathlib import Path
 from contextlib import contextmanager
 import logging
+
+# Add dags directory to path so we can import shared utilities
+dags_path = Path(__file__).parent.parent / "dags"
+if str(dags_path) not in sys.path:
+    sys.path.insert(0, str(dags_path))
+
+from utils.database import create_unified_datasets_view
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -141,9 +150,7 @@ async def get_datasets(
                     );
                 """)
                 view_row = cursor.fetchone()
-                view_exists = bool(
-                    view_row[0] if isinstance(view_row, tuple) else view_row.get("exists") or list(view_row.values())[0]
-                )
+                view_exists = view_row["exists"]
                 
                 # Check if neuroscience_datasets table exists (fallback target)
                 cursor.execute("""
@@ -154,9 +161,7 @@ async def get_datasets(
                     );
                 """)
                 neuro_row = cursor.fetchone()
-                neuro_table_exists = bool(
-                    neuro_row[0] if isinstance(neuro_row, tuple) else neuro_row.get("exists") or list(neuro_row.values())[0]
-                )
+                neuro_table_exists = neuro_row["exists"]
                 
                 if not view_exists and not neuro_table_exists:
                     # Database is missing both view and base table (likely fresh or reset DB)
@@ -332,121 +337,6 @@ async def get_dataset_stats():
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-def _create_unified_datasets_view_api(cursor):
-    """
-    Create or replace the unified_datasets view (API version using psycopg).
-    
-    NOTE: This function should match the logic in dags/utils/database.py::create_unified_datasets_view()
-    but is kept here as a local implementation since the API uses psycopg (not psycopg2).
-    If the view creation logic changes, update both locations to maintain consistency.
-    """
-    # Check if tables exist
-    cursor.execute("""
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            AND table_name = 'dandi_dataset'
-        );
-    """)
-    dandi_table_exists = cursor.fetchone()[0]
-    
-    cursor.execute("""
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            AND table_name = 'neuroscience_datasets'
-        );
-    """)
-    neuro_table_exists = cursor.fetchone()[0]
-    
-    if not dandi_table_exists and not neuro_table_exists:
-        raise ValueError("Neither dandi_dataset nor neuroscience_datasets tables exist")
-    
-    # Build view SQL based on which tables exist
-    if dandi_table_exists and neuro_table_exists:
-        create_view_sql = """
-        CREATE OR REPLACE VIEW unified_datasets AS
-        SELECT
-            'DANDI'::text AS source,
-            dataset_id,
-            title,
-            modality,
-            citations,
-            url,
-            description,
-            created_at,
-            updated_at,
-            version
-        FROM dandi_dataset
-        
-        UNION ALL
-        
-        SELECT
-            source::text,
-            dataset_id,
-            title,
-            modality,
-            citations,
-            url,
-            description,
-            created_at,
-            updated_at,
-            NULL::VARCHAR(64) AS version
-        FROM neuroscience_datasets
-        WHERE source != 'DANDI';
-        """
-    elif dandi_table_exists:
-        create_view_sql = """
-        CREATE OR REPLACE VIEW unified_datasets AS
-        SELECT
-            'DANDI'::text AS source,
-            dataset_id,
-            title,
-            modality,
-            citations,
-            url,
-            description,
-            created_at,
-            updated_at,
-            version
-        FROM dandi_dataset;
-        """
-    else:
-        create_view_sql = """
-        CREATE OR REPLACE VIEW unified_datasets AS
-        SELECT
-            source::text,
-            dataset_id,
-            title,
-            modality,
-            citations,
-            url,
-            description,
-            created_at,
-            updated_at,
-            NULL::VARCHAR(64) AS version
-        FROM neuroscience_datasets;
-        """
-    
-    cursor.execute(create_view_sql)
-    
-    # Get statistics
-    cursor.execute("SELECT COUNT(*) FROM unified_datasets")
-    total_count = cursor.fetchone()[0]
-    
-    cursor.execute("""
-        SELECT source, COUNT(*) as count 
-        FROM unified_datasets 
-        GROUP BY source 
-        ORDER BY source
-    """)
-    source_counts = {row[0]: row[1] for row in cursor.fetchall()}
-    
-    return {
-        "total_rows": total_count,
-        "rows_by_source": source_counts,
-    }
-
 
 @app.post("/api/refresh-view")
 async def refresh_unified_view():
@@ -454,8 +344,14 @@ async def refresh_unified_view():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                result = _create_unified_datasets_view_api(cursor)
+                result = create_unified_datasets_view(cursor)
                 conn.commit()
+                
+        if not result.get("view_created", False):
+            raise HTTPException(
+                status_code=400, 
+                detail="Cannot create view: No source tables exist"
+            )
                 
         return {
             "status": "success",
@@ -463,9 +359,8 @@ async def refresh_unified_view():
             "total_rows": result["total_rows"],
             "rows_by_source": result["rows_by_source"]
         }
-    except ValueError as e:
-        logger.error(f"Error creating view: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except psycopg.Error as e:
         logger.error(f"Database error creating view: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
