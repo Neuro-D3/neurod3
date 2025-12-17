@@ -384,4 +384,4 @@ verify_data_task = PythonOperator(
 )
 
 # Set task dependencies
-create_table_task >> create_view_task >> insert_datasets_task >> verify_data_task
+create_table_task >> insert_datasets_task >> create_view_task >> verify_data_task
