@@ -5,7 +5,7 @@ This DAG fetches data from DANDI, Kaggle, OpenNeuro, and PhysioNet and stores it
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from utils.database import get_db_connection, create_unified_datasets_view
+from utils.database import get_db_connection
 import logging
 
 logger = logging.getLogger(__name__)
@@ -29,66 +29,6 @@ dag = DAG(
     tags=['datasets', 'neuroscience'],
     is_paused_upon_creation=False,
 )
-
-
-def create_neuroscience_datasets_table(**context):
-    """Check if neuroscience_datasets table exists and create it if it doesn't."""
-    create_table_sql = """
-    CREATE TABLE IF NOT EXISTS neuroscience_datasets (
-        id SERIAL PRIMARY KEY,
-        source VARCHAR(50) NOT NULL,
-        dataset_id VARCHAR(255) NOT NULL,
-        title TEXT NOT NULL,
-        modality VARCHAR(100) NOT NULL,
-        citations INTEGER DEFAULT 0,
-        url TEXT NOT NULL,
-        description TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(source, dataset_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_datasets_source ON neuroscience_datasets(source);
-    CREATE INDEX IF NOT EXISTS idx_datasets_modality ON neuroscience_datasets(modality);
-    CREATE INDEX IF NOT EXISTS idx_datasets_citations ON neuroscience_datasets(citations DESC);
-    """
-
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                # Check if table exists
-                cursor.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_schema = 'public' 
-                        AND table_name = 'neuroscience_datasets'
-                    );
-                """)
-                table_exists = cursor.fetchone()[0]
-
-                if table_exists:
-                    logger.info("neuroscience_datasets table already exists")
-                else:
-                    logger.info("neuroscience_datasets table does not exist, creating it...")
-                    cursor.execute(create_table_sql)
-                    conn.commit()
-                    logger.info("Successfully created neuroscience_datasets table")
-    except Exception as e:
-        logger.error("Error checking/creating neuroscience_datasets table: %s", e)
-        raise
-
-
-def create_unified_datasets_view_task(**context):
-    """Create or replace the unified_datasets view that combines dandi_dataset and neuroscience_datasets."""
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                result = create_unified_datasets_view(cursor)
-                conn.commit()
-                return result
-    except Exception as e:
-        logger.error("Error creating/replacing unified_datasets view: %s", e)
-        raise
 
 
 def insert_datasets():
@@ -359,18 +299,6 @@ def verify_data():
 
 
 # Define tasks
-create_table_task = PythonOperator(
-    task_id='create_neuroscience_datasets_table',
-    python_callable=create_neuroscience_datasets_table,
-    dag=dag,
-)
-
-create_view_task = PythonOperator(
-    task_id='create_unified_datasets_view',
-    python_callable=create_unified_datasets_view_task,
-    dag=dag,
-)
-
 insert_datasets_task = PythonOperator(
     task_id='insert_datasets',
     python_callable=insert_datasets,
@@ -384,4 +312,4 @@ verify_data_task = PythonOperator(
 )
 
 # Set task dependencies
-create_table_task >> insert_datasets_task >> create_view_task >> verify_data_task
+insert_datasets_task >> verify_data_task

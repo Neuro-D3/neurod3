@@ -12,7 +12,7 @@ import requests
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-from utils.database import get_db_connection, create_unified_datasets_view
+from utils.database import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -109,38 +109,6 @@ def parse_dandiset(dandiset: Dict[str, Any]) -> Dict[str, Any]:
         "version": version_id,  # <-- now tracked explicitly
     }
 
-
-
-def create_dandi_table(**context):
-    """Create the dandi_dataset table if it doesn't exist."""
-    create_table_sql = """
-    CREATE TABLE IF NOT EXISTS dandi_dataset (
-        id SERIAL PRIMARY KEY,
-        dataset_id VARCHAR(255) NOT NULL UNIQUE,
-        title TEXT,
-        modality TEXT,
-        citations INTEGER DEFAULT 0,
-        url TEXT,
-        description TEXT,
-        created_at TIMESTAMP,
-        updated_at TIMESTAMP,
-        version VARCHAR(64)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_dandi_dataset_id ON dandi_dataset(dataset_id);
-    CREATE INDEX IF NOT EXISTS idx_dandi_modality ON dandi_dataset(modality);
-    CREATE INDEX IF NOT EXISTS idx_dandi_citations ON dandi_dataset(citations DESC);
-    CREATE INDEX IF NOT EXISTS idx_dandi_version ON dandi_dataset(version);
-    """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(create_table_sql)
-                conn.commit()
-        logger.info("Successfully created dandi_dataset table (or it already exists)")
-    except Exception as e:
-        logger.error("Error creating dandi_dataset table: %s", e)
-        raise
 
 
 def fetch_dandi_datasets(**context) -> List[Dict[str, Any]]:
@@ -509,19 +477,6 @@ def insert_dandi_datasets(**context):
 
 
 
-def create_unified_datasets_view_task(**context):
-    """Create or replace the unified_datasets view that combines dandi_dataset and neuroscience_datasets."""
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                result = create_unified_datasets_view(cursor)
-                conn.commit()
-                return result
-    except Exception as e:
-        logger.error("Error creating/replacing unified_datasets view: %s", e)
-        raise
-
-
 def verify_dandi_data(**context):
     """Verify that DANDI data was inserted correctly."""
     try:
@@ -553,12 +508,6 @@ def verify_dandi_data(**context):
 
 
 # Define tasks
-create_dandi_table_task = PythonOperator(
-    task_id='create_dandi_table',
-    python_callable=create_dandi_table,
-    dag=dag,
-)
-
 fetch_datasets_task = PythonOperator(
     task_id='fetch_dandi_datasets',
     python_callable=fetch_dandi_datasets,
@@ -577,12 +526,6 @@ insert_datasets_task = PythonOperator(
     dag=dag,
 )
 
-create_view_task = PythonOperator(
-    task_id='create_unified_datasets_view',
-    python_callable=create_unified_datasets_view_task,
-    dag=dag,
-)
-
 verify_data_task = PythonOperator(
     task_id='verify_dandi_data',
     python_callable=verify_dandi_data,
@@ -590,5 +533,5 @@ verify_data_task = PythonOperator(
 )
 
 # Set task dependencies:
-# create -> fetch -> enrich (current run only) -> insert -> create_view -> verify
-create_dandi_table_task >> fetch_datasets_task >> enrich_dandi_data_task >> insert_datasets_task >> create_view_task >> verify_data_task
+# fetch -> enrich (current run only) -> insert -> verify
+fetch_datasets_task >> enrich_dandi_data_task >> insert_datasets_task >> verify_data_task
