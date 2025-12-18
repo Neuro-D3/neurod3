@@ -1,0 +1,5 @@
+# Additional Python dependencies for the Airflow containers.
+# Leave this file empty if you don't need extra Python packages beyond what
+# the base apache/airflow image already provides.
+
+

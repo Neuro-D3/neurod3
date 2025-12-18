@@ -19,7 +19,25 @@ dags_path = Path(__file__).parent.parent / "dags"
 if str(dags_path) not in sys.path:
     sys.path.insert(0, str(dags_path))
 
-from utils.database import create_unified_datasets_view
+try:
+    # Prefer the shared Airflow DAGs utility when available (local dev / Airflow environment)
+    from utils.database import create_unified_datasets_view
+except ModuleNotFoundError:
+    # In the Docker API container we may not have the Airflow dags package mounted.
+    # Provide a safe no-op fallback so the API can still start and serve core endpoints.
+    def create_unified_datasets_view(cursor):  # type: ignore[override]
+        """
+        Fallback stub for create_unified_datasets_view.
+        This is used when the shared Airflow utils module is not available.
+        It reports that no view was created so callers can handle it gracefully.
+        """
+        return {
+            "view_created": False,
+            "total_rows": 0,
+            "rows_by_source": {},
+            "dandi_table_exists": False,
+            "neuro_table_exists": False,
+        }
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
