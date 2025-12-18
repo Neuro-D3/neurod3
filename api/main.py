@@ -264,7 +264,7 @@ async def get_dataset_stats():
                 view_exists = cursor.fetchone()['exists']
                 
                 # Whitelist of allowed table/view names for safety
-                ALLOWED_TABLE_NAMES = {"unified_datasets", "neuroscience_datasets"}
+                ALLOWED_TABLE_NAMES = {"unified_datasets", "neuroscience_datasets", "dandi_dataset"}
                 
                 table_name = "unified_datasets" if view_exists else "neuroscience_datasets"
                 if not view_exists:
@@ -272,7 +272,10 @@ async def get_dataset_stats():
                 
                 # Validate table name against whitelist
                 if table_name not in ALLOWED_TABLE_NAMES:
-                    raise ValueError(f"Invalid table name: {table_name}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid table name: {table_name}"
+                    )
                 
                 # Ensure the chosen table/view actually exists before querying
                 cursor.execute("""
