@@ -72,6 +72,7 @@ export default function NeuroDatasetDiscovery() {
   const [datasets, setDatasets] = useState<DatasetGroup[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [noDatasetsFound, setNoDatasetsFound] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<'citations' | 'title' | 'id' | 'source' | 'modality'>(
     'citations',
   );
@@ -113,17 +114,29 @@ export default function NeuroDatasetDiscovery() {
   const fetchAllDatasets = async () => {
     setLoading(true);
     setError(null);
+    setNoDatasetsFound(false);
 
     try {
       // Fetch datasets from backend API
       const response = await fetchDatasets();
       const allDatasets: Dataset[] = response.datasets;
 
+      // Check if datasets array is empty (connection successful but no data)
+      if (!allDatasets || allDatasets.length === 0) {
+        setNoDatasetsFound(true);
+        setDatasets([]);
+        setAllModalities([]);
+        setStats({ total: 0, unique: 0, bySources: {} });
+        setLoading(false);
+        return;
+      }
+
       const groupedDatasets = groupDuplicates(allDatasets);
 
       const modalitiesSet = new Set<string>();
       allDatasets.forEach((ds) => {
-        ds.modality.split(',').forEach((mod) => {
+        const modalityValue = ds.modality || '';
+        modalityValue.split(',').forEach((mod) => {
           const cleaned = mod.trim();
           if (cleaned) modalitiesSet.add(cleaned);
         });
@@ -137,6 +150,7 @@ export default function NeuroDatasetDiscovery() {
       const errorMessage = err instanceof Error ? err.message : 'Failed to connect to API';
       console.error('Error fetching datasets from API:', err);
       setError(`API connection error: ${errorMessage}. Please ensure the backend service is running.`);
+      setNoDatasetsFound(false);
       setLoading(false);
     }
   };
@@ -501,6 +515,29 @@ export default function NeuroDatasetDiscovery() {
             </h3>
             <p className={darkMode ? 'text-gray-300 mb-4' : 'text-gray-600 mb-4'}>
               {error}
+            </p>
+            <button
+              onClick={fetchAllDatasets}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Retry Connection
+            </button>
+          </div>
+        ) : noDatasetsFound ? (
+          <div
+            className={
+              darkMode
+                ? 'rounded-2xl shadow-xl p-12 text-center backdrop-blur-xl bg-yellow-900/20 border border-yellow-500/30'
+                : 'rounded-2xl shadow-xl p-12 text-center backdrop-blur-xl bg-yellow-50 border border-yellow-200'
+            }
+          >
+            <div className="text-yellow-600 mb-4 text-5xl">📭</div>
+            <h3 className={darkMode ? 'text-yellow-400 font-semibold mb-2' : 'text-yellow-700 font-semibold mb-2'}>
+              No Datasets Found
+            </h3>
+            <p className={darkMode ? 'text-gray-300 mb-4' : 'text-gray-600 mb-4'}>
+              The database connection is working, but no datasets were found in the database. 
+              The tables may be empty or need to be populated.
             </p>
             <button
               onClick={fetchAllDatasets}
