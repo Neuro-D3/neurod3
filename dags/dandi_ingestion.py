@@ -30,7 +30,7 @@ dag = DAG(
     'dandi_ingestion',
     default_args=default_args,
     description='Fetch and ingest datasets from DANDI Archive API',
-    schedule_interval='@daily',
+    schedule='@daily',
     catchup=False,
     tags=['datasets', 'dandi', 'ingestion'],
     is_paused_upon_creation=False,
