@@ -7,8 +7,8 @@ import os
 def show():
     print("ENV AIRFLOW__API__SECRET_KEY =", os.getenv("AIRFLOW__API__SECRET_KEY"))
     print("CONF api.secret_key =", conf.get("api", "secret_key", fallback=None))
-    print("ENV AIRFLOW__EXECUTION_API__BASE_URL =", os.getenv("AIRFLOW__EXECUTION_API__BASE_URL"))
-    print("CONF execution_api.base_url =", conf.get("execution_api", "base_url", fallback=None))
+    print("ENV AIRFLOW__CORE__EXECUTION_API_SERVER_URL =", os.getenv("AIRFLOW__CORE__EXECUTION_API_SERVER_URL"))
+    print("CONF core.execution_api_server_url =", conf.get("core", "execution_api_server_url", fallback=None))
 
 with DAG(
     dag_id="debug_exec_api",

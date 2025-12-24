@@ -82,7 +82,7 @@ services:
       airflow-init:
         condition: service_completed_successfully
       airflow-api-server:
-        condition: service_started
+        condition: service_healthy
 
   airflow-triggerer:
     <<: *airflow-common
@@ -123,7 +123,7 @@ services:
         fi
         if (( cpus_available < 2 )); then
           echo
-          echo -e "\033[1;33mWARNING!!!: Not enough CPUS available for Docker.\e[0m"
+          echo -e "\033[1;33mWARNING!!!: Not enough CPUs available for Docker.\e[0m"
           echo "At least 2 CPUs recommended. You have $${cpus_available}"
           echo
           warning_resources="true"
