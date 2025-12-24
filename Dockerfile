@@ -1,8 +1,8 @@
-FROM apache/airflow:2.8.0
+FROM apache/airflow:3.1.5
 
 USER root
 
-# Install system dependencies if needed
+# Install system dependencies 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && apt-get clean \
