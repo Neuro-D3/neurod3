@@ -18,7 +18,7 @@ Develop tools to:
 
 ## What We've Accomplished
 
-- ✅ Built an initial frontend and backend for a bright data dashboard
+- ✅ Built an initial frontend and backend for a Bright Data Dashboard
 - ✅ Created an Airflow pipeline that automates ingestion of dataset metadata from DANDI
 - ✅ Evaluated Data Citation Corpus and OpenAlex for collecting citations - both index many citations but are not complete and lack full text for distinguishing primary from secondary usage
 
@@ -129,8 +129,7 @@ If servers don't appear, try refreshing the browser (Ctrl+Shift+R or Cmd+Shift+R
 │   ├── src/
 │   │   ├── App.tsx          # Main React component
 │   │   ├── components/      # React components
-│   │   ├── services/        # API service layer
-│   │   └── types/           # TypeScript type definitions
+│   │   └── services/        # API service layer
 │   ├── public/              # Static files
 │   ├── Dockerfile
 │   └── package.json         # Node.js dependencies
@@ -183,6 +182,7 @@ Stores datasets fetched from the DANDI Archive API.
 **Created by**: `dandi_ingestion` DAG
 
 **Columns**:
+- `id` (SERIAL PRIMARY KEY) - Auto-incrementing primary key
 - `dataset_id` (VARCHAR) - Unique identifier from DANDI
 - `title` (TEXT) - Dataset title
 - `modality` (VARCHAR) - Data modality (e.g., "fMRI", "EEG", "Electrophysiology")
@@ -308,6 +308,7 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
    - Automatically creates/refreshes `unified_datasets` view
 
 2. **`populate_neuroscience_datasets`** - Populates datasets from multiple sources (Kaggle, OpenNeuro, PhysioNet)
+   - Schedule: Daily (`@daily`)
    - Creates/updates `neuroscience_datasets` table
    - Automatically creates/refreshes `unified_datasets` view
 
