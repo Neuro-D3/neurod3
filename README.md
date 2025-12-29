@@ -158,7 +158,7 @@ If servers don't appear, try refreshing the browser (Ctrl+Shift+R or Cmd+Shift+R
 │
 ├── logs/                    # Airflow logs (auto-created)
 ├── plugins/                 # Custom Airflow plugins
-├── docker compose.yml       # Docker Compose configuration
+├── docker-compose.yml       # Docker Compose configuration
 ├── Dockerfile               # Custom Airflow image with dependencies
 ├── requirements.txt         # Python package dependencies
 └── README.md                # This file
@@ -369,7 +369,7 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 - Make sure `AIRFLOW_UID` in `.env` matches your user ID
 
 **Port already in use**:
-- Change the port in `docker compose.yml` under the respective service's `ports` section
+- Change the port in `docker-compose.yml` under the respective service's `ports` section
 
 **DAGs not appearing**:
 - Check the scheduler logs: `docker compose logs -f airflow-scheduler`
