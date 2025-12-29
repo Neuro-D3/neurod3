@@ -53,7 +53,7 @@ Develop tools to:
 
 2. **Initialize Airflow** (first time only):
    ```bash
-   docker-compose up airflow-init
+   docker compose up airflow-init
    ```
 
 ### Spinning Up the Project
@@ -61,7 +61,7 @@ Develop tools to:
 To start all services:
 
 ```bash
-docker-compose up -d --build --force-recreate
+docker compose up -d --build --force-recreate
 ```
 
 This command will:
@@ -74,13 +74,13 @@ This command will:
 To stop all services:
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 To stop all services **and remove all volumes** (including database data):
 
 ```bash
-docker-compose down -v
+docker compose down -v
 ```
 
 ⚠️ **Warning**: The `-v` flag will delete all database data. Use this when you want a completely fresh start.
@@ -158,7 +158,7 @@ If servers don't appear, try refreshing the browser (Ctrl+Shift+R or Cmd+Shift+R
 │
 ├── logs/                    # Airflow logs (auto-created)
 ├── plugins/                 # Custom Airflow plugins
-├── docker-compose.yml       # Docker Compose configuration
+├── docker compose.yml       # Docker Compose configuration
 ├── Dockerfile               # Custom Airflow image with dependencies
 ├── requirements.txt         # Python package dependencies
 └── README.md                # This file
@@ -329,17 +329,17 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 
 ### Docker Compose Commands
 
-- **View all logs**: `docker-compose logs -f`
+- **View all logs**: `docker compose logs -f`
 - **View specific service logs**:
-  - `docker-compose logs -f airflow-scheduler`
-  - `docker-compose logs -f airflow-webserver`
-  - `docker-compose logs -f frontend`
-  - `docker-compose logs -f api`
-- **Restart services**: `docker-compose restart`
-- **Restart specific service**: `docker-compose restart frontend`
-- **Rebuild and restart**: `docker-compose up -d --build`
-- **Stop all services**: `docker-compose down`
-- **Stop and remove volumes**: `docker-compose down -v`
+  - `docker compose logs -f airflow-scheduler`
+  - `docker compose logs -f airflow-webserver`
+  - `docker compose logs -f frontend`
+  - `docker compose logs -f api`
+- **Restart services**: `docker compose restart`
+- **Restart specific service**: `docker compose restart frontend`
+- **Rebuild and restart**: `docker compose up -d --build`
+- **Stop all services**: `docker compose down`
+- **Stop and remove volumes**: `docker compose down -v`
 
 ### Database Commands
 
@@ -369,16 +369,16 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 - Make sure `AIRFLOW_UID` in `.env` matches your user ID
 
 **Port already in use**:
-- Change the port in `docker-compose.yml` under the respective service's `ports` section
+- Change the port in `docker compose.yml` under the respective service's `ports` section
 
 **DAGs not appearing**:
-- Check the scheduler logs: `docker-compose logs -f airflow-scheduler`
+- Check the scheduler logs: `docker compose logs -f airflow-scheduler`
 - Ensure your DAG files are in the `dags/` directory
 - Verify DAG files don't have syntax errors
 
 **Frontend not loading**:
-- Check frontend logs: `docker-compose logs -f frontend`
-- Verify the API is running: `docker-compose logs -f api`
+- Check frontend logs: `docker compose logs -f frontend`
+- Verify the API is running: `docker compose logs -f api`
 - Check browser console for errors
 
 **Only seeing data from one source in frontend**:
@@ -389,7 +389,7 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 5. Ensure both DAGs have run successfully (`dandi_ingestion` and `populate_neuroscience_datasets`)
 
 **API connection errors**:
-- Check if backend is running: `docker-compose logs -f api`
+- Check if backend is running: `docker compose logs -f api`
 - Verify database connection: `GET http://localhost:8000/api/health`
 - Check if tables exist in pgAdmin
 
@@ -399,8 +399,8 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 - Check if DAGs completed successfully in Airflow UI
 
 **Database reset**:
-- To completely reset the database: `docker-compose down -v`
-- This deletes all data. Re-initialize with: `docker-compose up airflow-init`
+- To completely reset the database: `docker compose down -v`
+- This deletes all data. Re-initialize with: `docker compose up airflow-init`
 
 ---
 
