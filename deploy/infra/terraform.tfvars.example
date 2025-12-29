@@ -1,32 +1,34 @@
 # Copy this file to terraform.tfvars and fill in your values
 # terraform.tfvars is in .gitignore and should not be committed
 
-# OCI Authentication
-tenancy_ocid     = "ocid1.tenancy.oc1..xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-user_ocid        = "ocid1.user.oc1..xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-fingerprint      = "xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx"
-private_key_path = "~/.oci/oci_api_key.pem"
-region           = "us-ashburn-1"
+# ============================================
+# MINIMUM REQUIRED (when running from Cloud Shell)
+# ============================================
 
-# Compartment and Networking
-compartment_ocid = "ocid1.compartment.oc1..xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-vcn_id           = "ocid1.vcn.oc1.iad.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-subnet_id        = "ocid1.subnet.oc1.iad.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-vcn_cidr         = "10.0.0.0/16"
+# OCI Region (change to your preferred region)
+region = "us-ashburn-1"
 
-# Project Configuration
-project_name = "neurod3"
+# Tenancy OCID (get it in Cloud Shell with: oci iam tenancy get --query 'data.id' --raw-output)
+tenancy_ocid = "ocid1.tenancy.oc1..aaaaaaa..."
 
-# Instance Configuration
-instance_shape     = "VM.Standard.E4.Flex"
-instance_ocpus     = 2
-instance_memory_gb = 8
+# SSH Public Key
+# In Cloud Shell, generate one with: ssh-keygen -t ed25519 -N "" -f ~/.ssh/oci_key
+# Then get it with: cat ~/.ssh/oci_key.pub
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... your-key-here"
 
-# SSH Key (public key content, not path)
-ssh_public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC... your-public-key-here"
+# ============================================
+# OPTIONAL: Use existing VCN/Subnet
+# ============================================
+# If you have an existing VCN and subnet, uncomment and fill these:
+# vcn_id    = "ocid1.vcn.oc1.iad.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# subnet_id = "ocid1.subnet.oc1.iad.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# If you don't provide these, Terraform will create them automatically!
 
-# Storage (optional)
-create_additional_storage = false
-additional_storage_size_gb = 100
-storage_vpus_per_gb      = 10
+# ============================================
+# OPTIONAL: Custom Configuration
+# ============================================
+# project_name = "neurod3"  # Default is "neurod3"
+# instance_ocpus = 2        # Default is 2
+# instance_memory_gb = 8    # Default is 8
+# tenancy_ocid = ""         # Auto-detected in Cloud Shell, only needed if not using CLI config
 

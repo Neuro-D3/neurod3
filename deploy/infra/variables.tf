@@ -1,23 +1,41 @@
-variable "tenancy_ocid" {
-  description = "OCID of the tenancy"
+variable "use_cli_config" {
+  description = "Use OCI CLI config file for authentication (recommended)"
+  type        = bool
+  default     = true
+}
+
+variable "cli_config_profile" {
+  description = "OCI CLI config profile to use (default: DEFAULT)"
   type        = string
+  default     = "DEFAULT"
+}
+
+variable "tenancy_ocid" {
+  description = "OCID of the tenancy (get it in Cloud Shell with: oci iam tenancy get --query 'data.id' --raw-output)"
+  type        = string
+  default     = ""
+  # In Cloud Shell, run: oci iam tenancy get --query 'data.id' --raw-output
+  # Or find it in: OCI Console > Administration > Tenancy Details
 }
 
 variable "user_ocid" {
-  description = "OCID of the user"
+  description = "OCID of the user (required if use_cli_config is false)"
   type        = string
+  default     = ""
 }
 
 variable "fingerprint" {
-  description = "Fingerprint of the API key"
+  description = "Fingerprint of the API key (required if use_cli_config is false)"
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "private_key_path" {
-  description = "Path to the private key file"
+  description = "Path to the private key file (required if use_cli_config is false)"
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "region" {
@@ -27,24 +45,33 @@ variable "region" {
 }
 
 variable "compartment_ocid" {
-  description = "OCID of the compartment where resources will be created"
+  description = "OCID of the compartment where resources will be created (defaults to tenancy if not specified)"
   type        = string
+  default     = ""
 }
 
 variable "vcn_id" {
-  description = "OCID of the VCN where the instance will be created"
+  description = "OCID of existing VCN (leave empty to create new VCN)"
   type        = string
+  default     = ""
 }
 
 variable "subnet_id" {
-  description = "OCID of the subnet where the instance will be created"
+  description = "OCID of existing subnet (leave empty to create new subnet)"
   type        = string
+  default     = ""
 }
 
 variable "vcn_cidr" {
-  description = "CIDR block of the VCN (for security list rules)"
+  description = "CIDR block of the VCN (used when creating new VCN)"
   type        = string
   default     = "10.0.0.0/16"
+}
+
+variable "subnet_cidr" {
+  description = "CIDR block of the subnet (used when creating new subnet)"
+  type        = string
+  default     = "10.0.1.0/24"
 }
 
 variable "project_name" {

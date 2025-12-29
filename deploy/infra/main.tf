@@ -10,42 +10,134 @@ terraform {
 }
 
 provider "oci" {
-  tenancy_ocid     = var.tenancy_ocid
-  user_ocid        = var.user_ocid
-  fingerprint      = var.fingerprint
-  private_key_path = var.private_key_path
-  region           = var.region
+  # Cloud Shell automatically uses DEFAULT profile from ~/.oci/config
+  # No authentication variables needed when running from Cloud Shell!
+  config_file_profile = var.use_cli_config ? var.cli_config_profile : null
+  tenancy_ocid        = var.use_cli_config ? null : var.tenancy_ocid
+  user_ocid           = var.use_cli_config ? null : var.user_ocid
+  fingerprint         = var.use_cli_config ? null : var.fingerprint
+  private_key_path     = var.use_cli_config ? null : var.private_key_path
+  region               = var.region
+}
+
+# Get tenancy OCID - in Cloud Shell, get it easily with OCI CLI
+locals {
+  # In Cloud Shell, users can get tenancy_ocid with: oci iam tenancy get --query 'data.id' --raw-output
+  tenancy_ocid = var.tenancy_ocid
 }
 
 # Get availability domains
 data "oci_identity_availability_domains" "ads" {
-  compartment_id = var.tenancy_ocid
+  compartment_id = local.tenancy_ocid
 }
 
 # Get the first availability domain
 data "oci_identity_availability_domain" "ad" {
-  compartment_id = var.tenancy_ocid
+  compartment_id = local.tenancy_ocid
   ad_number      = 1
 }
 
-# Get compartment
+# Get compartment (use tenancy if compartment not specified)
 data "oci_identity_compartment" "compartment" {
-  id = var.compartment_ocid
+  id = var.compartment_ocid != "" ? var.compartment_ocid : local.tenancy_ocid
 }
 
-# Get VCN
-data "oci_core_vcn" "vcn" {
+# Use existing VCN or create new one
+data "oci_core_vcn" "existing_vcn" {
+  count  = var.vcn_id != "" ? 1 : 0
   vcn_id = var.vcn_id
 }
 
-# Get subnet
-data "oci_core_subnet" "subnet" {
+# Create VCN if not provided
+resource "oci_core_vcn" "vcn" {
+  count = var.vcn_id == "" ? 1 : 0
+
+  compartment_id = local.compartment_id
+  cidr_blocks    = [var.vcn_cidr]
+  display_name   = "${var.project_name}-pr-preview-vcn"
+  dns_label      = "${replace(var.project_name, "-", "")}prpreview"
+
+  freeform_tags = {
+    "Project"   = var.project_name
+    "ManagedBy" = "Terraform"
+  }
+}
+
+# Get internet gateway for VCN
+data "oci_core_internet_gateways" "existing_igw" {
+  count   = var.vcn_id != "" ? 1 : 0
+  vcn_id  = var.vcn_id
+  state   = "AVAILABLE"
+}
+
+# Create internet gateway if VCN is new
+resource "oci_core_internet_gateway" "igw" {
+  count = var.vcn_id == "" ? 1 : 0
+
+  compartment_id = local.compartment_id
+  vcn_id         = oci_core_vcn.vcn[0].id
+  display_name   = "${var.project_name}-pr-preview-igw"
+  enabled        = true
+
+  freeform_tags = {
+    "Project"   = var.project_name
+    "ManagedBy" = "Terraform"
+  }
+}
+
+# Get default route table
+data "oci_core_route_tables" "existing_route_table" {
+  count  = var.vcn_id != "" ? 1 : 0
+  vcn_id = var.vcn_id
+}
+
+# Create default route table with internet gateway route
+resource "oci_core_default_route_table" "route_table" {
+  count = var.vcn_id == "" ? 1 : 0
+
+  manage_default_resource_id = oci_core_vcn.vcn[0].default_route_table_id
+
+  route_rules {
+    network_entity_id = oci_core_internet_gateway.igw[0].id
+    destination       = "0.0.0.0/0"
+    destination_type  = "CIDR_BLOCK"
+  }
+}
+
+# Use existing subnet or create new one
+data "oci_core_subnet" "existing_subnet" {
+  count     = var.subnet_id != "" ? 1 : 0
   subnet_id = var.subnet_id
+}
+
+# Create subnet if not provided
+resource "oci_core_subnet" "subnet" {
+  count = var.subnet_id == "" ? 1 : 0
+
+  compartment_id    = local.compartment_id
+  vcn_id            = local.vcn_id
+  cidr_block        = var.subnet_cidr
+  display_name       = "${var.project_name}-pr-preview-subnet"
+  dns_label          = "${replace(var.project_name, "-", "")}prpreview"
+  security_list_ids  = [oci_core_security_list.pr_preview_security_list.id]
+  route_table_id     = var.vcn_id != "" ? data.oci_core_route_tables.existing_route_table[0].route_tables[0].id : oci_core_vcn.vcn[0].default_route_table_id
+
+  freeform_tags = {
+    "Project"   = var.project_name
+    "ManagedBy" = "Terraform"
+  }
+}
+
+# Local values for VCN and subnet IDs
+locals {
+  vcn_id         = var.vcn_id != "" ? var.vcn_id : oci_core_vcn.vcn[0].id
+  subnet_id      = var.subnet_id != "" ? var.subnet_id : oci_core_subnet.subnet[0].id
+  compartment_id = var.compartment_ocid != "" ? var.compartment_ocid : local.tenancy_ocid
 }
 
 # Get image for Ubuntu
 data "oci_core_images" "ubuntu_images" {
-  compartment_id           = var.compartment_ocid
+  compartment_id           = local.compartment_id
   operating_system         = "Canonical Ubuntu"
   operating_system_version = "22.04"
   shape                    = var.instance_shape
@@ -62,8 +154,8 @@ data "oci_core_shape" "shape" {
 
 # Create security list for PR preview VM
 resource "oci_core_security_list" "pr_preview_security_list" {
-  compartment_id = var.compartment_ocid
-  vcn_id         = var.vcn_id
+  compartment_id = local.compartment_id
+  vcn_id         = local.vcn_id
   display_name   = "${var.project_name}-pr-preview-security-list"
 
   # Allow SSH
@@ -124,7 +216,7 @@ resource "oci_core_security_list" "pr_preview_security_list" {
 
 # Create compute instance
 resource "oci_core_instance" "pr_preview_vm" {
-  compartment_id      = var.compartment_ocid
+  compartment_id      = local.compartment_id
   availability_domain = data.oci_identity_availability_domain.ad.name
   display_name         = "${var.project_name}-pr-preview-vm"
   shape                = var.instance_shape
@@ -135,7 +227,7 @@ resource "oci_core_instance" "pr_preview_vm" {
   }
 
   create_vnic_details {
-    subnet_id        = var.subnet_id
+    subnet_id        = local.subnet_id
     assign_public_ip = true
     display_name     = "${var.project_name}-pr-preview-vnic"
     hostname_label   = "${var.project_name}-pr-preview"
@@ -166,7 +258,7 @@ resource "oci_core_instance" "pr_preview_vm" {
 resource "oci_core_volume" "pr_preview_storage" {
   count = var.create_additional_storage ? 1 : 0
 
-  compartment_id      = var.compartment_ocid
+  compartment_id      = local.compartment_id
   availability_domain = data.oci_identity_availability_domain.ad.name
   display_name         = "${var.project_name}-pr-preview-storage"
   size_in_gbs         = var.additional_storage_size_gb

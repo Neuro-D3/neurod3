@@ -33,6 +33,16 @@ output "volume_id" {
   value       = var.create_additional_storage ? oci_core_volume.pr_preview_storage[0].id : null
 }
 
+output "vcn_id" {
+  description = "OCID of the VCN (created or existing)"
+  value       = local.vcn_id
+}
+
+output "subnet_id" {
+  description = "OCID of the subnet (created or existing)"
+  value       = local.subnet_id
+}
+
 output "setup_instructions" {
   description = "Instructions for setting up the VM"
   value = <<-EOT
