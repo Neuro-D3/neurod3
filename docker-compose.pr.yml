@@ -1,0 +1,177 @@
+version: '3.8'
+
+# PR-scoped Docker Compose configuration
+# This file is used for PR preview environments
+# Usage: docker compose -p pr-<PR_NUMBER> -f docker-compose.pr.yml up -d --build
+#
+# Key differences from docker-compose.yml:
+# - No port bindings (all services are internal, accessed via reverse proxy)
+# - Isolated networks per PR (via project name prefix)
+# - Project-scoped volumes (via project name prefix)
+
+x-airflow-common:
+  &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./config:/opt/airflow/config
+  networks:
+    - pr-network
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    postgres:
+      condition: service_started
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+      - ./database/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - pr-network
+    restart: always
+    # No ports exposed - internal only
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    networks:
+      - pr-network
+    restart: always
+    # Internal port 8080, accessed via reverse proxy
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    networks:
+      - pr-network
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        if [[ -z "$${AIRFLOW_UID}" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
+          echo "If you are on Linux, you SHOULD follow the instructions below to set "
+          echo "AIRFLOW_UID environment variable, otherwise files will be owned by root."
+          echo "For other operating systems you can safely ignore this warning!"
+          echo
+        fi
+        mkdir -p /sources/logs /sources/dags /sources/plugins
+        chown -R "$${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        /entrypoint airflow db migrate
+        /entrypoint airflow users create \
+          --username $${_AIRFLOW_WWW_USER_USERNAME} \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com \
+          --password $${_AIRFLOW_WWW_USER_PASSWORD} || true
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+      _PIP_ADDITIONAL_REQUIREMENTS: ''
+    user: "0:0"
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}:/sources
+    networks:
+      - pr-network
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
+    networks:
+      - pr-network
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      - ./database/pgadmin-servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      - postgres
+    restart: always
+    # Internal port 80, accessed via reverse proxy
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    networks:
+      - pr-network
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=dag_data
+      - DB_USER=airflow
+      - DB_PASSWORD=airflow
+    depends_on:
+      - postgres
+    restart: always
+    # Internal port 8000, accessed via reverse proxy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    networks:
+      - pr-network
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      # API URL for PR previews - will be set by GitHub Actions workflow
+      # Format: https://pr-<NUMBER>.api.<DOMAIN>
+      - REACT_APP_API_URL=${REACT_APP_API_URL:-http://api:8000}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - postgres
+      - api
+    restart: always
+    # Internal port 3000, accessed via reverse proxy
+
+networks:
+  pr-network:
+    driver: bridge
+    # Network name will be prefixed with project name (pr-<NUMBER>)
+
+volumes:
+  postgres-db-volume:
+    # Volume name will be prefixed with project name (pr-<NUMBER>)
+  pgadmin-data:
+    # Volume name will be prefixed with project name (pr-<NUMBER>)
+

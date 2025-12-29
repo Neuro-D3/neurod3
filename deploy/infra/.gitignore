@@ -1,0 +1,24 @@
+# Terraform files
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+*.tfvars.backup
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# OCI keys (if stored locally)
+*.pem
+*.key
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+

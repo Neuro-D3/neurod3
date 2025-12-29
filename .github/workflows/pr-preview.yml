@@ -1,0 +1,311 @@
+name: PR Preview Environment
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled, unlabeled, closed]
+  workflow_dispatch:
+
+jobs:
+  validate-pr:
+    name: Validate PR
+    runs-on: self-hosted
+    if: |
+      (github.event.action == 'labeled' && github.event.label.name == 'deploy-preview') ||
+      (github.event.action == 'unlabeled' && github.event.label.name == 'deploy-preview') ||
+      (github.event.action == 'opened' && contains(github.event.pull_request.labels.*.name, 'deploy-preview')) ||
+      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'deploy-preview')) ||
+      (github.event.action == 'closed')
+    outputs:
+      pr_number: ${{ steps.get-pr.outputs.number }}
+      is_fork: ${{ steps.check-fork.outputs.is_fork }}
+      is_collaborator: ${{ steps.check-collaborator.outputs.is_collaborator }}
+      should_deploy: ${{ steps.decide.outputs.should_deploy }}
+      should_teardown: ${{ steps.decide.outputs.should_teardown }}
+    steps:
+      - name: Get PR number
+        id: get-pr
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "PR Number: $PR_NUMBER"
+
+      - name: Check if PR is from fork
+        id: check-fork
+        run: |
+          HEAD_REPO="${{ github.event.pull_request.head.repo.full_name }}"
+          BASE_REPO="${{ github.repository }}"
+          if [ "$HEAD_REPO" != "$BASE_REPO" ]; then
+            echo "is_fork=true" >> $GITHUB_OUTPUT
+            echo "⚠️ PR is from a fork: $HEAD_REPO"
+          else
+            echo "is_fork=false" >> $GITHUB_OUTPUT
+            echo "✓ PR is from same repository"
+          fi
+
+      - name: Check if actor is collaborator
+        id: check-collaborator
+        if: steps.check-fork.outputs.is_fork == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ACTOR="${{ github.actor }}"
+          REPO="${{ github.repository }}"
+          
+          # Check if user has write access (collaborator)
+          RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$REPO/collaborators/$ACTOR")
+          
+          PERMISSION=$(echo "$RESPONSE" | jq -r '.permissions.push // false')
+          
+          if [ "$PERMISSION" = "true" ]; then
+            echo "is_collaborator=true" >> $GITHUB_OUTPUT
+            echo "✓ Actor $ACTOR is a collaborator"
+          else
+            echo "is_collaborator=false" >> $GITHUB_OUTPUT
+            echo "✗ Actor $ACTOR is not a collaborator"
+          fi
+
+      - name: Decide action
+        id: decide
+        run: |
+          PR_NUMBER="${{ steps.get-pr.outputs.number }}"
+          IS_FORK="${{ steps.check-fork.outputs.is_fork }}"
+          IS_COLLABORATOR="${{ steps.check-collaborator.outputs.is_collaborator }}"
+          ACTION="${{ github.event.action }}"
+          LABEL_NAME="${{ github.event.label.name }}"
+          
+          SHOULD_DEPLOY=false
+          SHOULD_TEARDOWN=false
+          
+          # Only deploy if not a fork and is a collaborator
+          if [ "$IS_FORK" = "false" ] && [ "$IS_COLLABORATOR" = "true" ]; then
+            if [ "$ACTION" = "labeled" ] && [ "$LABEL_NAME" = "deploy-preview" ]; then
+              SHOULD_DEPLOY=true
+            elif [ "$ACTION" = "opened" ] || [ "$ACTION" = "synchronize" ]; then
+              # Check if label exists
+              if echo "${{ toJSON(github.event.pull_request.labels) }}" | grep -q "deploy-preview"; then
+                SHOULD_DEPLOY=true
+              fi
+            fi
+          fi
+          
+          # Teardown on label removal or PR close
+          if [ "$ACTION" = "unlabeled" ] && [ "$LABEL_NAME" = "deploy-preview" ]; then
+            SHOULD_TEARDOWN=true
+          elif [ "$ACTION" = "closed" ]; then
+            SHOULD_TEARDOWN=true
+          fi
+          
+          echo "should_deploy=$SHOULD_DEPLOY" >> $GITHUB_OUTPUT
+          echo "should_teardown=$SHOULD_TEARDOWN" >> $GITHUB_OUTPUT
+          
+          echo "Deploy: $SHOULD_DEPLOY"
+          echo "Teardown: $SHOULD_TEARDOWN"
+
+  cleanup-other-prs:
+    name: Cleanup Other PR Previews
+    runs-on: self-hosted
+    needs: validate-pr
+    if: needs.validate-pr.outputs.should_deploy == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find and cleanup other PRs with deploy-preview label
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT_PR: ${{ needs.validate-pr.outputs.pr_number }}
+        run: |
+          REPO="${{ github.repository }}"
+          CURRENT_PR_NUMBER="$CURRENT_PR"
+          DOMAIN="${{ vars.DOMAIN || 'preview.example.com' }}"
+          CADDY_API_URL="${{ vars.CADDY_API_URL || 'http://localhost:2019' }}"
+          
+          echo "Checking for other PRs with deploy-preview label..."
+          
+          # Get all open PRs with deploy-preview label
+          PRS_WITH_LABEL=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$REPO/pulls?state=open&per_page=100" | \
+            jq -r ".[] | select(.number != $CURRENT_PR_NUMBER) | select(.labels[]?.name == \"deploy-preview\") | .number")
+          
+          if [ -z "$PRS_WITH_LABEL" ]; then
+            echo "No other PRs with deploy-preview label found"
+            exit 0
+          fi
+          
+          echo "Found other PRs with deploy-preview label: $PRS_WITH_LABEL"
+          
+          # For each PR, remove label and tear down
+          for PR_NUMBER in $PRS_WITH_LABEL; do
+            echo "Cleaning up PR #$PR_NUMBER..."
+            
+            # Remove deploy-preview label
+            curl -X DELETE \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels/deploy-preview" || true
+            
+            echo "Removed deploy-preview label from PR #$PR_NUMBER"
+            
+            # Tear down the environment
+            PROJECT_NAME="pr-$PR_NUMBER"
+            
+            # Remove Caddy routes
+            if [ -f deploy/scripts/remove-routes.sh ]; then
+              chmod +x deploy/scripts/remove-routes.sh
+              ./deploy/scripts/remove-routes.sh "$PR_NUMBER" "$DOMAIN" || {
+                echo "Failed to remove routes for PR #$PR_NUMBER, but continuing..."
+              }
+            fi
+            
+            # Stop and remove containers
+            docker compose -p "$PROJECT_NAME" -f docker-compose.pr.yml down -v || {
+              echo "Failed to tear down PR #$PR_NUMBER, but continuing..."
+            }
+            
+            echo "✓ Cleaned up PR #$PR_NUMBER"
+            
+            # Comment on the PR
+            curl -X POST \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
+              -d "{\"body\":\"## 🔄 PR Preview Environment Removed\\n\\nThe \`deploy-preview\` label was removed from this PR because another PR (#$CURRENT_PR_NUMBER) now has the label. Only one PR can have a preview environment active at a time.\\n\\n---\\n*Automated cleanup by GitHub Actions*\"}" || true
+          done
+          
+          echo "✓ Cleanup complete"
+
+  deploy:
+    name: Deploy PR Preview
+    runs-on: self-hosted
+    needs: [validate-pr, cleanup-other-prs]
+    if: needs.validate-pr.outputs.should_deploy == 'true'
+    environment:
+      name: pr-preview
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up environment
+        run: |
+          PR_NUMBER="${{ needs.validate-pr.outputs.pr_number }}"
+          DOMAIN="${{ vars.DOMAIN || 'preview.example.com' }}"
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          echo "DOMAIN=$DOMAIN" >> $GITHUB_ENV
+          echo "PROJECT_NAME=pr-$PR_NUMBER" >> $GITHUB_ENV
+
+      - name: Build and deploy
+        env:
+          REACT_APP_API_URL: https://pr-${{ needs.validate-pr.outputs.pr_number }}.api.${{ env.DOMAIN }}
+        run: |
+          echo "Building and deploying PR #$PR_NUMBER..."
+          docker compose -p "$PROJECT_NAME" -f docker-compose.pr.yml up -d --build
+          
+          echo "Waiting for services to start..."
+          sleep 10
+
+      - name: Health check
+        run: |
+          chmod +x deploy/scripts/health-check.sh
+          ./deploy/scripts/health-check.sh "$PR_NUMBER" || {
+            echo "Health check failed, but continuing..."
+          }
+
+      - name: Register Caddy routes
+        env:
+          CADDY_API_URL: ${{ vars.CADDY_API_URL || 'http://localhost:2019' }}
+        run: |
+          chmod +x deploy/scripts/register-routes.sh
+          ./deploy/scripts/register-routes.sh "$PR_NUMBER" "$DOMAIN"
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.validate-pr.outputs.pr_number }}
+          DOMAIN: ${{ env.DOMAIN }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = process.env.PR_NUMBER;
+            const domain = process.env.DOMAIN;
+            
+            const comment = `## 🚀 PR Preview Environment Deployed
+            
+            Your preview environment is now available at:
+            
+            - **Airflow**: https://pr-${prNumber}.airflow.${domain}
+            - **Frontend App**: https://pr-${prNumber}.app.${domain}
+            - **API**: https://pr-${prNumber}.api.${domain}
+            - **pgAdmin**: https://pr-${prNumber}.pgadmin.${domain}
+            
+            > **Note**: This environment will be automatically torn down when the PR is closed or the \`deploy-preview\` label is removed. Only one PR can have a preview environment active at a time.
+            
+            ---
+            *Deployed by GitHub Actions*`;
+            
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  teardown:
+    name: Teardown PR Preview
+    runs-on: self-hosted
+    needs: validate-pr
+    if: needs.validate-pr.outputs.should_teardown == 'true'
+    steps:
+      - name: Set up environment
+        run: |
+          PR_NUMBER="${{ needs.validate-pr.outputs.pr_number }}"
+          DOMAIN="${{ vars.DOMAIN || 'preview.example.com' }}"
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          echo "DOMAIN=$DOMAIN" >> $GITHUB_ENV
+          echo "PROJECT_NAME=pr-$PR_NUMBER" >> $GITHUB_ENV
+
+      - name: Remove Caddy routes
+        env:
+          CADDY_API_URL: ${{ vars.CADDY_API_URL || 'http://localhost:2019' }}
+        run: |
+          chmod +x deploy/scripts/remove-routes.sh
+          ./deploy/scripts/remove-routes.sh "$PR_NUMBER" || {
+            echo "Failed to remove routes, but continuing..."
+          }
+
+      - name: Stop and remove containers
+        run: |
+          echo "Tearing down PR #$PR_NUMBER..."
+          docker compose -p "$PROJECT_NAME" -f docker-compose.pr.yml down -v || {
+            echo "Failed to tear down, but continuing..."
+          }
+
+      - name: Comment on PR
+        if: github.event.action == 'closed'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.validate-pr.outputs.pr_number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = process.env.PR_NUMBER;
+            
+            const comment = `## 🧹 PR Preview Environment Removed
+            
+            The preview environment for this PR has been torn down and all resources have been cleaned up.
+            
+            ---
+            *Cleaned up by GitHub Actions*`;
+            
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+

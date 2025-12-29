@@ -1,0 +1,18 @@
+# Caddy Reverse Proxy Configuration for PR Preview Environments
+# This is the base Caddyfile. Dynamic routes are added via the admin API.
+
+{
+	# Enable admin API for dynamic configuration
+	admin localhost:2019
+	# Enable automatic HTTPS
+	auto_https off
+}
+
+# Default catch-all for unmatched domains
+:80 {
+	respond "No PR preview environment found" 404
+}
+
+# HTTPS will be handled automatically by Caddy
+# Dynamic routes are added via the admin API using the scripts in deploy/scripts/
+

@@ -1,0 +1,34 @@
+version: '3.8'
+
+# Caddy reverse proxy service
+# This runs alongside PR environments to route traffic
+
+services:
+  caddy:
+    image: caddy:latest
+    container_name: caddy-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "2019:2019"  # Admin API
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - caddy-network
+    restart: always
+    # Connect to all PR networks dynamically
+    # This is handled by the route registration scripts
+
+networks:
+  caddy-network:
+    driver: bridge
+    name: caddy-network
+
+volumes:
+  caddy_data:
+    # Caddy data for certificates
+  caddy_config:
+    # Caddy configuration
+

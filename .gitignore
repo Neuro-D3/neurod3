@@ -26,3 +26,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Terraform
+deploy/infra/*.tfstate
+deploy/infra/*.tfstate.*
+deploy/infra/.terraform/
+deploy/infra/.terraform.lock.hcl
+deploy/infra/terraform.tfvars
+deploy/infra/*.tfvars.backup
+deploy/infra/crash.log
+
