@@ -171,7 +171,7 @@ with DAG(
     'database_example_dag',
     default_args=default_args,
     description='Example DAG demonstrating database operations with environment detection',
-    schedule_interval=timedelta(hours=1),
+    schedule=timedelta(hours=1),
     start_date=datetime(2024, 1, 1),
     catchup=False,
     tags=['database', 'example'],

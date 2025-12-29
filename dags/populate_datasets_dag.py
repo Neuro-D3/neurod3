@@ -24,7 +24,7 @@ dag = DAG(
     'populate_neuroscience_datasets',
     default_args=default_args,
     description='Populate neuroscience datasets from external sources',
-    schedule_interval='@daily',
+    schedule='@daily',
     catchup=False,
     tags=['datasets', 'neuroscience'],
     is_paused_upon_creation=False,
