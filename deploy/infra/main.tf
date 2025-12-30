@@ -140,14 +140,14 @@ locals {
   subnet_id = var.subnet_id != "" ? var.subnet_id : oci_core_subnet.subnet[0].id
 }
 
-# Get image for Ubuntu
+# Get image for Ubuntu 22.04
+# Query from tenancy compartment where platform images are available
 data "oci_core_images" "ubuntu_images" {
-  compartment_id           = local.compartment_id
+  compartment_id           = local.tenancy_ocid
   operating_system         = "Canonical Ubuntu"
   operating_system_version = "22.04"
-  shape                    = var.instance_shape
-  sort_by                 = "TIMECREATED"
-  sort_order              = "DESC"
+  sort_by                  = "TIMECREATED"
+  sort_order               = "DESC"
 }
 
 # Shape validation is done implicitly when creating the instance
@@ -236,6 +236,7 @@ resource "oci_core_instance" "pr_preview_vm" {
 
   source_details {
     source_type = "image"
+    # Get the latest Ubuntu 22.04 image
     source_id   = data.oci_core_images.ubuntu_images.images[0].id
   }
 
