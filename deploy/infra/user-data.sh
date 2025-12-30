@@ -24,8 +24,8 @@ apt-get install -y \
     lsb-release
 
 # Create project directory
-mkdir -p /opt/${PROJECT_NAME}
-mkdir -p /opt/${PROJECT_NAME}/logs
+mkdir -p /opt/${project_name}
+mkdir -p /opt/${project_name}/logs
 
 # Set up log file
 exec > >(tee -a /var/log/user-data.log)
