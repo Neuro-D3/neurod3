@@ -44,18 +44,17 @@ data "oci_identity_availability_domain" "ad" {
 # Local for availability domain name with fallbacks
 locals {
   # Use provided AD if specified, otherwise try to auto-detect
-  availability_domain_name = var.availability_domain != "" ? var.availability_domain : (
-    # Try single AD data source first
-    try(data.oci_identity_availability_domain.ad.name, 
-      # Then try list data source
-      try(
-        length(data.oci_identity_availability_domains.ads.availability_domains) > 0 ? 
-        data.oci_identity_availability_domains.ads.availability_domains[0].name : 
-        null,
-        # Final fallback: construct from region (format: region-AD-1)
-        "${var.region}-AD-1"
-      )
-    )
+  # Always ensure we have a valid value - use region-based fallback if all else fails
+  availability_domain_name = coalesce(
+    var.availability_domain != "" ? var.availability_domain : null,
+    try(data.oci_identity_availability_domain.ad.name, null),
+    try(
+      length(data.oci_identity_availability_domains.ads.availability_domains) > 0 ? 
+      data.oci_identity_availability_domains.ads.availability_domains[0].name : 
+      null,
+      null
+    ),
+    "${var.region}-AD-1"  # Final fallback: construct from region
   )
 }
 
@@ -77,7 +76,7 @@ resource "oci_core_vcn" "vcn" {
   compartment_id = local.compartment_id
   cidr_blocks    = [var.vcn_cidr]
   display_name   = "${var.project_name}-pr-preview-vcn"
-  dns_label      = "${replace(var.project_name, "-", "")}prpreview"
+  dns_label      = substr("${replace(var.project_name, "-", "")}prpreview", 0, 15)
 
   freeform_tags = {
     "Project"   = var.project_name
@@ -142,7 +141,7 @@ resource "oci_core_subnet" "subnet" {
   vcn_id            = local.vcn_id
   cidr_block        = var.subnet_cidr
   display_name       = "${var.project_name}-pr-preview-subnet"
-  dns_label          = "${replace(var.project_name, "-", "")}prpreview"
+  dns_label          = substr("${replace(var.project_name, "-", "")}prpreview", 0, 15)
   security_list_ids  = [oci_core_security_list.pr_preview_security_list.id]
   route_table_id     = var.vcn_id != "" ? data.oci_core_route_tables.existing_route_table[0].route_tables[0].id : oci_core_vcn.vcn[0].default_route_table_id
 

@@ -55,7 +55,7 @@ nano terraform.tfvars
 
 **Minimum configuration** (just 3 things!):
 ```hcl
-region = "us-ashburn-1"  # Your region
+region = "us-sanjose-1"  # Your region
 
 tenancy_ocid = "ocid1.tenancy.oc1..aaaaaaa..."  # From step 4
 
@@ -116,7 +116,7 @@ Your VM is ready. Now follow the setup instructions from the main README to inst
 - Cloud Shell should be auto-authenticated. Try refreshing the Cloud Shell.
 
 **"Region not found"**
-- Check you're using the correct region code (e.g., `us-ashburn-1`, `us-phoenix-1`)
+- Check you're using the correct region code (e.g., `us-sanjose-1`, `us-phoenix-1`)
 
 **"SSH connection refused"**
 - Wait 2-3 minutes after `terraform apply` for the instance to fully boot

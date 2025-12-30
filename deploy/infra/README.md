@@ -58,7 +58,7 @@ If you have OCI CLI configured, Terraform will use it automatically. Otherwise, 
    ```
 
 2. Edit `terraform.tfvars` and fill in the minimum required:
-   - **region**: Your OCI region (e.g., `us-ashburn-1`)
+   - **region**: Your OCI region (e.g., `us-sanjose-1`)
    - **ssh_public_key**: Your SSH public key content
 
 3. **Optional**: If you have an existing VCN and subnet, uncomment and add:
@@ -162,7 +162,7 @@ terraform destroy
 
 | Variable | Description | Notes |
 |---------|-------------|-------|
-| `region` | OCI region | e.g., `us-ashburn-1`, `us-phoenix-1` |
+| `region` | OCI region | e.g., `us-sanjose-1`, `us-phoenix-1` |
 | `ssh_public_key` | SSH public key content | Get with: `cat ~/.ssh/id_rsa.pub` |
 
 ### Optional Variables (with defaults)

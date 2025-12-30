@@ -23,18 +23,31 @@ cat ~/.ssh/oci_key.pub
 ```
 Copy the output.
 
-## 3. Configure Terraform
+## 3. Get Ubuntu Image OCID (if auto-detection fails)
+
+**From OCI Console:**
+1. Go to **Compute** > **Images**
+2. Filter by: **Operating System** = "Canonical Ubuntu", **Version** = "22.04"
+3. Copy the **OCID** of the image
+
+**Or try this in Cloud Shell:**
+```bash
+oci compute image list --compartment-id <your-tenancy-ocid> --operating-system "Canonical Ubuntu" --limit 10 --query 'data[?contains(operating_system_version, `22.04`)].id | [0]' --raw-output
+```
+
+## 4. Configure Terraform
 ```bash
 cd deploy/infra
 cp terraform.tfvars.example terraform.tfvars
 nano terraform.tfvars
 ```
 
-Fill in just these 3 values:
+Fill in these values:
 ```hcl
-region = "us-ashburn-1"  # Your region
+region = "us-sanjose-1"  # Your region
 tenancy_ocid = "ocid1.tenancy.oc1..aaaaaaa..."  # From step 1
 ssh_public_key = "ssh-rsa AAAAB3..."  # From step 2
+# image_id = "ocid1.image.oc1.iad.aaaaaaa..."  # Uncomment and add if auto-detection fails
 ```
 
 Save and exit (Ctrl+X, Y, Enter).
@@ -44,19 +57,19 @@ Save and exit (Ctrl+X, Y, Enter).
 mv terraform.tfvars.example terraform.tfvars
 ```
 
-## 4. Run Terraform
+## 5. Run Terraform
 ```bash
 terraform init
 terraform apply
 ```
 Type `yes` when prompted.
 
-## 5. Get Instance IP
+## 6. Get Instance IP
 ```bash
 terraform output instance_public_ip
 ```
 
-## 6. SSH to Instance
+## 7. SSH to Instance
 ```bash
 ssh -i ~/.ssh/oci_key ubuntu@<ip-from-step-5>
 ```
