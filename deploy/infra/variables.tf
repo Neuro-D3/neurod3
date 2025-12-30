@@ -92,6 +92,12 @@ variable "image_id" {
   default     = ""
 }
 
+variable "availability_domain" {
+  description = "Availability domain name (optional - will auto-detect if not provided, e.g., 'AD-1', 'us-sanjose-1-AD-1')"
+  type        = string
+  default     = ""
+}
+
 variable "instance_ocpus" {
   description = "Number of OCPUs for the instance"
   type        = number

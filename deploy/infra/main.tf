@@ -35,10 +35,28 @@ data "oci_identity_availability_domains" "ads" {
   compartment_id = local.tenancy_ocid
 }
 
-# Get the first availability domain
+# Get the first availability domain (try both approaches)
 data "oci_identity_availability_domain" "ad" {
   compartment_id = local.tenancy_ocid
   ad_number      = 1
+}
+
+# Local for availability domain name with fallbacks
+locals {
+  # Use provided AD if specified, otherwise try to auto-detect
+  availability_domain_name = var.availability_domain != "" ? var.availability_domain : (
+    # Try single AD data source first
+    try(data.oci_identity_availability_domain.ad.name, 
+      # Then try list data source
+      try(
+        length(data.oci_identity_availability_domains.ads.availability_domains) > 0 ? 
+        data.oci_identity_availability_domains.ads.availability_domains[0].name : 
+        null,
+        # Final fallback: construct from region (format: region-AD-1)
+        "${var.region}-AD-1"
+      )
+    )
+  )
 }
 
 # Get compartment (use tenancy if compartment not specified)
@@ -228,7 +246,7 @@ resource "oci_core_security_list" "pr_preview_security_list" {
 # Create compute instance
 resource "oci_core_instance" "pr_preview_vm" {
   compartment_id      = local.compartment_id
-  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
+  availability_domain = local.availability_domain_name
   display_name         = "${var.project_name}-pr-preview-vm"
   shape                = var.instance_shape
 
@@ -271,7 +289,7 @@ resource "oci_core_volume" "pr_preview_storage" {
   count = var.create_additional_storage ? 1 : 0
 
   compartment_id      = local.compartment_id
-  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
+  availability_domain = local.availability_domain_name
   display_name         = "${var.project_name}-pr-preview-storage"
   size_in_gbs         = var.additional_storage_size_gb
   vpus_per_gb         = var.storage_vpus_per_gb
