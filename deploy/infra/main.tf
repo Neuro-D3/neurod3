@@ -228,7 +228,7 @@ resource "oci_core_security_list" "pr_preview_security_list" {
 # Create compute instance
 resource "oci_core_instance" "pr_preview_vm" {
   compartment_id      = local.compartment_id
-  availability_domain = data.oci_identity_availability_domain.ad.name
+  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
   display_name         = "${var.project_name}-pr-preview-vm"
   shape                = var.instance_shape
 
@@ -271,7 +271,7 @@ resource "oci_core_volume" "pr_preview_storage" {
   count = var.create_additional_storage ? 1 : 0
 
   compartment_id      = local.compartment_id
-  availability_domain = data.oci_identity_availability_domain.ad.name
+  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
   display_name         = "${var.project_name}-pr-preview-storage"
   size_in_gbs         = var.additional_storage_size_gb
   vpus_per_gb         = var.storage_vpus_per_gb
