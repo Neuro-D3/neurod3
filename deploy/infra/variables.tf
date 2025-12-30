@@ -86,6 +86,12 @@ variable "instance_shape" {
   default     = "VM.Standard.E4.Flex"
 }
 
+variable "image_id" {
+  description = "OCID of the image to use (optional - will auto-detect Ubuntu 22.04 if not provided)"
+  type        = string
+  default     = ""
+}
+
 variable "instance_ocpus" {
   description = "Number of OCPUs for the instance"
   type        = number
