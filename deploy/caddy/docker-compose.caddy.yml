@@ -32,3 +32,4 @@ volumes:
   caddy_config:
     # Caddy configuration
 
+

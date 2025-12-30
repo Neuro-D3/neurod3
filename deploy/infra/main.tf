@@ -155,25 +155,18 @@ resource "oci_core_subnet" "subnet" {
 locals {
   vcn_id    = var.vcn_id != "" ? var.vcn_id : oci_core_vcn.vcn[0].id
   subnet_id = var.subnet_id != "" ? var.subnet_id : oci_core_subnet.subnet[0].id
-  
-  # Dynamically select the newest shape-compatible Ubuntu 22.04 image
-  # The data source filters by shape compatibility automatically
-  image_id = data.oci_core_images.ubuntu_images.images[0].id
 }
 
-# Get Ubuntu 22.04 image compatible with VM.Standard.E4.Flex (x86_64)
-# Platform images are compatible with all standard x86_64 shapes
-# Query from tenancy compartment where platform images are available
-data "oci_core_images" "ubuntu_images" {
-  compartment_id           = local.tenancy_ocid
+# Get Ubuntu 22.04 image compatible with the specified shape
+# Filtering by shape ensures we get an image that works with VM.Standard.E4.Flex
+data "oci_core_images" "ubuntu_2204" {
+  compartment_id           = local.compartment_id
   operating_system         = "Canonical Ubuntu"
   operating_system_version = "22.04"
+  shape                    = var.vm_shape
   sort_by                  = "TIMECREATED"
   sort_order               = "DESC"
 }
-
-# Shape validation is done implicitly when creating the instance
-# No need for a separate data source
 
 # Create security list for PR preview VM
 resource "oci_core_security_list" "pr_preview_security_list" {
@@ -242,7 +235,7 @@ resource "oci_core_instance" "pr_preview_vm" {
   compartment_id      = local.compartment_id
   availability_domain = local.availability_domain_name
   display_name         = "${var.project_name}-pr-preview-vm"
-  shape                = var.instance_shape
+  shape                = var.vm_shape
 
   shape_config {
     ocpus         = 4
@@ -258,8 +251,7 @@ resource "oci_core_instance" "pr_preview_vm" {
 
   source_details {
     source_type = "image"
-    # Use local value which handles both provided and auto-detected image IDs
-    source_id = local.image_id
+    source_id   = data.oci_core_images.ubuntu_2204.images[0].id
   }
 
   metadata = {

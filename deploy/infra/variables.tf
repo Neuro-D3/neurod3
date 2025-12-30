@@ -80,7 +80,7 @@ variable "project_name" {
   default     = "neurod3"
 }
 
-variable "instance_shape" {
+variable "vm_shape" {
   description = "Shape of the compute instance"
   type        = string
   default     = "VM.Standard.E4.Flex"
