@@ -1,7 +1,7 @@
 variable "use_cli_config" {
-  description = "Use OCI CLI config file for authentication (recommended)"
+  description = "Use OCI CLI config file for authentication (set to false for Cloud Shell)"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "cli_config_profile" {

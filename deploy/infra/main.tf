@@ -10,14 +10,17 @@ terraform {
 }
 
 provider "oci" {
-  # Cloud Shell automatically uses DEFAULT profile from ~/.oci/config
-  # No authentication variables needed when running from Cloud Shell!
+  # Cloud Shell: authentication is automatic via browser session (no config needed)
+  # Local with CLI config: set use_cli_config = true
+  # Local with API keys: set use_cli_config = false and provide credentials
   config_file_profile = var.use_cli_config ? var.cli_config_profile : null
-  tenancy_ocid        = var.use_cli_config ? null : var.tenancy_ocid
-  user_ocid           = var.use_cli_config ? null : var.user_ocid
-  fingerprint         = var.use_cli_config ? null : var.fingerprint
-  private_key_path     = var.use_cli_config ? null : var.private_key_path
+  tenancy_ocid        = var.use_cli_config ? null : (var.tenancy_ocid != "" ? var.tenancy_ocid : null)
+  user_ocid           = var.use_cli_config ? null : (var.user_ocid != "" ? var.user_ocid : null)
+  fingerprint         = var.use_cli_config ? null : (var.fingerprint != "" ? var.fingerprint : null)
+  private_key_path     = var.use_cli_config ? null : (var.private_key_path != "" ? var.private_key_path : null)
   region               = var.region
+  
+  # In Cloud Shell, if no credentials provided, provider uses instance principal/auth token automatically
 }
 
 # Get tenancy OCID - in Cloud Shell, get it easily with OCI CLI
