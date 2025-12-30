@@ -138,11 +138,21 @@ resource "oci_core_subnet" "subnet" {
 locals {
   vcn_id    = var.vcn_id != "" ? var.vcn_id : oci_core_vcn.vcn[0].id
   subnet_id = var.subnet_id != "" ? var.subnet_id : oci_core_subnet.subnet[0].id
+  
+  # Image ID: use provided one, or auto-detected one
+  # Use try() to safely handle when data source doesn't exist (when image_id is provided)
+  image_id = var.image_id != "" ? var.image_id : try(
+    data.oci_core_images.ubuntu_images[0].images[0].id,
+    "ERROR: Please provide image_id in terraform.tfvars - auto-detection failed"
+  )
 }
 
 # Get image for Ubuntu 22.04
 # Query from tenancy compartment where platform images are available
+# If this fails, user can provide image_id directly in terraform.tfvars
 data "oci_core_images" "ubuntu_images" {
+  count = var.image_id == "" ? 1 : 0
+  
   compartment_id           = local.tenancy_ocid
   operating_system         = "Canonical Ubuntu"
   operating_system_version = "22.04"
@@ -236,8 +246,8 @@ resource "oci_core_instance" "pr_preview_vm" {
 
   source_details {
     source_type = "image"
-    # Get the latest Ubuntu 22.04 image
-    source_id   = data.oci_core_images.ubuntu_images.images[0].id
+    # Use local value which handles both provided and auto-detected image IDs
+    source_id = local.image_id
   }
 
   metadata = {
