@@ -11,10 +11,10 @@ variable "cli_config_profile" {
 }
 
 variable "tenancy_ocid" {
-  description = "OCID of the tenancy (get it in Cloud Shell with: oci iam tenancy get --query 'data.id' --raw-output)"
+  description = "OCID of the tenancy (get it in Cloud Shell with: grep '^tenancy=' ~/.oci/config | cut -d'=' -f2)"
   type        = string
   default     = ""
-  # In Cloud Shell, run: oci iam tenancy get --query 'data.id' --raw-output
+  # In Cloud Shell, run: grep "^tenancy=" ~/.oci/config | cut -d'=' -f2
   # Or find it in: OCI Console > Administration > Tenancy Details
 }
 

@@ -20,8 +20,8 @@ cd <repo-name>/deploy/infra
 Cloud Shell can generate an SSH key for you:
 
 ```bash
-# Generate a new SSH key (no passphrase needed for automation)
-ssh-keygen -t ed25519 -N "" -f ~/.ssh/oci_key
+# Generate a new SSH key (RSA for FIPS compliance, no passphrase needed for automation)
+ssh-keygen -t rsa -b 4096 -N "" -f ~/.ssh/oci_key
 
 # Get the public key
 cat ~/.ssh/oci_key.pub
@@ -29,13 +29,19 @@ cat ~/.ssh/oci_key.pub
 
 ## Step 4: Get Your Tenancy OCID (One-Time)
 
-In Cloud Shell, run this command to get your tenancy OCID:
+**Easiest way - From OCI Console:**
+1. Click the menu (top left) > **Administration** > **Tenancy Details**
+2. Copy the **OCID** (it looks like: `ocid1.tenancy.oc1..aaaaaaa...`)
 
+**Or from Cloud Shell (if config file exists):**
 ```bash
-oci iam tenancy get --query 'data.id' --raw-output
+grep "^tenancy=" ~/.oci/config 2>/dev/null | cut -d'=' -f2
 ```
 
-Copy the output (it looks like: `ocid1.tenancy.oc1..aaaaaaa...`)
+**Or from any compartment:**
+```bash
+oci iam compartment list --all --compartment-id-in-subtree true --limit 1 --query 'data[0].compartment-id' --raw-output
+```
 
 ## Step 5: Configure Terraform
 
@@ -53,7 +59,7 @@ region = "us-ashburn-1"  # Your region
 
 tenancy_ocid = "ocid1.tenancy.oc1..aaaaaaa..."  # From step 4
 
-ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."  # From step 3
+ssh_public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQC..."  # From step 3
 ```
 
 That's it! Cloud Shell automatically handles:

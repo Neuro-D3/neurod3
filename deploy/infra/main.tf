@@ -23,7 +23,8 @@ provider "oci" {
 # Get tenancy OCID - in Cloud Shell, get it easily with OCI CLI
 locals {
   # In Cloud Shell, users can get tenancy_ocid with: oci iam tenancy get --query 'data.id' --raw-output
-  tenancy_ocid = var.tenancy_ocid
+  tenancy_ocid   = var.tenancy_ocid
+  compartment_id = var.compartment_ocid != "" ? var.compartment_ocid : var.tenancy_ocid
 }
 
 # Get availability domains
@@ -65,9 +66,10 @@ resource "oci_core_vcn" "vcn" {
 
 # Get internet gateway for VCN
 data "oci_core_internet_gateways" "existing_igw" {
-  count   = var.vcn_id != "" ? 1 : 0
-  vcn_id  = var.vcn_id
-  state   = "AVAILABLE"
+  count          = var.vcn_id != "" ? 1 : 0
+  compartment_id = local.compartment_id
+  vcn_id         = var.vcn_id
+  state          = "AVAILABLE"
 }
 
 # Create internet gateway if VCN is new
@@ -87,8 +89,9 @@ resource "oci_core_internet_gateway" "igw" {
 
 # Get default route table
 data "oci_core_route_tables" "existing_route_table" {
-  count  = var.vcn_id != "" ? 1 : 0
-  vcn_id = var.vcn_id
+  count          = var.vcn_id != "" ? 1 : 0
+  compartment_id = local.compartment_id
+  vcn_id         = var.vcn_id
 }
 
 # Create default route table with internet gateway route
@@ -130,9 +133,8 @@ resource "oci_core_subnet" "subnet" {
 
 # Local values for VCN and subnet IDs
 locals {
-  vcn_id         = var.vcn_id != "" ? var.vcn_id : oci_core_vcn.vcn[0].id
-  subnet_id      = var.subnet_id != "" ? var.subnet_id : oci_core_subnet.subnet[0].id
-  compartment_id = var.compartment_ocid != "" ? var.compartment_ocid : local.tenancy_ocid
+  vcn_id    = var.vcn_id != "" ? var.vcn_id : oci_core_vcn.vcn[0].id
+  subnet_id = var.subnet_id != "" ? var.subnet_id : oci_core_subnet.subnet[0].id
 }
 
 # Get image for Ubuntu
@@ -145,12 +147,8 @@ data "oci_core_images" "ubuntu_images" {
   sort_order              = "DESC"
 }
 
-# Get shape details
-data "oci_core_shape" "shape" {
-  compartment_id      = var.compartment_ocid
-  availability_domain = data.oci_identity_availability_domain.ad.name
-  name                = var.instance_shape
-}
+# Shape validation is done implicitly when creating the instance
+# No need for a separate data source
 
 # Create security list for PR preview VM
 resource "oci_core_security_list" "pr_preview_security_list" {
