@@ -156,20 +156,15 @@ locals {
   vcn_id    = var.vcn_id != "" ? var.vcn_id : oci_core_vcn.vcn[0].id
   subnet_id = var.subnet_id != "" ? var.subnet_id : oci_core_subnet.subnet[0].id
   
-  # Image ID: use provided one, or auto-detected one
-  # Use try() to safely handle when data source doesn't exist (when image_id is provided)
-  image_id = var.image_id != "" ? var.image_id : try(
-    data.oci_core_images.ubuntu_images[0].images[0].id,
-    "ERROR: Please provide image_id in terraform.tfvars - auto-detection failed"
-  )
+  # Dynamically select the newest shape-compatible Ubuntu 22.04 image
+  # The data source filters by shape compatibility automatically
+  image_id = data.oci_core_images.ubuntu_images.images[0].id
 }
 
-# Get image for Ubuntu 22.04
+# Get Ubuntu 22.04 image compatible with VM.Standard.E4.Flex (x86_64)
+# Platform images are compatible with all standard x86_64 shapes
 # Query from tenancy compartment where platform images are available
-# If this fails, user can provide image_id directly in terraform.tfvars
 data "oci_core_images" "ubuntu_images" {
-  count = var.image_id == "" ? 1 : 0
-  
   compartment_id           = local.tenancy_ocid
   operating_system         = "Canonical Ubuntu"
   operating_system_version = "22.04"
@@ -250,8 +245,8 @@ resource "oci_core_instance" "pr_preview_vm" {
   shape                = var.instance_shape
 
   shape_config {
-    ocpus         = var.instance_ocpus
-    memory_in_gbs = var.instance_memory_gb
+    ocpus         = 4
+    memory_in_gbs = 16
   }
 
   create_vnic_details {
