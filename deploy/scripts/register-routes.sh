@@ -15,6 +15,44 @@ if [ -z "$PR_NUMBER" ] || [ -z "$DOMAIN" ]; then
     exit 1
 fi
 
+echo "Caddy API URL: $CADDY_API_URL"
+
+# Check if Caddy is accessible
+echo "Checking if Caddy API is accessible..."
+if curl -s --max-time 2 "${CADDY_API_URL}/config/" > /dev/null 2>&1; then
+    echo "✓ Caddy API is accessible"
+else
+    echo "✗ Caddy API is not accessible at ${CADDY_API_URL}"
+    echo "Checking if Caddy container is running..."
+    
+    # Check for Caddy containers
+    if docker ps --format '{{.Names}}' | grep -qE "^caddy|^caddy-proxy"; then
+        CADDY_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E "^caddy|^caddy-proxy" | head -n1)
+        echo "Found Caddy container: $CADDY_CONTAINER"
+        echo "Container status:"
+        docker ps --filter "name=$CADDY_CONTAINER" --format "  {{.Names}}: {{.Status}}"
+        
+        # Try to get Caddy API from container
+        echo "Attempting to access Caddy API from container..."
+        if docker exec "$CADDY_CONTAINER" curl -s --max-time 2 "http://localhost:2019/config/" > /dev/null 2>&1; then
+            echo "✓ Caddy API is accessible from inside the container"
+            echo "⚠ Caddy API is not accessible from the host. Routes will need to be configured manually or Caddy needs to expose the admin API."
+        else
+            echo "✗ Caddy API is not accessible even from inside the container"
+            echo "Caddy may not be configured with admin API enabled"
+        fi
+    else
+        echo "✗ No Caddy container found"
+        echo "Available containers:"
+        docker ps --format "  {{.Names}}" | head -10
+    fi
+    
+    echo ""
+    echo "⚠ Continuing without Caddy route registration..."
+    echo "You may need to manually configure Caddy routes or ensure Caddy is running and accessible"
+    exit 0  # Don't fail, just warn
+fi
+
 # Container names based on Docker Compose project naming
 # Docker Compose uses format: <project>-<service>-<index>
 PROJECT_PREFIX="pr-${PR_NUMBER}"
@@ -66,18 +104,28 @@ EOF
     HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
         -H "Content-Type: application/json" \
         -d "${route_config}" \
-        -s -o /dev/null -w "%{http_code}")
+        -s -o /dev/null -w "%{http_code}" \
+        --max-time 5 \
+        --connect-timeout 2 2>&1)
     
-    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+    # Check if curl failed to connect (HTTP 000)
+    if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
+        echo "✗ Failed to add route: ${hostname} (Connection failed - Caddy API not reachable)"
+        echo "  Check if Caddy is running and the API URL is correct: ${CADDY_API_URL}"
+        return 1
+    elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
         echo "✓ Route added: ${hostname}"
         return 0
     else
         echo "✗ Failed to add route: ${hostname} (HTTP ${HTTP_CODE})"
         # Try to get error message
-        curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+        ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
             -H "Content-Type: application/json" \
             -d "${route_config}" \
-            -s 2>&1 | head -5
+            -s --max-time 5 2>&1 | head -3)
+        if [ -n "$ERROR_MSG" ]; then
+            echo "  Error: $ERROR_MSG"
+        fi
         return 1
     fi
 }
@@ -163,28 +211,36 @@ fi
 echo ""
 echo "Routes summary: ${ROUTES_ADDED} added, ${ROUTES_FAILED} failed"
 
-# Reload Caddy configuration
-echo "Reloading Caddy configuration..."
-HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/reload" -s -o /dev/null -w "%{http_code}")
-
-if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
-    echo "✓ Caddy configuration reloaded"
-    echo ""
-    if [ $ROUTES_ADDED -gt 0 ]; then
-        echo "Routes registered successfully!"
-        echo "  - Airflow: https://pr-${PR_NUMBER}.airflow.${DOMAIN}"
-        echo "  - App: https://pr-${PR_NUMBER}.app.${DOMAIN}"
-        echo "  - API: https://pr-${PR_NUMBER}.api.${DOMAIN}"
-        echo "  - pgAdmin: https://pr-${PR_NUMBER}.pgadmin.${DOMAIN}"
+# Reload Caddy configuration (only if we added at least one route)
+if [ $ROUTES_ADDED -gt 0 ]; then
+    echo "Reloading Caddy configuration..."
+    HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/reload" \
+        -s -o /dev/null -w "%{http_code}" \
+        --max-time 5 \
+        --connect-timeout 2 2>&1)
+    
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
+        echo "✓ Caddy configuration reloaded"
+    elif [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
+        echo "⚠ Could not reload Caddy (API not reachable)"
+    else
+        echo "⚠ Failed to reload Caddy configuration (HTTP ${HTTP_CODE})"
     fi
-    if [ $ROUTES_FAILED -gt 0 ]; then
-        echo "⚠ Some routes failed to register, but deployment will continue"
-    fi
-    exit 0
-else
-    echo "⚠ Failed to reload Caddy configuration (HTTP ${HTTP_CODE})"
-    echo "Routes may still work, but Caddy may need manual reload"
-    # Don't exit with error, just warn
-    exit 0
 fi
+
+echo ""
+if [ $ROUTES_ADDED -gt 0 ]; then
+    echo "✓ Routes registered successfully!"
+    echo "  - Airflow: https://pr-${PR_NUMBER}.airflow.${DOMAIN}"
+    echo "  - App: https://pr-${PR_NUMBER}.app.${DOMAIN}"
+    echo "  - API: https://pr-${PR_NUMBER}.api.${DOMAIN}"
+    echo "  - pgAdmin: https://pr-${PR_NUMBER}.pgadmin.${DOMAIN}"
+elif [ $ROUTES_FAILED -gt 0 ]; then
+    echo "⚠ All routes failed to register"
+    echo "  Caddy API may not be accessible or Caddy may not be running"
+    echo "  You may need to manually configure routes or start Caddy"
+fi
+
+# Always exit successfully - route registration failure shouldn't block deployment
+exit 0
 
