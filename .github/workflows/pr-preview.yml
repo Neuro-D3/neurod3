@@ -8,7 +8,7 @@ on:
 jobs:
   validate-pr:
     name: Validate PR
-    runs-on: [self-hosted, oci]
+    runs-on: d3-oci-runner
     if: |
       (github.event.action == 'labeled' && github.event.label.name == 'deploy-preview') ||
       (github.event.action == 'unlabeled' && github.event.label.name == 'deploy-preview') ||
@@ -128,7 +128,7 @@ jobs:
 
   cleanup-other-prs:
     name: Cleanup Other PR Previews
-    runs-on: [self-hosted, oci]
+    runs-on: d3-oci-runner
     needs: validate-pr
     if: needs.validate-pr.outputs.should_deploy == 'true'
     steps:
@@ -226,7 +226,7 @@ jobs:
 
   deploy:
     name: Deploy PR Preview
-    runs-on: [self-hosted, oci]
+    runs-on: d3-oci-runner
     needs: [validate-pr, cleanup-other-prs]
     if: needs.validate-pr.outputs.should_deploy == 'true'
     environment:
@@ -325,7 +325,7 @@ jobs:
 
   teardown:
     name: Teardown PR Preview
-    runs-on: [self-hosted, oci]
+    runs-on: d3-oci-runner
     needs: validate-pr
     if: needs.validate-pr.outputs.should_teardown == 'true'
     steps:
