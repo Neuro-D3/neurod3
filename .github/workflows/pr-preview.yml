@@ -55,9 +55,44 @@ jobs:
           
           # Extract organization name from repository (format: org/repo)
           ORG=$(echo "$REPO" | cut -d'/' -f1)
-          TEAM_SLUG="d3-developers"
           
-          echo "Checking if $ACTOR is a member of team $ORG/$TEAM_SLUG..."
+          echo "Checking if $ACTOR is a member of D3-Developers team in org $ORG..."
+          
+          # First, try to find the team by listing all teams and searching for "D3-Developers"
+          # Try multiple possible slugs
+          TEAM_SLUGS=("d3-developers" "D3-Developers" "D3-developers" "d3-Developers")
+          TEAM_SLUG=""
+          
+          # List all teams to find the correct slug
+          TEAMS_RESPONSE=$(curl -s \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/orgs/$ORG/teams?per_page=100")
+          
+          # Try to find team with name containing "D3" and "Developers"
+          TEAM_SLUG=$(echo "$TEAMS_RESPONSE" | jq -r '.[] | select(.name | test("(?i)d3.*developers|developers.*d3")) | .slug' | head -n1)
+          
+          if [ -z "$TEAM_SLUG" ] || [ "$TEAM_SLUG" = "null" ]; then
+            # If not found, try the common slugs
+            for slug in "${TEAM_SLUGS[@]}"; do
+              HTTP_TEST=$(curl -s -o /dev/null -w "%{http_code}" \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                "https://api.github.com/orgs/$ORG/teams/$slug")
+              if [ "$HTTP_TEST" = "200" ]; then
+                TEAM_SLUG="$slug"
+                break
+              fi
+            done
+          fi
+          
+          if [ -z "$TEAM_SLUG" ] || [ "$TEAM_SLUG" = "null" ]; then
+            echo "::error::Could not find D3-Developers team in organization $ORG"
+            echo "Available teams:"
+            echo "$TEAMS_RESPONSE" | jq -r '.[] | "  - \(.name) (slug: \(.slug))"'
+            exit 1
+          fi
+          
+          echo "Found team slug: $TEAM_SLUG"
           
           # Check if user is a member of the organization team
           # API endpoint: GET /orgs/{org}/teams/{team_slug}/memberships/{username}
@@ -86,6 +121,12 @@ jobs:
             fi
           elif [ "$HTTP_CODE" = "404" ]; then
             echo "✗ Actor $ACTOR is not a member of team $TEAM_SLUG (HTTP 404)"
+            echo "Team members:"
+            curl -s \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/orgs/$ORG/teams/$TEAM_SLUG/members" | \
+              jq -r '.[] | "  - \(.login)"' || echo "  (Could not list members)"
           else
             echo "✗ Error checking team membership (HTTP $HTTP_CODE)"
             # If there's an API error, we'll be conservative and deny access
