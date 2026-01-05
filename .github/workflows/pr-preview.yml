@@ -42,7 +42,7 @@ jobs:
             echo "✓ PR is from same repository"
           fi
 
-      - name: Check if actor is collaborator
+      - name: Check if actor is in D3-Developers team
         id: check-collaborator
         if: steps.check-fork.outputs.is_fork == 'false'
         env:
@@ -53,38 +53,51 @@ jobs:
           ACTION="${{ github.event.action }}"
           LABEL_NAME="${{ github.event.label.name }}"
           
-          # Initialize permission variable
-          PERMISSION="none"
+          # Extract organization name from repository (format: org/repo)
+          ORG=$(echo "$REPO" | cut -d'/' -f1)
+          TEAM_SLUG="d3-developers"
+          
+          echo "Checking if $ACTOR is a member of team $ORG/$TEAM_SLUG..."
+          
+          # Check if user is a member of the organization team
+          # API endpoint: GET /orgs/{org}/teams/{team_slug}/memberships/{username}
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/orgs/$ORG/teams/$TEAM_SLUG/memberships/$ACTOR")
+          
           IS_COLLABORATOR="false"
           
-          # Check if user is a collaborator
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/$REPO/collaborators/$ACTOR")
-          
-          if [ "$HTTP_CODE" = "204" ]; then
-            # User is a collaborator, check permissions
-            PERMISSION_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/$REPO/collaborators/$ACTOR/permission")
-            PERMISSION=$(echo "$PERMISSION_RESPONSE" | jq -r '.permission // "none"')
+          if [ "$HTTP_CODE" = "200" ]; then
+            # User is a team member, check their role in the team
+            MEMBERSHIP_RESPONSE=$(curl -s \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/orgs/$ORG/teams/$TEAM_SLUG/memberships/$ACTOR")
             
-            # Check if user has write/admin/maintain permission
-            if [[ "$PERMISSION" == "write" || "$PERMISSION" == "admin" || "$PERMISSION" == "maintain" ]]; then
+            ROLE=$(echo "$MEMBERSHIP_RESPONSE" | jq -r '.role // "member"')
+            STATE=$(echo "$MEMBERSHIP_RESPONSE" | jq -r '.state // "inactive"')
+            
+            if [ "$STATE" = "active" ]; then
               IS_COLLABORATOR="true"
-              echo "✓ Actor $ACTOR is a collaborator with $PERMISSION permission"
+              echo "✓ Actor $ACTOR is an active member of team $TEAM_SLUG (role: $ROLE)"
             else
-              echo "✗ Actor $ACTOR is a collaborator but lacks write permission (has: $PERMISSION)"
+              echo "✗ Actor $ACTOR is in team $TEAM_SLUG but state is $STATE"
             fi
+          elif [ "$HTTP_CODE" = "404" ]; then
+            echo "✗ Actor $ACTOR is not a member of team $TEAM_SLUG (HTTP 404)"
           else
-            echo "✗ Actor $ACTOR is not a collaborator (HTTP $HTTP_CODE)"
+            echo "✗ Error checking team membership (HTTP $HTTP_CODE)"
+            # If there's an API error, we'll be conservative and deny access
           fi
           
           # Set output
           echo "is_collaborator=$IS_COLLABORATOR" >> $GITHUB_OUTPUT
           
-          # Fail if non-contributor tries to add the deploy-preview label
+          # Fail if non-team-member tries to add the deploy-preview label
           if [ "$ACTION" = "labeled" ] && [ "$LABEL_NAME" = "deploy-preview" ]; then
             if [ "$IS_COLLABORATOR" != "true" ]; then
-              echo "::error::Only repository contributors with write access can add the 'deploy-preview' label"
+              echo "::error::Only members of the D3-Developers team can add the 'deploy-preview' label"
               exit 1
             fi
           fi
