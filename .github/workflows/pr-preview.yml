@@ -42,138 +42,45 @@ jobs:
             echo "✓ PR is from same repository"
           fi
 
-      - name: Install jq (if needed)
-        if: steps.check-fork.outputs.is_fork == 'false'
-        run: |
-          if ! command -v jq &> /dev/null; then
-            echo "Installing jq..."
-            sudo apt-get update -qq && sudo apt-get install -y -qq jq || {
-              echo "Failed to install jq, will use alternative method"
-            }
-          else
-            echo "jq is already installed"
-          fi
-
       - name: Check if actor is in D3-Developers team
         id: check-collaborator
         if: steps.check-fork.outputs.is_fork == 'false'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          ORG: ${{ github.repository_owner }}
+          TEAM: d3-developers
+          ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
         run: |
-          ACTOR="${{ github.actor }}"
-          REPO="${{ github.repository }}"
-          ACTION="${{ github.event.action }}"
-          LABEL_NAME="${{ github.event.label.name }}"
+          echo "Checking if $ACTOR is a member of team $TEAM in org $ORG..."
           
-          # Extract organization name from repository (format: org/repo)
-          ORG=$(echo "$REPO" | cut -d'/' -f1)
-          
-          echo "Checking if $ACTOR is a member of D3-Developers team in org $ORG..."
-          
-          # Try multiple possible slugs
-          TEAM_SLUGS=("d3-developers" "D3-Developers" "D3-developers" "d3-Developers")
-          TEAM_SLUG=""
-          
-          # Try each slug to see which one exists
-          for slug in "${TEAM_SLUGS[@]}"; do
-            HTTP_TEST=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/orgs/$ORG/teams/$slug")
-            if [ "$HTTP_TEST" = "200" ]; then
-              TEAM_SLUG="$slug"
-              echo "Found team with slug: $TEAM_SLUG"
-              break
-            fi
-          done
-          
-          # If still not found, try to search through all teams
-          if [ -z "$TEAM_SLUG" ]; then
-            echo "Searching through all teams..."
-            TEAMS_RESPONSE=$(curl -s \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/orgs/$ORG/teams?per_page=100")
-            
-            # Try to find team using grep (works without jq)
-            if echo "$TEAMS_RESPONSE" | grep -qi "d3.*developers\|developers.*d3"; then
-              # Extract slug using grep/sed (more reliable than jq for this case)
-              TEAM_SLUG=$(echo "$TEAMS_RESPONSE" | grep -i "d3.*developers\|developers.*d3" | grep -o '"slug":"[^"]*"' | head -n1 | cut -d'"' -f4)
-              
-              if [ -n "$TEAM_SLUG" ] && [ "$TEAM_SLUG" != "null" ]; then
-                echo "Found team with slug: $TEAM_SLUG"
-              fi
-            fi
-            
-            # If jq is available, also try with jq as a backup
-            if [ -z "$TEAM_SLUG" ] && command -v jq &> /dev/null; then
-              # Validate JSON first
-              if echo "$TEAMS_RESPONSE" | jq empty 2>/dev/null; then
-                # Check if it's an array
-                IS_ARRAY=$(echo "$TEAMS_RESPONSE" | jq -r 'if type == "array" then "true" else "false" end' 2>/dev/null)
-                if [ "$IS_ARRAY" = "true" ]; then
-                  TEAM_SLUG=$(echo "$TEAMS_RESPONSE" | jq -r '.[] | select(.name | test("(?i)d3.*developers|developers.*d3")) | .slug' 2>/dev/null | head -n1)
-                  if [ -n "$TEAM_SLUG" ] && [ "$TEAM_SLUG" != "null" ]; then
-                    echo "Found team with slug (via jq): $TEAM_SLUG"
-                  fi
-                fi
-              fi
-            fi
-          fi
-          
-          if [ -z "$TEAM_SLUG" ] || [ "$TEAM_SLUG" = "null" ] || [ "$TEAM_SLUG" = "" ]; then
-            echo "::error::Could not find D3-Developers team in organization $ORG"
-            echo "Tried slugs: ${TEAM_SLUGS[*]}"
-            echo "Raw API response (first 500 chars):"
-            echo "$TEAMS_RESPONSE" | head -c 500
-            echo ""
-            exit 1
-          fi
-          
-          # Check if user is a member of the organization team
-          # API endpoint: GET /orgs/{org}/teams/{team_slug}/memberships/{username}
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/orgs/$ORG/teams/$TEAM_SLUG/memberships/$ACTOR")
+          # Check team membership
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/orgs/$ORG/teams/$TEAM/memberships/$ACTOR")
           
           IS_COLLABORATOR="false"
           
-          if [ "$HTTP_CODE" = "200" ]; then
-            # User is a team member, check their role in the team
+          if [ "$STATUS" = "200" ]; then
+            # Get membership details to check state
             MEMBERSHIP_RESPONSE=$(curl -s \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/orgs/$ORG/teams/$TEAM_SLUG/memberships/$ACTOR")
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/orgs/$ORG/teams/$TEAM/memberships/$ACTOR")
             
-            if command -v jq &> /dev/null; then
-              ROLE=$(echo "$MEMBERSHIP_RESPONSE" | jq -r '.role // "member"')
-              STATE=$(echo "$MEMBERSHIP_RESPONSE" | jq -r '.state // "inactive"')
-            else
-              # Fallback: use grep to extract values
-              ROLE=$(echo "$MEMBERSHIP_RESPONSE" | grep -o '"role":"[^"]*"' | cut -d'"' -f4 || echo "member")
-              STATE=$(echo "$MEMBERSHIP_RESPONSE" | grep -o '"state":"[^"]*"' | cut -d'"' -f4 || echo "inactive")
-            fi
+            # Extract state using grep (no jq needed)
+            STATE=$(echo "$MEMBERSHIP_RESPONSE" | grep -o '"state":"[^"]*"' | cut -d'"' -f4 || echo "inactive")
             
             if [ "$STATE" = "active" ]; then
               IS_COLLABORATOR="true"
-              echo "✓ Actor $ACTOR is an active member of team $TEAM_SLUG (role: $ROLE)"
+              echo "✅ Actor $ACTOR is an active member of team $TEAM"
             else
-              echo "✗ Actor $ACTOR is in team $TEAM_SLUG but state is $STATE"
-            fi
-          elif [ "$HTTP_CODE" = "404" ]; then
-            echo "✗ Actor $ACTOR is not a member of team $TEAM_SLUG (HTTP 404)"
-            if command -v jq &> /dev/null; then
-              echo "Team members:"
-              curl -s \
-                -H "Authorization: token $GITHUB_TOKEN" \
-                -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/orgs/$ORG/teams/$TEAM_SLUG/members" | \
-                jq -r '.[] | "  - \(.login)"' || echo "  (Could not list members)"
+              echo "❌ Actor $ACTOR is in team $TEAM but state is $STATE"
             fi
           else
-            echo "✗ Error checking team membership (HTTP $HTTP_CODE)"
-            # If there's an API error, we'll be conservative and deny access
+            echo "❌ Actor $ACTOR is NOT in team $TEAM (HTTP $STATUS)"
           fi
           
           # Set output
