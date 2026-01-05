@@ -87,29 +87,46 @@ jobs:
             fi
           done
           
-          # If still not found and jq is available, try to search through all teams
-          if [ -z "$TEAM_SLUG" ] && command -v jq &> /dev/null; then
+          # If still not found, try to search through all teams
+          if [ -z "$TEAM_SLUG" ]; then
             echo "Searching through all teams..."
             TEAMS_RESPONSE=$(curl -s \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               "https://api.github.com/orgs/$ORG/teams?per_page=100")
             
-            # Try to find team with name containing "D3" and "Developers" (case insensitive)
-            TEAM_SLUG=$(echo "$TEAMS_RESPONSE" | jq -r '.[] | select(.name | test("(?i)d3.*developers|developers.*d3")) | .slug' | head -n1)
+            # Try to find team using grep (works without jq)
+            if echo "$TEAMS_RESPONSE" | grep -qi "d3.*developers\|developers.*d3"; then
+              # Extract slug using grep/sed (more reliable than jq for this case)
+              TEAM_SLUG=$(echo "$TEAMS_RESPONSE" | grep -i "d3.*developers\|developers.*d3" | grep -o '"slug":"[^"]*"' | head -n1 | cut -d'"' -f4)
+              
+              if [ -n "$TEAM_SLUG" ] && [ "$TEAM_SLUG" != "null" ]; then
+                echo "Found team with slug: $TEAM_SLUG"
+              fi
+            fi
             
-            if [ -n "$TEAM_SLUG" ] && [ "$TEAM_SLUG" != "null" ]; then
-              echo "Found team with slug: $TEAM_SLUG"
+            # If jq is available, also try with jq as a backup
+            if [ -z "$TEAM_SLUG" ] && command -v jq &> /dev/null; then
+              # Validate JSON first
+              if echo "$TEAMS_RESPONSE" | jq empty 2>/dev/null; then
+                # Check if it's an array
+                IS_ARRAY=$(echo "$TEAMS_RESPONSE" | jq -r 'if type == "array" then "true" else "false" end' 2>/dev/null)
+                if [ "$IS_ARRAY" = "true" ]; then
+                  TEAM_SLUG=$(echo "$TEAMS_RESPONSE" | jq -r '.[] | select(.name | test("(?i)d3.*developers|developers.*d3")) | .slug' 2>/dev/null | head -n1)
+                  if [ -n "$TEAM_SLUG" ] && [ "$TEAM_SLUG" != "null" ]; then
+                    echo "Found team with slug (via jq): $TEAM_SLUG"
+                  fi
+                fi
+              fi
             fi
           fi
           
-          if [ -z "$TEAM_SLUG" ] || [ "$TEAM_SLUG" = "null" ]; then
+          if [ -z "$TEAM_SLUG" ] || [ "$TEAM_SLUG" = "null" ] || [ "$TEAM_SLUG" = "" ]; then
             echo "::error::Could not find D3-Developers team in organization $ORG"
             echo "Tried slugs: ${TEAM_SLUGS[*]}"
-            if command -v jq &> /dev/null; then
-              echo "Available teams:"
-              echo "$TEAMS_RESPONSE" | jq -r '.[] | "  - \(.name) (slug: \(.slug))"'
-            fi
+            echo "Raw API response (first 500 chars):"
+            echo "$TEAMS_RESPONSE" | head -c 500
+            echo ""
             exit 1
           fi
           
