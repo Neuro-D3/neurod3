@@ -48,107 +48,57 @@ jobs:
             echo "✓ PR is from same repository"
           fi
 
-      - name: Verify team exists and is accessible
-        id: verify-team
-        if: steps.check-fork.outputs.is_fork == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ORG: Neuro-D3
-          TEAM_SLUG: d3-developers
-        run: |
-          echo "Verifying team '$TEAM_SLUG' exists and is accessible in org '$ORG'..."
-          
-          # Check if team exists and is accessible
-          # GET /orgs/{org}/teams/{team_slug}
-          TEAM_RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/orgs/$ORG/teams/$TEAM_SLUG")
-          
-          HTTP_CODE=$(echo "$TEAM_RESPONSE" | tail -n1)
-          TEAM_BODY=$(echo "$TEAM_RESPONSE" | sed '$d')
-          
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "✅ Team '$TEAM_SLUG' exists and is accessible"
-            echo "team_accessible=true" >> $GITHUB_OUTPUT
-          elif [ "$HTTP_CODE" = "404" ]; then
-            echo "::error::Team '$TEAM_SLUG' not found in org '$ORG' (HTTP 404)"
-            echo "This could mean:"
-            echo "  - The team slug is incorrect"
-            echo "  - The team doesn't exist"
-            echo "  - Insufficient permissions to access the team"
-            echo "team_accessible=false" >> $GITHUB_OUTPUT
-            exit 1
-          elif [ "$HTTP_CODE" = "403" ]; then
-            echo "::error::Insufficient permissions to access team '$TEAM_SLUG' (HTTP 403)"
-            echo "The GITHUB_TOKEN may need 'orgs: read' permission, or use a PAT with 'read:org' scope"
-            echo "team_accessible=false" >> $GITHUB_OUTPUT
-            exit 1
-          else
-            echo "::error::Unexpected error checking team accessibility (HTTP $HTTP_CODE)"
-            echo "$TEAM_BODY"
-            echo "team_accessible=false" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-      - name: Check actor team membership
+      - name: Check if actor is in D3-Developers team
         id: check-collaborator
-        if: |
-          steps.check-fork.outputs.is_fork == 'false' &&
-          steps.verify-team.outputs.team_accessible == 'true'
+        if: steps.check-fork.outputs.is_fork == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
           ORG: Neuro-D3
-          TEAM_SLUG: d3-developers
+          TEAM: d3-developers
           ACTION: ${{ github.event.action }}
           LABEL_NAME: ${{ github.event.label.name }}
         run: |
-          echo "Checking if '$ACTOR' is a member of team '$TEAM_SLUG' in org '$ORG'..."
+          echo "Checking if $ACTOR is a member of team $TEAM in org $ORG..."
           
           # Check team membership
-          # GET /orgs/{org}/teams/{team_slug}/memberships/{username}
-          # Returns 200 if member, 404 if not member or team doesn't exist
-          # Since we verified team exists in previous step, 404 here means not a member
-          MEMBERSHIP_RESPONSE=$(curl -s -w "\n%{http_code}" \
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/orgs/$ORG/teams/$TEAM_SLUG/memberships/$ACTOR")
-          
-          HTTP_CODE=$(echo "$MEMBERSHIP_RESPONSE" | tail -n1)
-          MEMBERSHIP_BODY=$(echo "$MEMBERSHIP_RESPONSE" | sed '$d')
+            "https://api.github.com/orgs/$ORG/teams/$TEAM/memberships/$ACTOR")
           
           IS_COLLABORATOR="false"
           
-          if [ "$HTTP_CODE" = "200" ]; then
-            # Extract state from response
-            STATE=$(echo "$MEMBERSHIP_BODY" | grep -o '"state":"[^"]*"' | cut -d'"' -f4 || echo "inactive")
+          if [ "$STATUS" = "200" ]; then
+            # Get membership details to check state
+            MEMBERSHIP_RESPONSE=$(curl -s \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/orgs/$ORG/teams/$TEAM/memberships/$ACTOR")
+            
+            # Extract state using grep (no jq needed)
+            STATE=$(echo "$MEMBERSHIP_RESPONSE" | grep -o '"state":"[^"]*"' | cut -d'"' -f4 || echo "inactive")
             
             if [ "$STATE" = "active" ]; then
               IS_COLLABORATOR="true"
-              echo "✅ Actor '$ACTOR' is an active member of team '$TEAM_SLUG'"
+              echo "✅ Actor $ACTOR is an active member of team $TEAM"
             else
-              echo "::error::Actor '$ACTOR' is in team '$TEAM_SLUG' but membership state is '$STATE' (expected 'active')"
-              echo "Membership details: $MEMBERSHIP_BODY"
-            fi
-          elif [ "$HTTP_CODE" = "404" ]; then
-            # Team exists (verified in previous step), so 404 means actor is not a member
-            IS_COLLABORATOR="false"
-            echo "❌ Actor '$ACTOR' is NOT a member of team '$TEAM_SLUG'"
-            
-            # Fail immediately if trying to add deploy-preview label
-            if [ "$ACTION" = "labeled" ] && [ "$LABEL_NAME" = "deploy-preview" ]; then
-              echo "::error::Access denied: Only members of the '$TEAM_SLUG' team can add the 'deploy-preview' label"
-              exit 1
+              echo "❌ Actor $ACTOR is in team $TEAM but state is $STATE"
             fi
           else
-            echo "::error::Unexpected error checking team membership (HTTP $HTTP_CODE)"
-            echo "$MEMBERSHIP_BODY"
-            exit 1
+            echo "❌ Actor $ACTOR is NOT in team $TEAM (HTTP $STATUS)"
           fi
           
           # Set output
           echo "is_collaborator=$IS_COLLABORATOR" >> $GITHUB_OUTPUT
+          
+          # Fail if non-team-member tries to add the deploy-preview label
+          if [ "$ACTION" = "labeled" ] && [ "$LABEL_NAME" = "deploy-preview" ]; then
+            if [ "$IS_COLLABORATOR" != "true" ]; then
+              echo "::error::Only members of the D3-Developers team can add the 'deploy-preview' label"
+              exit 1
+            fi
+          fi
 
       - name: Decide action
         id: decide
