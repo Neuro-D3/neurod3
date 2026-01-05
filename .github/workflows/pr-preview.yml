@@ -223,6 +223,33 @@ jobs:
     environment:
       name: pr-preview
     steps:
+      - name: Clean up workspace and fix permissions
+        run: |
+          # Get the runner user
+          RUNNER_USER=$(whoami)
+          echo "Runner user: $RUNNER_USER"
+          
+          # Fix permissions on workspace directory if it exists
+          if [ -d "$GITHUB_WORKSPACE" ]; then
+            echo "Fixing permissions on workspace directory..."
+            # Try to fix ownership to runner user
+            sudo chown -R "$RUNNER_USER:$RUNNER_USER" "$GITHUB_WORKSPACE" 2>/dev/null || {
+              echo "Could not change ownership, trying to fix permissions only..."
+              sudo chmod -R u+w "$GITHUB_WORKSPACE" 2>/dev/null || true
+            }
+            
+            # Try to remove files as current user first
+            echo "Cleaning up workspace..."
+            rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.git 2>/dev/null || {
+              echo "Some files couldn't be removed, trying with sudo..."
+              sudo rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.git 2>/dev/null || true
+            }
+            
+            # Fix permissions again after cleanup
+            sudo chown -R "$RUNNER_USER:$RUNNER_USER" "$GITHUB_WORKSPACE" 2>/dev/null || true
+            sudo chmod -R u+w "$GITHUB_WORKSPACE" 2>/dev/null || true
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
