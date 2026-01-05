@@ -9,7 +9,8 @@
 	auto_https off
 }
 
-# Default catch-all for unmatched domains
+# Default catch-all for unmatched paths
+# Path-based routing is handled via the admin API
 :80 {
 	respond "No PR preview environment found" 404
 }

@@ -1,17 +1,16 @@
 #!/bin/bash
 # Register Caddy routes for a PR preview environment
-# Usage: ./register-routes.sh <PR_NUMBER> <DOMAIN>
-# Example: ./register-routes.sh 123 preview.example.com
+# Usage: ./register-routes.sh <PR_NUMBER>
+# Example: ./register-routes.sh 123
 
 set +e  # Don't exit on error, we'll handle errors manually
 
 PR_NUMBER=$1
-DOMAIN=$2
 CADDY_API_URL=${CADDY_API_URL:-http://localhost:2019}
 
-if [ -z "$PR_NUMBER" ] || [ -z "$DOMAIN" ]; then
-    echo "Usage: $0 <PR_NUMBER> <DOMAIN>"
-    echo "Example: $0 123 preview.example.com"
+if [ -z "$PR_NUMBER" ]; then
+    echo "Usage: $0 <PR_NUMBER>"
+    echo "Example: $0 123"
     exit 1
 fi
 
@@ -80,19 +79,20 @@ echo "Registering routes for PR #${PR_NUMBER}..."
 
 # Function to add a route via Caddy admin API
 add_route() {
-    local hostname=$1
-    local upstream=$2
-    local port=$3
+    local service_name=$1
+    local path=$2
+    local upstream=$3
+    local port=$4
     
-    echo "Adding route: ${hostname} -> ${upstream}:${port}"
+    echo "Adding route: ${path} -> ${upstream}:${port}"
     
-    # Create route configuration JSON
+    # Create route configuration JSON with path matching
     local route_config=$(cat <<EOF
 {
-    "@id": "pr-${PR_NUMBER}-${hostname}",
+    "@id": "pr-${PR_NUMBER}-${service_name}",
     "match": [
         {
-            "host": ["${hostname}"]
+            "path": ["${path}/*"]
         }
     ],
     "handle": [
@@ -123,14 +123,14 @@ EOF
     
     # Check if curl failed to connect (HTTP 000)
     if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
-        echo "✗ Failed to add route: ${hostname} (Connection failed - Caddy API not reachable)"
+        echo "✗ Failed to add route: ${path} (Connection failed - Caddy API not reachable)"
         echo "  Check if Caddy is running and the API URL is correct: ${CADDY_API_URL}"
         return 1
     elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
-        echo "✓ Route added: ${hostname}"
+        echo "✓ Route added: ${path}"
         return 0
     else
-        echo "✗ Failed to add route: ${hostname} (HTTP ${HTTP_CODE})"
+        echo "✗ Failed to add route: ${path} (HTTP ${HTTP_CODE})"
         # Try to get error message
         ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
             -H "Content-Type: application/json" \
@@ -197,25 +197,25 @@ fi
 ROUTES_ADDED=0
 ROUTES_FAILED=0
 
-if add_route "pr-${PR_NUMBER}.airflow.${DOMAIN}" "${AIRFLOW_CONTAINER}" "8080"; then
+if add_route "airflow" "/pr-${PR_NUMBER}/airflow" "${AIRFLOW_CONTAINER}" "8080"; then
     ROUTES_ADDED=$((ROUTES_ADDED + 1))
 else
     ROUTES_FAILED=$((ROUTES_FAILED + 1))
 fi
 
-if add_route "pr-${PR_NUMBER}.app.${DOMAIN}" "${FRONTEND_CONTAINER}" "3000"; then
+if add_route "app" "/pr-${PR_NUMBER}/app" "${FRONTEND_CONTAINER}" "3000"; then
     ROUTES_ADDED=$((ROUTES_ADDED + 1))
 else
     ROUTES_FAILED=$((ROUTES_FAILED + 1))
 fi
 
-if add_route "pr-${PR_NUMBER}.pgadmin.${DOMAIN}" "${PGADMIN_CONTAINER}" "80"; then
+if add_route "pgadmin" "/pr-${PR_NUMBER}/pgadmin" "${PGADMIN_CONTAINER}" "80"; then
     ROUTES_ADDED=$((ROUTES_ADDED + 1))
 else
     ROUTES_FAILED=$((ROUTES_FAILED + 1))
 fi
 
-if add_route "pr-${PR_NUMBER}.api.${DOMAIN}" "${API_CONTAINER}" "8000"; then
+if add_route "api" "/pr-${PR_NUMBER}/api" "${API_CONTAINER}" "8000"; then
     ROUTES_ADDED=$((ROUTES_ADDED + 1))
 else
     ROUTES_FAILED=$((ROUTES_FAILED + 1))
@@ -244,10 +244,13 @@ fi
 echo ""
 if [ $ROUTES_ADDED -gt 0 ]; then
     echo "✓ Routes registered successfully!"
-    echo "  - Airflow: https://pr-${PR_NUMBER}.airflow.${DOMAIN}"
-    echo "  - App: https://pr-${PR_NUMBER}.app.${DOMAIN}"
-    echo "  - API: https://pr-${PR_NUMBER}.api.${DOMAIN}"
-    echo "  - pgAdmin: https://pr-${PR_NUMBER}.pgadmin.${DOMAIN}"
+    echo "  Routes are configured for path-based access:"
+    echo "  - Airflow: /pr-${PR_NUMBER}/airflow"
+    echo "  - App: /pr-${PR_NUMBER}/app"
+    echo "  - API: /pr-${PR_NUMBER}/api"
+    echo "  - pgAdmin: /pr-${PR_NUMBER}/pgadmin"
+    echo ""
+    echo "  Access these via: http://<PUBLIC_IP>/pr-${PR_NUMBER}/<service>"
 elif [ $ROUTES_FAILED -gt 0 ]; then
     echo "⚠ All routes failed to register"
     echo "  Caddy API may not be accessible or Caddy may not be running"

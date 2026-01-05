@@ -135,7 +135,6 @@ jobs:
         run: |
           REPO="${{ github.repository }}"
           CURRENT_PR_NUMBER="$CURRENT_PR"
-          DOMAIN="${{ vars.DOMAIN || 'preview.example.com' }}"
           CADDY_API_URL="${{ vars.CADDY_API_URL || 'http://localhost:2019' }}"
           
           echo "Checking for other PRs with deploy-preview label..."
@@ -187,7 +186,7 @@ jobs:
             # Remove Caddy routes
             if [ -f deploy/scripts/remove-routes.sh ]; then
               chmod +x deploy/scripts/remove-routes.sh
-              ./deploy/scripts/remove-routes.sh "$PR_NUMBER" "$DOMAIN" || {
+              ./deploy/scripts/remove-routes.sh "$PR_NUMBER" || {
                 echo "Failed to remove routes for PR #$PR_NUMBER, but continuing..."
               }
             fi
@@ -275,12 +274,41 @@ jobs:
           fetch-depth: 0
           clean: false  # Disable checkout's cleanup since we handle it ourselves
 
+      - name: Get public IP address
+        run: |
+          # Try multiple methods to get public IP
+          # Option 1: Use GitHub variable if set
+          if [ -n "${{ vars.PUBLIC_IP }}" ]; then
+            PUBLIC_IP="${{ vars.PUBLIC_IP }}"
+            echo "Using PUBLIC_IP from GitHub variable: $PUBLIC_IP"
+          # Option 2: Query OCI metadata service
+          elif curl -s --max-time 2 http://169.254.169.254/opc/v1/vnics/ > /dev/null 2>&1; then
+            PUBLIC_IP=$(curl -s http://169.254.169.254/opc/v1/vnics/ | grep -o '"publicIp":"[^"]*"' | head -1 | cut -d'"' -f4)
+            echo "Using PUBLIC_IP from OCI metadata: $PUBLIC_IP"
+          # Option 3: Query external service
+          else
+            PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me || curl -s --max-time 5 icanhazip.com || echo "")
+            if [ -n "$PUBLIC_IP" ]; then
+              echo "Using PUBLIC_IP from external service: $PUBLIC_IP"
+            else
+              echo "::error::Could not determine public IP address"
+              echo "Please set PUBLIC_IP as a GitHub repository variable"
+              exit 1
+            fi
+          fi
+          
+          if [ -z "$PUBLIC_IP" ]; then
+            echo "::error::Public IP address is empty"
+            exit 1
+          fi
+          
+          echo "PUBLIC_IP=$PUBLIC_IP" >> $GITHUB_ENV
+          echo "✓ Public IP: $PUBLIC_IP"
+
       - name: Set up environment
         run: |
           PR_NUMBER="${{ needs.validate-pr.outputs.pr_number }}"
-          DOMAIN="${{ vars.DOMAIN || 'preview.example.com' }}"
           echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
-          echo "DOMAIN=$DOMAIN" >> $GITHUB_ENV
           echo "PROJECT_NAME=pr-$PR_NUMBER" >> $GITHUB_ENV
 
       - name: Check for running PR containers (deadlock prevention)
@@ -306,7 +334,7 @@ jobs:
 
       - name: Build and deploy
         env:
-          REACT_APP_API_URL: https://pr-${{ needs.validate-pr.outputs.pr_number }}.api.${{ env.DOMAIN }}
+          REACT_APP_API_URL: http://${{ env.PUBLIC_IP }}/pr-${{ needs.validate-pr.outputs.pr_number }}/api
         run: |
           echo "Building and deploying PR #$PR_NUMBER..."
           docker compose -p "$PROJECT_NAME" -f docker-compose.pr.yml up -d --build
@@ -448,27 +476,27 @@ jobs:
           CADDY_API_URL: ${{ vars.CADDY_API_URL || 'http://localhost:2019' }}
         run: |
           chmod +x deploy/scripts/register-routes.sh
-          ./deploy/scripts/register-routes.sh "$PR_NUMBER" "$DOMAIN"
+          ./deploy/scripts/register-routes.sh "$PR_NUMBER"
 
       - name: Comment on PR
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ needs.validate-pr.outputs.pr_number }}
-          DOMAIN: ${{ env.DOMAIN }}
+          PUBLIC_IP: ${{ env.PUBLIC_IP }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const prNumber = process.env.PR_NUMBER;
-            const domain = process.env.DOMAIN;
+            const publicIp = process.env.PUBLIC_IP;
             
             const comment = `## 🚀 PR Preview Environment Deployed
             
             Your preview environment is now available at:
             
-            - **Airflow**: https://pr-${prNumber}.airflow.${domain}
-            - **Frontend App**: https://pr-${prNumber}.app.${domain}
-            - **API**: https://pr-${prNumber}.api.${domain}
-            - **pgAdmin**: https://pr-${prNumber}.pgadmin.${domain}
+            - **Airflow**: http://${publicIp}/pr-${prNumber}/airflow
+            - **Frontend App**: http://${publicIp}/pr-${prNumber}/app
+            - **API**: http://${publicIp}/pr-${prNumber}/api
+            - **pgAdmin**: http://${publicIp}/pr-${prNumber}/pgadmin
             
             > **Note**: This environment will be automatically torn down when the PR is closed or the \`deploy-preview\` label is removed. Only one PR can have a preview environment active at a time.
             
@@ -491,9 +519,7 @@ jobs:
       - name: Set up environment
         run: |
           PR_NUMBER="${{ needs.validate-pr.outputs.pr_number }}"
-          DOMAIN="${{ vars.DOMAIN || 'preview.example.com' }}"
           echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
-          echo "DOMAIN=$DOMAIN" >> $GITHUB_ENV
           echo "PROJECT_NAME=pr-$PR_NUMBER" >> $GITHUB_ENV
 
       - name: Remove Caddy routes
