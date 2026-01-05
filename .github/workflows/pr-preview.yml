@@ -232,22 +232,40 @@ jobs:
           # Fix permissions on workspace directory if it exists
           if [ -d "$GITHUB_WORKSPACE" ]; then
             echo "Fixing permissions on workspace directory..."
-            # Try to fix ownership to runner user
-            sudo chown -R "$RUNNER_USER:$RUNNER_USER" "$GITHUB_WORKSPACE" 2>/dev/null || {
-              echo "Could not change ownership, trying to fix permissions only..."
-              sudo chmod -R u+w "$GITHUB_WORKSPACE" 2>/dev/null || true
-            }
             
-            # Try to remove files as current user first
+            # First, fix ownership recursively
+            sudo chown -R "$RUNNER_USER:$RUNNER_USER" "$GITHUB_WORKSPACE" 2>/dev/null || true
+            
+            # Make everything writable
+            sudo chmod -R u+w "$GITHUB_WORKSPACE" 2>/dev/null || true
+            
+            # Remove specific problematic files/directories first
+            if [ -f "$GITHUB_WORKSPACE/dags/.airflowignore" ]; then
+              echo "Removing problematic .airflowignore file..."
+              sudo rm -f "$GITHUB_WORKSPACE/dags/.airflowignore" 2>/dev/null || true
+            fi
+            
+            # Remove dags directory if it has permission issues
+            if [ -d "$GITHUB_WORKSPACE/dags" ]; then
+              echo "Fixing dags directory permissions..."
+              sudo chown -R "$RUNNER_USER:$RUNNER_USER" "$GITHUB_WORKSPACE/dags" 2>/dev/null || true
+              sudo chmod -R u+w "$GITHUB_WORKSPACE/dags" 2>/dev/null || true
+            fi
+            
+            # Now try to remove all files
             echo "Cleaning up workspace..."
-            rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.git 2>/dev/null || {
+            rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.git "$GITHUB_WORKSPACE"/.* 2>/dev/null || {
               echo "Some files couldn't be removed, trying with sudo..."
               sudo rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.git 2>/dev/null || true
+              # Remove hidden files carefully
+              sudo find "$GITHUB_WORKSPACE" -maxdepth 1 -name ".*" ! -name "." ! -name ".." -exec rm -rf {} + 2>/dev/null || true
             }
             
-            # Fix permissions again after cleanup
+            # Final permission fix
             sudo chown -R "$RUNNER_USER:$RUNNER_USER" "$GITHUB_WORKSPACE" 2>/dev/null || true
             sudo chmod -R u+w "$GITHUB_WORKSPACE" 2>/dev/null || true
+            
+            echo "✓ Workspace cleaned and permissions fixed"
           fi
 
       - name: Checkout code
@@ -255,6 +273,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          clean: false  # Disable checkout's cleanup since we handle it ourselves
 
       - name: Set up environment
         run: |
