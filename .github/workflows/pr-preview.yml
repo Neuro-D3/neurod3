@@ -340,22 +340,35 @@ jobs:
           else
             echo "Caddy is not running. Starting Caddy..."
             
-            # Get absolute path to Caddyfile
-            CADDYFILE_PATH=$(pwd)/deploy/caddy/Caddyfile
+            # Resolve repo root correctly
+            REPO_ROOT="${GITHUB_WORKSPACE:-$(pwd)}"
+            CADDYFILE_PATH="$REPO_ROOT/deploy/caddy/Caddyfile"
+            COMPOSE_FILE="$REPO_ROOT/deploy/caddy/docker-compose.caddy.yml"
+            
+            echo "Repo root: $REPO_ROOT"
+            echo "Caddyfile path: $CADDYFILE_PATH"
+            
+            # Hard-fail if Caddyfile does not exist
+            if [ ! -f "$CADDYFILE_PATH" ]; then
+              echo "::error::Caddyfile not found at $CADDYFILE_PATH"
+              exit 1
+            fi
             
             # Check if Caddy docker-compose file exists
-            if [ -f "deploy/caddy/docker-compose.caddy.yml" ]; then
+            if [ -f "$COMPOSE_FILE" ]; then
               echo "Starting Caddy using docker-compose..."
               
-              # Start Caddy with docker-compose
-              docker compose -f deploy/caddy/docker-compose.caddy.yml -p caddy up -d
+              # Run docker-compose from the caddy directory so relative paths work
+              cd "$REPO_ROOT/deploy/caddy"
+              docker compose -f docker-compose.caddy.yml -p caddy up -d
+              cd "$REPO_ROOT"
               
               if [ $? -eq 0 ]; then
                 echo "✓ Caddy started with docker-compose"
               else
                 echo "⚠ Docker-compose failed, trying direct docker run..."
                 
-                # Fallback: Start Caddy directly
+                # Fallback: Start Caddy directly with absolute path
                 docker run -d \
                   --name caddy-proxy \
                   --restart unless-stopped \
@@ -392,7 +405,7 @@ jobs:
                 echo "⚠ Failed to start Caddy. Check logs: docker logs caddy-proxy"
               fi
             else
-              echo "⚠ Caddy docker-compose file not found, starting Caddy directly..."
+              echo "⚠ Caddy docker-compose file not found at $COMPOSE_FILE, starting Caddy directly..."
               
               docker run -d \
                 --name caddy-proxy \
@@ -405,7 +418,12 @@ jobs:
                 -v caddy_config:/config \
                 caddy:latest
               
-              sleep 5
+              if [ $? -eq 0 ]; then
+                echo "✓ Caddy started directly"
+                sleep 5
+              else
+                echo "⚠ Failed to start Caddy. Check logs: docker logs caddy-proxy"
+              fi
             fi
           fi
 
