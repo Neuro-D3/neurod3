@@ -331,11 +331,17 @@ jobs:
             echo "✓ Caddy container is running: $CADDY_CONTAINER"
             
             # Verify Caddy API is accessible
-            if curl -s --max-time 2 "http://localhost:2019/config/" > /dev/null 2>&1; then
+            if curl -fsS --max-time 2 "http://localhost:2019/config/" > /dev/null 2>&1; then
               echo "✓ Caddy API is accessible"
             else
               echo "⚠ Caddy is running but API is not accessible yet, waiting..."
               sleep 3
+              # Try again
+              if curl -fsS --max-time 2 "http://localhost:2019/config/" > /dev/null 2>&1; then
+                echo "✓ Caddy API is now accessible"
+              else
+                echo "⚠ Caddy API still not accessible - may need restart with updated Caddyfile"
+              fi
             fi
           else
             echo "Caddy is not running. Starting Caddy..."
@@ -390,13 +396,23 @@ jobs:
                 echo "✓ Caddy container is running"
                 
                 # Wait for API to be ready
+                echo "Waiting for Caddy API to be ready..."
                 for i in {1..15}; do
-                  if curl -s --max-time 2 "http://localhost:2019/config/" > /dev/null 2>&1; then
+                  if curl -fsS --max-time 2 "http://localhost:2019/config/" > /dev/null 2>&1; then
                     echo "✓ Caddy API is ready"
                     break
                   fi
                   if [ $i -eq 15 ]; then
-                    echo "⚠ Caddy API not responding after 15 seconds, but continuing..."
+                    echo "⚠ Caddy API not responding after 15 seconds"
+                    echo "  This may be because the Caddyfile needs to be updated to bind admin to 0.0.0.0:2019"
+                    echo "  Restarting Caddy to apply any Caddyfile changes..."
+                    docker restart caddy-proxy 2>/dev/null || true
+                    sleep 3
+                    if curl -fsS --max-time 2 "http://localhost:2019/config/" > /dev/null 2>&1; then
+                      echo "✓ Caddy API is ready after restart"
+                    else
+                      echo "⚠ Caddy API still not accessible after restart"
+                    fi
                   else
                     sleep 1
                   fi

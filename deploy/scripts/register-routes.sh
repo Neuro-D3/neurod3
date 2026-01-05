@@ -19,7 +19,7 @@ echo "Caddy API URL: $CADDY_API_URL"
 
 # Check if Caddy is accessible
 echo "Checking if Caddy API is accessible..."
-if curl -s --max-time 2 "${CADDY_API_URL}/config/" > /dev/null 2>&1; then
+if curl -fsS --max-time 2 "${CADDY_API_URL}/config/" > /dev/null 2>&1; then
     echo "✓ Caddy API is accessible"
 else
     echo "✗ Caddy API is not accessible at ${CADDY_API_URL}"
@@ -32,11 +32,24 @@ else
         echo "Container status:"
         docker ps --filter "name=$CADDY_CONTAINER" --format "  {{.Names}}: {{.Status}}"
         
-        # Try to get Caddy API from container
-        echo "Attempting to access Caddy API from container..."
-        if docker exec "$CADDY_CONTAINER" curl -s --max-time 2 "http://localhost:2019/config/" > /dev/null 2>&1; then
+        # Check if Caddyfile has admin bound to 0.0.0.0
+        echo "Checking Caddyfile configuration..."
+        if docker exec "$CADDY_CONTAINER" grep -q "admin 0.0.0.0:2019" /etc/caddy/Caddyfile 2>/dev/null; then
+            echo "✓ Caddyfile is configured to bind admin API to 0.0.0.0:2019"
+            echo "⚠ Caddy may need to be restarted to apply the configuration"
+            echo "  Run: docker restart caddy-proxy"
+        else
+            echo "⚠ Caddyfile may not have admin API bound to 0.0.0.0:2019"
+            echo "  Update Caddyfile to use: admin 0.0.0.0:2019"
+        fi
+        
+        # Try to get Caddy API from container (fallback check)
+        echo "Attempting to access Caddy API from inside container..."
+        if docker exec "$CADDY_CONTAINER" curl -fsS --max-time 2 "http://127.0.0.1:2019/config/" > /dev/null 2>&1; then
             echo "✓ Caddy API is accessible from inside the container"
-            echo "⚠ Caddy API is not accessible from the host. Routes will need to be configured manually or Caddy needs to expose the admin API."
+            echo "⚠ Caddy API is not accessible from the host."
+            echo "  Ensure Caddyfile has: admin 0.0.0.0:2019"
+            echo "  Then restart: docker restart caddy-proxy"
         else
             echo "✗ Caddy API is not accessible even from inside the container"
             echo "Caddy may not be configured with admin API enabled"
