@@ -42,94 +42,40 @@ jobs:
             echo "✓ PR is from same repository"
           fi
 
-      - name: Check if actor is in D3-Developers team
+      - name: Check if actor is authorized
         id: check-collaborator
         if: steps.check-fork.outputs.is_fork == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
-          ORG: ${{ github.repository_owner }}
           ACTION: ${{ github.event.action }}
           LABEL_NAME: ${{ github.event.label.name }}
         run: |
-          echo "Checking if $ACTOR is a member of D3-Developers team in org $ORG..."
+          # List of authorized users who can deploy PR previews
+          AUTHORIZED_USERS=("NathanielRose" "rly" "bendichter")
           
-          # Try multiple possible team slugs
-          TEAM_SLUGS=("d3-developers" "D3-Developers" "D3-developers" "d3-Developers")
-          TEAM_SLUG=""
-          STATUS=""
-          
-          # Try each slug to find the correct one
-          for slug in "${TEAM_SLUGS[@]}"; do
-            echo "Trying team slug: $slug"
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/orgs/$ORG/teams/$slug/memberships/$ACTOR")
-            
-            if [ "$HTTP_CODE" = "200" ]; then
-              TEAM_SLUG="$slug"
-              STATUS="200"
-              echo "✅ Found team with slug: $TEAM_SLUG"
-              break
-            elif [ "$HTTP_CODE" = "404" ]; then
-              # Team might exist but user not in it, or team doesn't exist
-              # Check if team exists
-              TEAM_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
-                -H "Authorization: Bearer $GH_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/orgs/$ORG/teams/$slug")
-              
-              if [ "$TEAM_EXISTS" = "200" ]; then
-                TEAM_SLUG="$slug"
-                STATUS="404"
-                echo "Team $slug exists but $ACTOR is not a member"
-                break
-              fi
-            fi
-          done
-          
-          # If still not found, list available teams for debugging
-          if [ -z "$TEAM_SLUG" ]; then
-            echo "Could not find D3-Developers team. Listing available teams:"
-            curl -s \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/orgs/$ORG/teams?per_page=100" | \
-              grep -o '"name":"[^"]*"' | cut -d'"' -f4 | head -20 || echo "Could not list teams"
-            echo "::error::Could not find D3-Developers team. Please check the team name and ensure it exists."
-            exit 1
-          fi
+          echo "Checking if $ACTOR is authorized to deploy PR previews..."
           
           IS_COLLABORATOR="false"
           
-          if [ "$STATUS" = "200" ]; then
-            # Get membership details to check state
-            MEMBERSHIP_RESPONSE=$(curl -s \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/orgs/$ORG/teams/$TEAM_SLUG/memberships/$ACTOR")
-            
-            # Extract state using grep (no jq needed)
-            STATE=$(echo "$MEMBERSHIP_RESPONSE" | grep -o '"state":"[^"]*"' | cut -d'"' -f4 || echo "inactive")
-            
-            if [ "$STATE" = "active" ]; then
+          for user in "${AUTHORIZED_USERS[@]}"; do
+            if [ "$ACTOR" = "$user" ]; then
               IS_COLLABORATOR="true"
-              echo "✅ Actor $ACTOR is an active member of team $TEAM_SLUG"
-            else
-              echo "❌ Actor $ACTOR is in team $TEAM_SLUG but state is $STATE"
+              echo "✅ Actor $ACTOR is authorized"
+              break
             fi
-          else
-            echo "❌ Actor $ACTOR is NOT in team $TEAM_SLUG (HTTP $STATUS)"
+          done
+          
+          if [ "$IS_COLLABORATOR" != "true" ]; then
+            echo "❌ Actor $ACTOR is not authorized. Authorized users: ${AUTHORIZED_USERS[*]}"
           fi
           
           # Set output
           echo "is_collaborator=$IS_COLLABORATOR" >> $GITHUB_OUTPUT
           
-          # Fail if non-team-member tries to add the deploy-preview label
+          # Fail if unauthorized user tries to add the deploy-preview label
           if [ "$ACTION" = "labeled" ] && [ "$LABEL_NAME" = "deploy-preview" ]; then
             if [ "$IS_COLLABORATOR" != "true" ]; then
-              echo "::error::Only members of the D3-Developers team can add the 'deploy-preview' label"
+              echo "::error::Only authorized users (NathanielRose, rly, bendichter) can add the 'deploy-preview' label"
               exit 1
             fi
           fi
