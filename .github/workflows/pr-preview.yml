@@ -321,6 +321,94 @@ jobs:
             echo "Health check failed, but continuing..."
           }
 
+      - name: Ensure Caddy is running
+        run: |
+          echo "Checking if Caddy is running..."
+          
+          # Check if Caddy container exists and is running
+          if docker ps --format '{{.Names}}' | grep -qE "^caddy-proxy$|^caddy$"; then
+            CADDY_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E "^caddy-proxy$|^caddy$" | head -n1)
+            echo "✓ Caddy container is running: $CADDY_CONTAINER"
+            
+            # Verify Caddy API is accessible
+            if curl -s --max-time 2 "http://localhost:2019/config/" > /dev/null 2>&1; then
+              echo "✓ Caddy API is accessible"
+            else
+              echo "⚠ Caddy is running but API is not accessible yet, waiting..."
+              sleep 3
+            fi
+          else
+            echo "Caddy is not running. Starting Caddy..."
+            
+            # Get absolute path to Caddyfile
+            CADDYFILE_PATH=$(pwd)/deploy/caddy/Caddyfile
+            
+            # Check if Caddy docker-compose file exists
+            if [ -f "deploy/caddy/docker-compose.caddy.yml" ]; then
+              echo "Starting Caddy using docker-compose..."
+              
+              # Start Caddy with docker-compose
+              docker compose -f deploy/caddy/docker-compose.caddy.yml -p caddy up -d
+              
+              if [ $? -eq 0 ]; then
+                echo "✓ Caddy started with docker-compose"
+              else
+                echo "⚠ Docker-compose failed, trying direct docker run..."
+                
+                # Fallback: Start Caddy directly
+                docker run -d \
+                  --name caddy-proxy \
+                  --restart unless-stopped \
+                  -p 80:80 \
+                  -p 443:443 \
+                  -p 2019:2019 \
+                  -v "$CADDYFILE_PATH:/etc/caddy/Caddyfile:ro" \
+                  -v caddy_data:/data \
+                  -v caddy_config:/config \
+                  caddy:latest
+              fi
+              
+              # Wait for Caddy to start
+              echo "Waiting for Caddy to be ready..."
+              sleep 5
+              
+              # Check if it's running now
+              if docker ps --format '{{.Names}}' | grep -qE "^caddy-proxy$|^caddy$"; then
+                echo "✓ Caddy container is running"
+                
+                # Wait for API to be ready
+                for i in {1..15}; do
+                  if curl -s --max-time 2 "http://localhost:2019/config/" > /dev/null 2>&1; then
+                    echo "✓ Caddy API is ready"
+                    break
+                  fi
+                  if [ $i -eq 15 ]; then
+                    echo "⚠ Caddy API not responding after 15 seconds, but continuing..."
+                  else
+                    sleep 1
+                  fi
+                done
+              else
+                echo "⚠ Failed to start Caddy. Check logs: docker logs caddy-proxy"
+              fi
+            else
+              echo "⚠ Caddy docker-compose file not found, starting Caddy directly..."
+              
+              docker run -d \
+                --name caddy-proxy \
+                --restart unless-stopped \
+                -p 80:80 \
+                -p 443:443 \
+                -p 2019:2019 \
+                -v "$CADDYFILE_PATH:/etc/caddy/Caddyfile:ro" \
+                -v caddy_data:/data \
+                -v caddy_config:/config \
+                caddy:latest
+              
+              sleep 5
+            fi
+          fi
+
       - name: Register Caddy routes
         env:
           CADDY_API_URL: ${{ vars.CADDY_API_URL || 'http://localhost:2019' }}
