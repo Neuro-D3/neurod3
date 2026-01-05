@@ -8,7 +8,7 @@ on:
 jobs:
   validate-pr:
     name: Validate PR
-    runs-on: self-hosted
+    runs-on: d3-oci-runner
     if: |
       (github.event.action == 'labeled' && github.event.label.name == 'deploy-preview') ||
       (github.event.action == 'unlabeled' && github.event.label.name == 'deploy-preview') ||
@@ -50,19 +50,43 @@ jobs:
         run: |
           ACTOR="${{ github.actor }}"
           REPO="${{ github.repository }}"
+          ACTION="${{ github.event.action }}"
+          LABEL_NAME="${{ github.event.label.name }}"
           
-          # Check if user has write access (collaborator)
-          RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          # Initialize permission variable
+          PERMISSION="none"
+          IS_COLLABORATOR="false"
+          
+          # Check if user is a collaborator
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GITHUB_TOKEN" \
             "https://api.github.com/repos/$REPO/collaborators/$ACTOR")
           
-          PERMISSION=$(echo "$RESPONSE" | jq -r '.permissions.push // false')
-          
-          if [ "$PERMISSION" = "true" ]; then
-            echo "is_collaborator=true" >> $GITHUB_OUTPUT
-            echo "✓ Actor $ACTOR is a collaborator"
+          if [ "$HTTP_CODE" = "204" ]; then
+            # User is a collaborator, check permissions
+            PERMISSION_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$REPO/collaborators/$ACTOR/permission")
+            PERMISSION=$(echo "$PERMISSION_RESPONSE" | jq -r '.permission // "none"')
+            
+            # Check if user has write/admin/maintain permission
+            if [[ "$PERMISSION" == "write" || "$PERMISSION" == "admin" || "$PERMISSION" == "maintain" ]]; then
+              IS_COLLABORATOR="true"
+              echo "✓ Actor $ACTOR is a collaborator with $PERMISSION permission"
+            else
+              echo "✗ Actor $ACTOR is a collaborator but lacks write permission (has: $PERMISSION)"
+            fi
           else
-            echo "is_collaborator=false" >> $GITHUB_OUTPUT
-            echo "✗ Actor $ACTOR is not a collaborator"
+            echo "✗ Actor $ACTOR is not a collaborator (HTTP $HTTP_CODE)"
+          fi
+          
+          # Set output
+          echo "is_collaborator=$IS_COLLABORATOR" >> $GITHUB_OUTPUT
+          
+          # Fail if non-contributor tries to add the deploy-preview label
+          if [ "$ACTION" = "labeled" ] && [ "$LABEL_NAME" = "deploy-preview" ]; then
+            if [ "$IS_COLLABORATOR" != "true" ]; then
+              echo "::error::Only repository contributors with write access can add the 'deploy-preview' label"
+              exit 1
+            fi
           fi
 
       - name: Decide action
@@ -104,7 +128,7 @@ jobs:
 
   cleanup-other-prs:
     name: Cleanup Other PR Previews
-    runs-on: self-hosted
+    runs-on: d3-oci-runner
     needs: validate-pr
     if: needs.validate-pr.outputs.should_deploy == 'true'
     steps:
@@ -130,24 +154,41 @@ jobs:
             "https://api.github.com/repos/$REPO/pulls?state=open&per_page=100" | \
             jq -r ".[] | select(.number != $CURRENT_PR_NUMBER) | select(.labels[]?.name == \"deploy-preview\") | .number")
           
-          if [ -z "$PRS_WITH_LABEL" ]; then
-            echo "No other PRs with deploy-preview label found"
+          # Also check for any running PR containers (deadlock prevention)
+          echo "Checking for running PR containers..."
+          RUNNING_PR_CONTAINERS=$(docker ps --format "{{.Names}}" | grep -E "^pr-[0-9]+-" | sed 's/pr-\([0-9]*\)-.*/\1/' | sort -u || true)
+          
+          if [ -z "$PRS_WITH_LABEL" ] && [ -z "$RUNNING_PR_CONTAINERS" ]; then
+            echo "No other PRs with deploy-preview label or running containers found"
             exit 0
           fi
           
-          echo "Found other PRs with deploy-preview label: $PRS_WITH_LABEL"
+          # Combine PR numbers from labels and running containers
+          ALL_PR_NUMBERS=$(echo -e "$PRS_WITH_LABEL\n$RUNNING_PR_CONTAINERS" | grep -v '^$' | sort -u)
+          
+          if [ -z "$ALL_PR_NUMBERS" ]; then
+            echo "No other PRs to clean up"
+            exit 0
+          fi
+          
+          echo "Found PRs to clean up: $ALL_PR_NUMBERS"
           
           # For each PR, remove label and tear down
-          for PR_NUMBER in $PRS_WITH_LABEL; do
+          for PR_NUMBER in $ALL_PR_NUMBERS; do
             echo "Cleaning up PR #$PR_NUMBER..."
             
-            # Remove deploy-preview label
-            curl -X DELETE \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels/deploy-preview" || true
+            # Remove deploy-preview label if it exists
+            LABEL_EXISTS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" | \
+              jq -r '.[] | select(.name == "deploy-preview") | .name' || echo "")
             
-            echo "Removed deploy-preview label from PR #$PR_NUMBER"
+            if [ -n "$LABEL_EXISTS" ]; then
+              curl -X DELETE \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels/deploy-preview" || true
+              echo "Removed deploy-preview label from PR #$PR_NUMBER"
+            fi
             
             # Tear down the environment
             PROJECT_NAME="pr-$PR_NUMBER"
@@ -167,19 +208,25 @@ jobs:
             
             echo "✓ Cleaned up PR #$PR_NUMBER"
             
-            # Comment on the PR
-            curl -X POST \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-              -d "{\"body\":\"## 🔄 PR Preview Environment Removed\\n\\nThe \`deploy-preview\` label was removed from this PR because another PR (#$CURRENT_PR_NUMBER) now has the label. Only one PR can have a preview environment active at a time.\\n\\n---\\n*Automated cleanup by GitHub Actions*\"}" || true
+            # Comment on the PR if it's still open
+            PR_STATE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER" | \
+              jq -r '.state' || echo "unknown")
+            
+            if [ "$PR_STATE" = "open" ]; then
+              curl -X POST \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
+                -d "{\"body\":\"## 🔄 PR Preview Environment Removed\\n\\nThe \`deploy-preview\` label was removed from this PR because another PR (#$CURRENT_PR_NUMBER) now has the label. Only one PR can have a preview environment active at a time.\\n\\n---\\n*Automated cleanup by GitHub Actions*\"}" || true
+            fi
           done
           
           echo "✓ Cleanup complete"
 
   deploy:
     name: Deploy PR Preview
-    runs-on: self-hosted
+    runs-on: d3-oci-runner
     needs: [validate-pr, cleanup-other-prs]
     if: needs.validate-pr.outputs.should_deploy == 'true'
     environment:
@@ -198,6 +245,27 @@ jobs:
           echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
           echo "DOMAIN=$DOMAIN" >> $GITHUB_ENV
           echo "PROJECT_NAME=pr-$PR_NUMBER" >> $GITHUB_ENV
+
+      - name: Check for running PR containers (deadlock prevention)
+        run: |
+          echo "Checking for any running PR containers before deploying..."
+          RUNNING_CONTAINERS=$(docker ps --format "{{.Names}}" | grep -E "^pr-[0-9]+-" || true)
+          
+          if [ -n "$RUNNING_CONTAINERS" ]; then
+            echo "::warning::Found running PR containers. They should have been cleaned up, but stopping them now:"
+            echo "$RUNNING_CONTAINERS"
+            
+            # Extract PR numbers and stop them
+            for CONTAINER in $RUNNING_CONTAINERS; do
+              PR_NUM=$(echo "$CONTAINER" | sed 's/pr-\([0-9]*\)-.*/\1/')
+              if [ -n "$PR_NUM" ] && [ "$PR_NUM" != "$PR_NUMBER" ]; then
+                echo "Stopping containers for PR #$PR_NUM..."
+                docker compose -p "pr-$PR_NUM" -f docker-compose.pr.yml down -v || true
+              fi
+            done
+          else
+            echo "✓ No other PR containers running"
+          fi
 
       - name: Build and deploy
         env:
@@ -257,7 +325,7 @@ jobs:
 
   teardown:
     name: Teardown PR Preview
-    runs-on: self-hosted
+    runs-on: d3-oci-runner
     needs: validate-pr
     if: needs.validate-pr.outputs.should_teardown == 'true'
     steps:
