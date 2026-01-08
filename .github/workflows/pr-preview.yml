@@ -275,35 +275,20 @@ jobs:
           clean: false  # Disable checkout's cleanup since we handle it ourselves
 
       - name: Get public IP address
+        env:
+          OCI_VM_RUNNER_PUBLIC_IP: ${{ secrets.OCI_VM_RUNNER_PUBLIC_IP }}
         run: |
-          # Try multiple methods to get public IP
-          # Option 1: Use GitHub variable if set
-          if [ -n "${{ vars.PUBLIC_IP }}" ]; then
-            PUBLIC_IP="${{ vars.PUBLIC_IP }}"
-            echo "Using PUBLIC_IP from GitHub variable: $PUBLIC_IP"
-          # Option 2: Query OCI metadata service
-          elif curl -s --max-time 2 http://169.254.169.254/opc/v1/vnics/ > /dev/null 2>&1; then
-            PUBLIC_IP=$(curl -s http://169.254.169.254/opc/v1/vnics/ | grep -o '"publicIp":"[^"]*"' | head -1 | cut -d'"' -f4)
-            echo "Using PUBLIC_IP from OCI metadata: $PUBLIC_IP"
-          # Option 3: Query external service
-          else
-            PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me || curl -s --max-time 5 icanhazip.com || echo "")
-            if [ -n "$PUBLIC_IP" ]; then
-              echo "Using PUBLIC_IP from external service: $PUBLIC_IP"
-            else
-              echo "::error::Could not determine public IP address"
-              echo "Please set PUBLIC_IP as a GitHub repository variable"
-              exit 1
-            fi
-          fi
+          # Get public IP from GitHub repository secret
+          PUBLIC_IP="$OCI_VM_RUNNER_PUBLIC_IP"
           
           if [ -z "$PUBLIC_IP" ]; then
-            echo "::error::Public IP address is empty"
+            echo "::error::Public IP address is empty. Please set OCI_VM_RUNNER_PUBLIC_IP as a GitHub repository secret"
             exit 1
           fi
           
+          # Set to GITHUB_ENV for use in later steps (this is automatically masked in logs)
           echo "PUBLIC_IP=$PUBLIC_IP" >> $GITHUB_ENV
-          echo "✓ Public IP: $PUBLIC_IP"
+          echo "✓ Public IP address retrieved from secret"
 
       - name: Set up environment
         run: |
