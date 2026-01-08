@@ -2,21 +2,9 @@
 # This is the base Caddyfile. Dynamic routes are added via the admin API.
 
 {
-	# Enable admin API for dynamic configuration
-	# Bind to 0.0.0.0 to allow access from host (required for GitHub Actions)
 	admin 0.0.0.0:2019
-	# Enable automatic HTTPS
 	auto_https off
 }
-
-# Default catch-all for unmatched paths
-# Path-based routing is handled via the admin API
-:80 {
-	respond "No PR preview environment found" 404
-}
-
-# HTTPS will be handled automatically by Caddy
-# Dynamic routes are added via the admin API using the scripts in deploy/scripts/
 
 
 

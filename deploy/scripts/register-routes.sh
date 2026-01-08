@@ -3,7 +3,7 @@
 # Usage: ./register-routes.sh <PR_NUMBER>
 # Example: ./register-routes.sh 123
 
-set +e  # Don't exit on error, we'll handle errors manually
+set -e
 
 PR_NUMBER=$1
 CADDY_API_URL=${CADDY_API_URL:-http://localhost:2019}
@@ -14,93 +14,48 @@ if [ -z "$PR_NUMBER" ]; then
     exit 1
 fi
 
+echo "Registering routes for PR #${PR_NUMBER}..."
 echo "Caddy API URL: $CADDY_API_URL"
 
-# Check if Caddy is accessible
+# Check if Caddy API is accessible
 echo "Checking if Caddy API is accessible..."
-if curl -fsS --max-time 2 "${CADDY_API_URL}/config/" > /dev/null 2>&1; then
-    echo "✓ Caddy API is accessible"
-else
+if ! curl -fsS --max-time 2 "${CADDY_API_URL}/config/" > /dev/null 2>&1; then
     echo "✗ Caddy API is not accessible at ${CADDY_API_URL}"
-    echo "Checking if Caddy container is running..."
-    
-    # Check for Caddy containers
-    if docker ps --format '{{.Names}}' | grep -qE "^caddy|^caddy-proxy"; then
-        CADDY_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E "^caddy|^caddy-proxy" | head -n1)
-        echo "Found Caddy container: $CADDY_CONTAINER"
-        echo "Container status:"
-        docker ps --filter "name=$CADDY_CONTAINER" --format "  {{.Names}}: {{.Status}}"
-        
-        # Check if Caddyfile has admin bound to 0.0.0.0
-        echo "Checking Caddyfile configuration..."
-        if docker exec "$CADDY_CONTAINER" grep -q "admin 0.0.0.0:2019" /etc/caddy/Caddyfile 2>/dev/null; then
-            echo "✓ Caddyfile is configured to bind admin API to 0.0.0.0:2019"
-            echo "⚠ Caddy may need to be restarted to apply the configuration"
-            echo "  Run: docker restart caddy-proxy"
-        else
-            echo "⚠ Caddyfile may not have admin API bound to 0.0.0.0:2019"
-            echo "  Update Caddyfile to use: admin 0.0.0.0:2019"
-        fi
-        
-        # Try to get Caddy API from container (fallback check)
-        echo "Attempting to access Caddy API from inside container..."
-        if docker exec "$CADDY_CONTAINER" curl -fsS --max-time 2 "http://127.0.0.1:2019/config/" > /dev/null 2>&1; then
-            echo "✓ Caddy API is accessible from inside the container"
-            echo "⚠ Caddy API is not accessible from the host."
-            echo "  Ensure Caddyfile has: admin 0.0.0.0:2019"
-            echo "  Then restart: docker restart caddy-proxy"
-        else
-            echo "✗ Caddy API is not accessible even from inside the container"
-            echo "Caddy may not be configured with admin API enabled"
-        fi
-    else
-        echo "✗ No Caddy container found"
-        echo "Available containers:"
-        docker ps --format "  {{.Names}}" | head -10
-    fi
-    
-    echo ""
-    echo "⚠ Continuing without Caddy route registration..."
-    echo "You may need to manually configure Caddy routes or ensure Caddy is running and accessible"
-    exit 0  # Don't fail, just warn
+    echo "  Ensure Caddy is running and the admin API is bound to 0.0.0.0:2019"
+    exit 1
 fi
 
-# Container names based on Docker Compose project naming
-# Docker Compose uses format: <project>-<service>-<index>
-PROJECT_PREFIX="pr-${PR_NUMBER}"
-AIRFLOW_CONTAINER="${PROJECT_PREFIX}-airflow-webserver-1"
-FRONTEND_CONTAINER="${PROJECT_PREFIX}-frontend-1"
-PGADMIN_CONTAINER="${PROJECT_PREFIX}-pgadmin-1"
+echo "✓ Caddy API is accessible"
 
-# Network name
-NETWORK_NAME="${PROJECT_PREFIX}-pr-network"
-
-echo "Registering routes for PR #${PR_NUMBER}..."
-
-# Function to add a route via Caddy admin API
-add_route() {
+# Function to register a route (replaces existing route by @id)
+register_route() {
     local service_name=$1
-    local path=$2
-    local upstream=$3
-    local port=$4
+    local path_prefix=$2
+    local upstream_host=$3
+    local upstream_port=$4
+    local route_id="pr-${PR_NUMBER}-${service_name}"
     
-    echo "Adding route: ${path} -> ${upstream}:${port}"
+    echo "Registering route: ${path_prefix}* -> ${upstream_host}:${upstream_port}"
     
-    # Create route configuration JSON with path matching
+    # Create route configuration JSON with strip_path_prefix
     local route_config=$(cat <<EOF
 {
-    "@id": "pr-${PR_NUMBER}-${service_name}",
+    "@id": "${route_id}",
     "match": [
         {
-            "path": ["${path}/*"]
+            "path": ["${path_prefix}*"]
         }
     ],
     "handle": [
         {
+            "handler": "rewrite",
+            "strip_path_prefix": "${path_prefix}"
+        },
+        {
             "handler": "reverse_proxy",
             "upstreams": [
                 {
-                    "dial": "${upstream}:${port}"
+                    "dial": "${upstream_host}:${upstream_port}"
                 }
             ],
             "transport": {
@@ -113,26 +68,38 @@ add_route() {
 EOF
 )
     
-    # Add route to Caddy
-    HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+    # Use PUT to replace existing route by @id
+    HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/${route_id}" \
         -H "Content-Type: application/json" \
         -d "${route_config}" \
         -s -o /dev/null -w "%{http_code}" \
         --max-time 5 \
         --connect-timeout 2 2>&1)
     
-    # Check if curl failed to connect (HTTP 000)
     if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
-        echo "✗ Failed to add route: ${path} (Connection failed - Caddy API not reachable)"
-        echo "  Check if Caddy is running and the API URL is correct: ${CADDY_API_URL}"
+        echo "✗ Failed to register route: ${path_prefix} (Connection failed)"
         return 1
     elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
-        echo "✓ Route added: ${path}"
+        echo "✓ Route registered: ${path_prefix}*"
         return 0
     else
-        echo "✗ Failed to add route: ${path} (HTTP ${HTTP_CODE})"
-        # Try to get error message
-        ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+        # If PUT fails with 404, try POST (route doesn't exist yet)
+        if [ "$HTTP_CODE" = "404" ]; then
+            HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+                -H "Content-Type: application/json" \
+                -d "${route_config}" \
+                -s -o /dev/null -w "%{http_code}" \
+                --max-time 5 \
+                --connect-timeout 2 2>&1)
+            
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+                echo "✓ Route registered: ${path_prefix}*"
+                return 0
+            fi
+        fi
+        
+        echo "✗ Failed to register route: ${path_prefix} (HTTP ${HTTP_CODE})"
+        ERROR_MSG=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/${route_id}" \
             -H "Content-Type: application/json" \
             -d "${route_config}" \
             -s --max-time 5 2>&1 | head -3)
@@ -143,120 +110,33 @@ EOF
     fi
 }
 
-# Wait for containers to be ready
-echo "Waiting for containers to be ready..."
-sleep 5
+# Service configurations: service_name, path_prefix, upstream_host, upstream_port
+# Register routes for both /pr-<N>/service and /pr-<N>/service/ patterns
 
-# Container names
-API_CONTAINER="${PROJECT_PREFIX}-api-1"
+# Airflow
+register_route "airflow" "/pr-${PR_NUMBER}/airflow" "host.docker.internal" "8080"
+register_route "airflow-slash" "/pr-${PR_NUMBER}/airflow/" "host.docker.internal" "8080"
 
-# Check if containers exist
-if ! docker ps --format '{{.Names}}' | grep -q "^${AIRFLOW_CONTAINER}$"; then
-    echo "Warning: Airflow container ${AIRFLOW_CONTAINER} not found"
-fi
+# Frontend App
+register_route "app" "/pr-${PR_NUMBER}/app" "host.docker.internal" "3000"
+register_route "app-slash" "/pr-${PR_NUMBER}/app/" "host.docker.internal" "3000"
 
-if ! docker ps --format '{{.Names}}' | grep -q "^${FRONTEND_CONTAINER}$"; then
-    echo "Warning: Frontend container ${FRONTEND_CONTAINER} not found"
-fi
+# API
+register_route "api" "/pr-${PR_NUMBER}/api" "host.docker.internal" "8000"
+register_route "api-slash" "/pr-${PR_NUMBER}/api/" "host.docker.internal" "8000"
 
-if ! docker ps --format '{{.Names}}' | grep -q "^${API_CONTAINER}$"; then
-    echo "Warning: API container ${API_CONTAINER} not found"
-fi
-
-if ! docker ps --format '{{.Names}}' | grep -q "^${PGADMIN_CONTAINER}$"; then
-    echo "Warning: pgAdmin container ${PGADMIN_CONTAINER} not found"
-fi
-
-# Connect Caddy to the PR network if not already connected
-CADDY_CONTAINER=""
-if docker ps --format '{{.Names}}' | grep -q "^caddy-proxy$"; then
-    CADDY_CONTAINER="caddy-proxy"
-elif docker ps --format '{{.Names}}' | grep -q "^caddy$"; then
-    CADDY_CONTAINER="caddy"
-fi
-
-if ! docker network inspect "${NETWORK_NAME}" &>/dev/null; then
-    echo "Warning: Network ${NETWORK_NAME} not found"
-    echo "This might be okay if containers are on the default network"
-else
-    # Connect Caddy container to PR network if it exists
-    if [ -n "$CADDY_CONTAINER" ]; then
-        if docker network inspect "${NETWORK_NAME}" | grep -q "\"${CADDY_CONTAINER}\""; then
-            echo "✓ Caddy is already connected to ${NETWORK_NAME}"
-        else
-            docker network connect "${NETWORK_NAME}" "${CADDY_CONTAINER}" 2>/dev/null && \
-                echo "✓ Connected Caddy to ${NETWORK_NAME}" || \
-                echo "⚠ Could not connect Caddy to network (may already be connected)"
-        fi
-    else
-        echo "⚠ Caddy container not found, routes may not work"
-    fi
-fi
-
-# Add routes (continue even if some fail)
-ROUTES_ADDED=0
-ROUTES_FAILED=0
-
-if add_route "airflow" "/pr-${PR_NUMBER}/airflow" "${AIRFLOW_CONTAINER}" "8080"; then
-    ROUTES_ADDED=$((ROUTES_ADDED + 1))
-else
-    ROUTES_FAILED=$((ROUTES_FAILED + 1))
-fi
-
-if add_route "app" "/pr-${PR_NUMBER}/app" "${FRONTEND_CONTAINER}" "3000"; then
-    ROUTES_ADDED=$((ROUTES_ADDED + 1))
-else
-    ROUTES_FAILED=$((ROUTES_FAILED + 1))
-fi
-
-if add_route "pgadmin" "/pr-${PR_NUMBER}/pgadmin" "${PGADMIN_CONTAINER}" "80"; then
-    ROUTES_ADDED=$((ROUTES_ADDED + 1))
-else
-    ROUTES_FAILED=$((ROUTES_FAILED + 1))
-fi
-
-if add_route "api" "/pr-${PR_NUMBER}/api" "${API_CONTAINER}" "8000"; then
-    ROUTES_ADDED=$((ROUTES_ADDED + 1))
-else
-    ROUTES_FAILED=$((ROUTES_FAILED + 1))
-fi
+# pgAdmin (using port 5050 as standard host port)
+register_route "pgadmin" "/pr-${PR_NUMBER}/pgadmin" "host.docker.internal" "5050"
+register_route "pgadmin-slash" "/pr-${PR_NUMBER}/pgadmin/" "host.docker.internal" "5050"
 
 echo ""
-echo "Routes summary: ${ROUTES_ADDED} added, ${ROUTES_FAILED} failed"
-
-# Reload Caddy configuration (only if we added at least one route)
-if [ $ROUTES_ADDED -gt 0 ]; then
-    echo "Reloading Caddy configuration..."
-    HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/reload" \
-        -s -o /dev/null -w "%{http_code}" \
-        --max-time 5 \
-        --connect-timeout 2 2>&1)
-    
-    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
-        echo "✓ Caddy configuration reloaded"
-    elif [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
-        echo "⚠ Could not reload Caddy (API not reachable)"
-    else
-        echo "⚠ Failed to reload Caddy configuration (HTTP ${HTTP_CODE})"
-    fi
-fi
-
+echo "✓ All routes registered successfully!"
+echo "  Routes are configured for path-based access:"
+echo "  - Airflow: /pr-${PR_NUMBER}/airflow"
+echo "  - App: /pr-${PR_NUMBER}/app"
+echo "  - API: /pr-${PR_NUMBER}/api"
+echo "  - pgAdmin: /pr-${PR_NUMBER}/pgadmin"
 echo ""
-if [ $ROUTES_ADDED -gt 0 ]; then
-    echo "✓ Routes registered successfully!"
-    echo "  Routes are configured for path-based access:"
-    echo "  - Airflow: /pr-${PR_NUMBER}/airflow"
-    echo "  - App: /pr-${PR_NUMBER}/app"
-    echo "  - API: /pr-${PR_NUMBER}/api"
-    echo "  - pgAdmin: /pr-${PR_NUMBER}/pgadmin"
-    echo ""
-    echo "  Access these via: http://<PUBLIC_IP>/pr-${PR_NUMBER}/<service>"
-elif [ $ROUTES_FAILED -gt 0 ]; then
-    echo "⚠ All routes failed to register"
-    echo "  Caddy API may not be accessible or Caddy may not be running"
-    echo "  You may need to manually configure routes or start Caddy"
-fi
+echo "  Access these via: http://<PUBLIC_IP>/pr-${PR_NUMBER}/<service>"
 
-# Always exit successfully - route registration failure shouldn't block deployment
 exit 0
-
