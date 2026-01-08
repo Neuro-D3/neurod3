@@ -31,7 +31,7 @@ x-airflow-common:
     - ./config:/opt/airflow/config
   networks:
     - pr-network
-  user: "${AIRFLOW_UID:-50000}:0"
+  user: "${UID:-50000}:${GID:-50000}"
   depends_on:
     &airflow-common-depends-on
     postgres:
@@ -81,16 +81,15 @@ services:
     command:
       - -c
       - |
-        if [[ -z "$${AIRFLOW_UID}" ]]; then
+        if [[ -z "$${UID}" ]] || [[ -z "$${GID}" ]]; then
           echo
-          echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
-          echo "If you are on Linux, you SHOULD follow the instructions below to set "
-          echo "AIRFLOW_UID environment variable, otherwise files will be owned by root."
-          echo "For other operating systems you can safely ignore this warning!"
+          echo -e "\033[1;33mWARNING!!!: UID or GID not set!\e[0m"
+          echo "If you are on Linux, you SHOULD set UID and GID environment variables,"
+          echo "otherwise files will be owned by root."
           echo
         fi
         mkdir -p /sources/logs /sources/dags /sources/plugins
-        chown -R "$${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        chown -R "$${UID:-50000}:$${GID:-50000}" /sources/{logs,dags,plugins} 2>/dev/null || true
         /entrypoint airflow db migrate
         /entrypoint airflow users create \
           --username $${_AIRFLOW_WWW_USER_USERNAME} \
@@ -104,6 +103,8 @@ services:
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
       _PIP_ADDITIONAL_REQUIREMENTS: ''
+      UID: ${UID:-50000}
+      GID: ${GID:-50000}
     user: "0:0"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}:/sources
@@ -162,6 +163,7 @@ services:
       - postgres
       - api
     restart: always
+    user: "${UID:-1000}:${GID:-1000}"
     # Internal port 3000, accessed via reverse proxy
 
 networks:
