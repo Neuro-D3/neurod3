@@ -133,7 +133,7 @@ delete_route() {
     fi
 }
 
-# Function to register a route (idempotent: deletes by @id before adding)
+# Function to register a route (idempotent: uses PUT to update or create)
 register_route() {
     local service_name=$1
     local path_prefix=$2
@@ -142,9 +142,6 @@ register_route() {
     local route_id="pr-${PR_NUMBER}-${service_name}"
     
     echo "Registering route: ${path_prefix}* -> ${upstream_host}:${upstream_port}"
-    
-    # Delete existing route by @id for idempotency
-    delete_route "${route_id}"
     
     # Create route configuration JSON with strip_path_prefix
     local route_config=$(cat <<EOF
@@ -177,23 +174,46 @@ register_route() {
 EOF
 )
     
-    # POST route as a single object (Caddy API appends it to the routes array)
-    HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+    # Try PUT first (update existing route by @id) - this is idempotent
+    HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/@id/${route_id}" \
         -H "Content-Type: application/json" \
         -d "${route_config}" \
         -s -o /dev/null -w "%{http_code}" \
         --max-time 5 \
         --connect-timeout 2 2>&1)
     
-    if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
-        echo "✗ Failed to register route: ${path_prefix} (Connection failed)"
-        return 1
-    elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
         echo "✓ Route registered: ${path_prefix}*"
         return 0
+    elif [ "$HTTP_CODE" = "404" ]; then
+        # Route doesn't exist yet, use POST to create it
+        HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+            -H "Content-Type: application/json" \
+            -d "${route_config}" \
+            -s -o /dev/null -w "%{http_code}" \
+            --max-time 5 \
+            --connect-timeout 2 2>&1)
+        
+        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+            echo "✓ Route registered: ${path_prefix}*"
+            return 0
+        else
+            echo "✗ Failed to register route: ${path_prefix} (HTTP ${HTTP_CODE})"
+            ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+                -H "Content-Type: application/json" \
+                -d "${route_config}" \
+                -s --max-time 5 2>&1 | head -5)
+            if [ -n "$ERROR_MSG" ]; then
+                echo "  Error: $ERROR_MSG"
+            fi
+            return 1
+        fi
+    elif [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
+        echo "✗ Failed to register route: ${path_prefix} (Connection failed)"
+        return 1
     else
         echo "✗ Failed to register route: ${path_prefix} (HTTP ${HTTP_CODE})"
-        ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+        ERROR_MSG=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/@id/${route_id}" \
             -H "Content-Type: application/json" \
             -d "${route_config}" \
             -s --max-time 5 2>&1 | head -5)
@@ -236,3 +256,4 @@ echo ""
 echo "  Access these via: http://<PUBLIC_IP>/pr-${PR_NUMBER}/<service>"
 
 exit 0
+
