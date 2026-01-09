@@ -45,6 +45,87 @@ else
     echo "⚠ Network ${NETWORK_NAME} not found - services may not be running yet"
 fi
 
+# Function to ensure HTTP app exists
+ensure_http_app() {
+    echo "Ensuring HTTP app exists..."
+    
+    HTTP_CODE=$(curl -X GET "${CADDY_API_URL}/config/apps/http" \
+        -s -o /dev/null -w "%{http_code}" \
+        --max-time 5 \
+        --connect-timeout 2 2>&1)
+    
+    if [ "$HTTP_CODE" = "200" ]; then
+        echo "✓ HTTP app already exists"
+        return 0
+    elif [ "$HTTP_CODE" = "404" ]; then
+        echo "Creating HTTP app..."
+        HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http" \
+            -H "Content-Type: application/json" \
+            -d "{}" \
+            -s -o /dev/null -w "%{http_code}" \
+            --max-time 5 \
+            --connect-timeout 2 2>&1)
+        
+        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+            echo "✓ HTTP app created"
+            return 0
+        else
+            echo "✗ Failed to create HTTP app (HTTP ${HTTP_CODE})"
+            return 1
+        fi
+    else
+        echo "✗ Failed to check HTTP app (HTTP ${HTTP_CODE})"
+        return 1
+    fi
+}
+
+# Function to ensure server srv0 exists
+ensure_server() {
+    local server_name="srv0"
+    echo "Ensuring server ${server_name} exists..."
+    
+    HTTP_CODE=$(curl -X GET "${CADDY_API_URL}/config/apps/http/servers/${server_name}" \
+        -s -o /dev/null -w "%{http_code}" \
+        --max-time 5 \
+        --connect-timeout 2 2>&1)
+    
+    if [ "$HTTP_CODE" = "200" ]; then
+        echo "✓ Server ${server_name} already exists"
+        return 0
+    elif [ "$HTTP_CODE" = "404" ]; then
+        echo "Creating server ${server_name}..."
+        local server_config='{"listen": [":80"]}'
+        HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/${server_name}" \
+            -H "Content-Type: application/json" \
+            -d "${server_config}" \
+            -s -o /dev/null -w "%{http_code}" \
+            --max-time 5 \
+            --connect-timeout 2 2>&1)
+        
+        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+            echo "✓ Server ${server_name} created"
+            return 0
+        else
+            echo "✗ Failed to create server ${server_name} (HTTP ${HTTP_CODE})"
+            ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/${server_name}" \
+                -H "Content-Type: application/json" \
+                -d "${server_config}" \
+                -s --max-time 5 2>&1 | head -3)
+            if [ -n "$ERROR_MSG" ]; then
+                echo "  Error: $ERROR_MSG"
+            fi
+            return 1
+        fi
+    else
+        echo "✗ Failed to check server ${server_name} (HTTP ${HTTP_CODE})"
+        return 1
+    fi
+}
+
+# Initialize HTTP app and server structure
+ensure_http_app || exit 1
+ensure_server || exit 1
+
 # Function to delete a route by @id (for idempotency)
 delete_route() {
     local route_id=$1
