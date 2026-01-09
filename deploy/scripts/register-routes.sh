@@ -27,7 +27,47 @@ fi
 
 echo "✓ Caddy API is accessible"
 
-# Function to register a route (replaces existing route by @id)
+# Connect Caddy to PR network so it can reach services by name
+PROJECT_NAME="pr-${PR_NUMBER}"
+NETWORK_NAME="${PROJECT_NAME}-pr-network"
+CADDY_CONTAINER="caddy-proxy"
+
+echo "Connecting Caddy to PR network: ${NETWORK_NAME}..."
+if docker network inspect "${NETWORK_NAME}" &>/dev/null; then
+    if ! docker network inspect "${NETWORK_NAME}" | grep -q "\"${CADDY_CONTAINER}\""; then
+        docker network connect "${NETWORK_NAME}" "${CADDY_CONTAINER}" 2>/dev/null && \
+            echo "✓ Connected Caddy to ${NETWORK_NAME}" || \
+            echo "⚠ Could not connect Caddy to network (may already be connected)"
+    else
+        echo "✓ Caddy is already connected to ${NETWORK_NAME}"
+    fi
+else
+    echo "⚠ Network ${NETWORK_NAME} not found - services may not be running yet"
+fi
+
+# Function to delete a route by @id (for idempotency)
+delete_route() {
+    local route_id=$1
+    
+    # Try deleting by route ID (matches pattern from remove-routes.sh)
+    HTTP_CODE=$(curl -X DELETE "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/${route_id}" \
+        -s -o /dev/null -w "%{http_code}" \
+        --max-time 5 \
+        --connect-timeout 2 2>&1)
+    
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
+        echo "  Deleted existing route: ${route_id}"
+        return 0
+    elif [ "$HTTP_CODE" = "404" ]; then
+        # Route doesn't exist, that's fine
+        return 0
+    else
+        # Ignore errors during deletion - we'll try to add anyway
+        return 0
+    fi
+}
+
+# Function to register a route (idempotent: deletes by @id before adding)
 register_route() {
     local service_name=$1
     local path_prefix=$2
@@ -36,6 +76,9 @@ register_route() {
     local route_id="pr-${PR_NUMBER}-${service_name}"
     
     echo "Registering route: ${path_prefix}* -> ${upstream_host}:${upstream_port}"
+    
+    # Delete existing route by @id for idempotency
+    delete_route "${route_id}"
     
     # Create route configuration JSON with strip_path_prefix
     local route_config=$(cat <<EOF
@@ -68,10 +111,16 @@ register_route() {
 EOF
 )
     
-    # Use PUT to replace existing route by @id
-    HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/${route_id}" \
+    # POST route as an array (Caddy API expects RouteList = array of routes)
+    # Wrap the route object in an array
+    local route_array=$(cat <<EOF
+[${route_config}]
+EOF
+)
+    
+    HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
         -H "Content-Type: application/json" \
-        -d "${route_config}" \
+        -d "${route_array}" \
         -s -o /dev/null -w "%{http_code}" \
         --max-time 5 \
         --connect-timeout 2 2>&1)
@@ -83,26 +132,11 @@ EOF
         echo "✓ Route registered: ${path_prefix}*"
         return 0
     else
-        # If PUT fails with 404, try POST (route doesn't exist yet)
-        if [ "$HTTP_CODE" = "404" ]; then
-            HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
-                -H "Content-Type: application/json" \
-                -d "${route_config}" \
-                -s -o /dev/null -w "%{http_code}" \
-                --max-time 5 \
-                --connect-timeout 2 2>&1)
-            
-            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
-                echo "✓ Route registered: ${path_prefix}*"
-                return 0
-            fi
-        fi
-        
         echo "✗ Failed to register route: ${path_prefix} (HTTP ${HTTP_CODE})"
-        ERROR_MSG=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/${route_id}" \
+        ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
             -H "Content-Type: application/json" \
-            -d "${route_config}" \
-            -s --max-time 5 2>&1 | head -3)
+            -d "${route_array}" \
+            -s --max-time 5 2>&1 | head -5)
         if [ -n "$ERROR_MSG" ]; then
             echo "  Error: $ERROR_MSG"
         fi
@@ -111,23 +145,25 @@ EOF
 }
 
 # Service configurations: service_name, path_prefix, upstream_host, upstream_port
-# Register routes for both /pr-<N>/service and /pr-<N>/service/ patterns
+# Use Docker service names from docker-compose.pr.yml
+# Network name is prefixed with project name: pr-<NUMBER>-pr-network
+# Service names are: airflow-webserver, frontend, api, pgadmin
 
-# Airflow
-register_route "airflow" "/pr-${PR_NUMBER}/airflow" "host.docker.internal" "8080"
-register_route "airflow-slash" "/pr-${PR_NUMBER}/airflow/" "host.docker.internal" "8080"
+# Airflow (service: airflow-webserver, port: 8080)
+register_route "airflow" "/pr-${PR_NUMBER}/airflow" "airflow-webserver" "8080"
+register_route "airflow-slash" "/pr-${PR_NUMBER}/airflow/" "airflow-webserver" "8080"
 
-# Frontend App
-register_route "app" "/pr-${PR_NUMBER}/app" "host.docker.internal" "3000"
-register_route "app-slash" "/pr-${PR_NUMBER}/app/" "host.docker.internal" "3000"
+# Frontend App (service: frontend, port: 3000)
+register_route "app" "/pr-${PR_NUMBER}/app" "frontend" "3000"
+register_route "app-slash" "/pr-${PR_NUMBER}/app/" "frontend" "3000"
 
-# API
-register_route "api" "/pr-${PR_NUMBER}/api" "host.docker.internal" "8000"
-register_route "api-slash" "/pr-${PR_NUMBER}/api/" "host.docker.internal" "8000"
+# API (service: api, port: 8000)
+register_route "api" "/pr-${PR_NUMBER}/api" "api" "8000"
+register_route "api-slash" "/pr-${PR_NUMBER}/api/" "api" "8000"
 
-# pgAdmin (using port 5050 as standard host port)
-register_route "pgadmin" "/pr-${PR_NUMBER}/pgadmin" "host.docker.internal" "5050"
-register_route "pgadmin-slash" "/pr-${PR_NUMBER}/pgadmin/" "host.docker.internal" "5050"
+# pgAdmin (service: pgadmin, port: 80 - internal port)
+register_route "pgadmin" "/pr-${PR_NUMBER}/pgadmin" "pgadmin" "80"
+register_route "pgadmin-slash" "/pr-${PR_NUMBER}/pgadmin/" "pgadmin" "80"
 
 echo ""
 echo "✓ All routes registered successfully!"
