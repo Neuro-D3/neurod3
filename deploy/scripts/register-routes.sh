@@ -49,32 +49,28 @@ fi
 ensure_http_app() {
     echo "Ensuring HTTP app exists..."
     
-    HTTP_CODE=$(curl -X GET "${CADDY_API_URL}/config/apps/http" \
+    # Use PUT to set the HTTP app config (creates if doesn't exist, updates if exists)
+    HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http" \
+        -H "Content-Type: application/json" \
+        -d "{}" \
         -s -o /dev/null -w "%{http_code}" \
         --max-time 5 \
         --connect-timeout 2 2>&1)
     
-    if [ "$HTTP_CODE" = "200" ]; then
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+        echo "✓ HTTP app ensured"
+        return 0
+    elif [ "$HTTP_CODE" = "409" ]; then
+        # HTTP 409 means it already exists, which is fine
         echo "✓ HTTP app already exists"
         return 0
-    elif [ "$HTTP_CODE" = "404" ]; then
-        echo "Creating HTTP app..."
-        HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http" \
+    else
+        ERROR_RESPONSE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http" \
             -H "Content-Type: application/json" \
             -d "{}" \
-            -s -o /dev/null -w "%{http_code}" \
-            --max-time 5 \
-            --connect-timeout 2 2>&1)
-        
-        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
-            echo "✓ HTTP app created"
-            return 0
-        else
-            echo "✗ Failed to create HTTP app (HTTP ${HTTP_CODE})"
-            return 1
-        fi
-    else
-        echo "✗ Failed to check HTTP app (HTTP ${HTTP_CODE})"
+            -s --max-time 5 2>&1)
+        echo "✗ Failed to ensure HTTP app (HTTP ${HTTP_CODE})"
+        echo "  Response: $ERROR_RESPONSE"
         return 1
     fi
 }
@@ -84,40 +80,29 @@ ensure_server() {
     local server_name="srv0"
     echo "Ensuring server ${server_name} exists..."
     
-    HTTP_CODE=$(curl -X GET "${CADDY_API_URL}/config/apps/http/servers/${server_name}" \
+    # Use PUT to set the server config
+    local server_config='{"listen": [":80"]}'
+    HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/${server_name}" \
+        -H "Content-Type: application/json" \
+        -d "${server_config}" \
         -s -o /dev/null -w "%{http_code}" \
         --max-time 5 \
         --connect-timeout 2 2>&1)
     
-    if [ "$HTTP_CODE" = "200" ]; then
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+        echo "✓ Server ${server_name} ensured"
+        return 0
+    elif [ "$HTTP_CODE" = "409" ]; then
+        # HTTP 409 means it already exists, which is fine
         echo "✓ Server ${server_name} already exists"
         return 0
-    elif [ "$HTTP_CODE" = "404" ]; then
-        echo "Creating server ${server_name}..."
-        local server_config='{"listen": [":80"]}'
-        HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/${server_name}" \
+    else
+        ERROR_RESPONSE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/${server_name}" \
             -H "Content-Type: application/json" \
             -d "${server_config}" \
-            -s -o /dev/null -w "%{http_code}" \
-            --max-time 5 \
-            --connect-timeout 2 2>&1)
-        
-        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
-            echo "✓ Server ${server_name} created"
-            return 0
-        else
-            echo "✗ Failed to create server ${server_name} (HTTP ${HTTP_CODE})"
-            ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/${server_name}" \
-                -H "Content-Type: application/json" \
-                -d "${server_config}" \
-                -s --max-time 5 2>&1 | head -3)
-            if [ -n "$ERROR_MSG" ]; then
-                echo "  Error: $ERROR_MSG"
-            fi
-            return 1
-        fi
-    else
-        echo "✗ Failed to check server ${server_name} (HTTP ${HTTP_CODE})"
+            -s --max-time 5 2>&1)
+        echo "✗ Failed to ensure server ${server_name} (HTTP ${HTTP_CODE})"
+        echo "  Response: $ERROR_RESPONSE"
         return 1
     fi
 }
@@ -192,16 +177,10 @@ register_route() {
 EOF
 )
     
-    # POST route as an array (Caddy API expects RouteList = array of routes)
-    # Wrap the route object in an array
-    local route_array=$(cat <<EOF
-[${route_config}]
-EOF
-)
-    
+    # POST route as a single object (Caddy API appends it to the routes array)
     HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
         -H "Content-Type: application/json" \
-        -d "${route_array}" \
+        -d "${route_config}" \
         -s -o /dev/null -w "%{http_code}" \
         --max-time 5 \
         --connect-timeout 2 2>&1)
@@ -216,7 +195,7 @@ EOF
         echo "✗ Failed to register route: ${path_prefix} (HTTP ${HTTP_CODE})"
         ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
             -H "Content-Type: application/json" \
-            -d "${route_array}" \
+            -d "${route_config}" \
             -s --max-time 5 2>&1 | head -5)
         if [ -n "$ERROR_MSG" ]; then
             echo "  Error: $ERROR_MSG"
