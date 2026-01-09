@@ -156,9 +156,21 @@ register_route() {
     local route_id="pr-${PR_NUMBER}-${service_name}"
     
     echo "Registering route: ${path_prefix}* -> ${upstream_host}:${upstream_port}"
+    echo "  Route ID: ${route_id}"
+    
+    # Debug: Check current routes before deletion
+    echo "  Debug: Checking existing routes..."
+    EXISTING_ROUTES=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null || echo "[]")
+    ROUTE_COUNT=$(echo "$EXISTING_ROUTES" | jq 'length' 2>/dev/null || echo "0")
+    echo "  Debug: Found ${ROUTE_COUNT} existing route(s)"
     
     # Delete existing route by @id for idempotency
     delete_route "${route_id}"
+    
+    # Debug: Check routes after deletion
+    EXISTING_ROUTES_AFTER=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null || echo "[]")
+    ROUTE_COUNT_AFTER=$(echo "$EXISTING_ROUTES_AFTER" | jq 'length' 2>/dev/null || echo "0")
+    echo "  Debug: Routes after deletion: ${ROUTE_COUNT_AFTER}"
     
     # Create route configuration JSON with strip_path_prefix
     local route_config=$(cat <<EOF
@@ -191,13 +203,44 @@ register_route() {
 EOF
 )
     
-    # POST route as a single object (Caddy API appends it to the routes array)
-    HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
-        -H "Content-Type: application/json" \
-        -d "${route_config}" \
-        -s -o /dev/null -w "%{http_code}" \
-        --max-time 5 \
-        --connect-timeout 2 2>&1)
+    # Debug: Show what we're about to POST
+    echo "  Debug: Route config to POST:"
+    echo "${route_config}" | jq . 2>/dev/null || echo "${route_config}"
+    
+    # If there are existing routes, we need to GET the array, append, and PUT back
+    # Otherwise, POST a single object works
+    if [ "$ROUTE_COUNT_AFTER" -gt 0 ]; then
+        echo "  Debug: Routes exist, using GET-modify-PUT approach..."
+        
+        # Get existing routes array
+        EXISTING_ROUTES_JSON=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null)
+        
+        # Parse and append new route (using jq if available, otherwise manual)
+        if command -v jq &> /dev/null; then
+            # Remove route with same @id if it exists, then append new one
+            UPDATED_ROUTES=$(echo "$EXISTING_ROUTES_JSON" | jq "[.[] | select(.\"@id\" != \"${route_id}\")] + [${route_config}]" 2>/dev/null)
+        else
+            # Fallback: just append (might create duplicates, but DELETE should have handled it)
+            UPDATED_ROUTES="[${route_config}]"
+        fi
+        
+        echo "  Debug: PUTting updated routes array..."
+        HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+            -H "Content-Type: application/json" \
+            -d "${UPDATED_ROUTES}" \
+            -s -o /dev/null -w "%{http_code}" \
+            --max-time 5 \
+            --connect-timeout 2 2>&1)
+    else
+        echo "  Debug: No existing routes, using POST single object..."
+        # POST route as a single object (works when routes array is empty)
+        HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+            -H "Content-Type: application/json" \
+            -d "${route_config}" \
+            -s -o /dev/null -w "%{http_code}" \
+            --max-time 5 \
+            --connect-timeout 2 2>&1)
+    fi
     
     if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
         echo "✗ Failed to register route: ${path_prefix} (Connection failed)"
@@ -214,6 +257,8 @@ EOF
         if [ -n "$ERROR_MSG" ]; then
             echo "  Error: $ERROR_MSG"
         fi
+        echo "  Debug: Current routes after failure:"
+        curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" | jq . 2>/dev/null || curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes"
         return 1
     fi
 }
