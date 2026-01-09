@@ -115,8 +115,8 @@ ensure_server || exit 1
 delete_route() {
     local route_id=$1
     
-    # Try deleting by route ID (matches pattern from remove-routes.sh)
-    HTTP_CODE=$(curl -X DELETE "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/${route_id}" \
+    # Try deleting by route ID using @id path
+    HTTP_CODE=$(curl -X DELETE "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/@id/${route_id}" \
         -s -o /dev/null -w "%{http_code}" \
         --max-time 5 \
         --connect-timeout 2 2>&1)
@@ -128,12 +128,26 @@ delete_route() {
         # Route doesn't exist, that's fine
         return 0
     else
-        # Ignore errors during deletion - we'll try to add anyway
-        return 0
+        # Try alternative delete path (without @id)
+        HTTP_CODE=$(curl -X DELETE "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/${route_id}" \
+            -s -o /dev/null -w "%{http_code}" \
+            --max-time 5 \
+            --connect-timeout 2 2>&1)
+        
+        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
+            echo "  Deleted existing route: ${route_id}"
+            return 0
+        elif [ "$HTTP_CODE" = "404" ]; then
+            # Route doesn't exist, that's fine
+            return 0
+        else
+            # Ignore other errors during deletion - we'll try to add anyway
+            return 0
+        fi
     fi
 }
 
-# Function to register a route (idempotent: uses PUT to update or create)
+# Function to register a route (idempotent: deletes by @id before adding)
 register_route() {
     local service_name=$1
     local path_prefix=$2
@@ -142,6 +156,9 @@ register_route() {
     local route_id="pr-${PR_NUMBER}-${service_name}"
     
     echo "Registering route: ${path_prefix}* -> ${upstream_host}:${upstream_port}"
+    
+    # Delete existing route by @id for idempotency
+    delete_route "${route_id}"
     
     # Create route configuration JSON with strip_path_prefix
     local route_config=$(cat <<EOF
@@ -174,46 +191,23 @@ register_route() {
 EOF
 )
     
-    # Try PUT first (update existing route by @id) - this is idempotent
-    HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/@id/${route_id}" \
+    # POST route as a single object (Caddy API appends it to the routes array)
+    HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
         -H "Content-Type: application/json" \
         -d "${route_config}" \
         -s -o /dev/null -w "%{http_code}" \
         --max-time 5 \
         --connect-timeout 2 2>&1)
     
-    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
-        echo "✓ Route registered: ${path_prefix}*"
-        return 0
-    elif [ "$HTTP_CODE" = "404" ]; then
-        # Route doesn't exist yet, use POST to create it
-        HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
-            -H "Content-Type: application/json" \
-            -d "${route_config}" \
-            -s -o /dev/null -w "%{http_code}" \
-            --max-time 5 \
-            --connect-timeout 2 2>&1)
-        
-        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
-            echo "✓ Route registered: ${path_prefix}*"
-            return 0
-        else
-            echo "✗ Failed to register route: ${path_prefix} (HTTP ${HTTP_CODE})"
-            ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
-                -H "Content-Type: application/json" \
-                -d "${route_config}" \
-                -s --max-time 5 2>&1 | head -5)
-            if [ -n "$ERROR_MSG" ]; then
-                echo "  Error: $ERROR_MSG"
-            fi
-            return 1
-        fi
-    elif [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
+    if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
         echo "✗ Failed to register route: ${path_prefix} (Connection failed)"
         return 1
+    elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+        echo "✓ Route registered: ${path_prefix}*"
+        return 0
     else
         echo "✗ Failed to register route: ${path_prefix} (HTTP ${HTTP_CODE})"
-        ERROR_MSG=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/@id/${route_id}" \
+        ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
             -H "Content-Type: application/json" \
             -d "${route_config}" \
             -s --max-time 5 2>&1 | head -5)
