@@ -213,10 +213,12 @@ EOF
     
     # Get existing routes array (returns null or [] if empty)
     EXISTING_ROUTES_JSON=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null)
+    echo "  Debug: Raw existing routes response: ${EXISTING_ROUTES_JSON:0:200}..."
     
     # Handle null/empty response
     if [ -z "$EXISTING_ROUTES_JSON" ] || [ "$EXISTING_ROUTES_JSON" = "null" ]; then
         EXISTING_ROUTES_JSON="[]"
+        echo "  Debug: Normalized to empty array"
     fi
     
     # Parse and append new route (using jq if available)
@@ -226,16 +228,23 @@ EOF
         
         if [ -z "$UPDATED_ROUTES" ] || [ "$UPDATED_ROUTES" = "null" ]; then
             # Fallback if jq fails
+            echo "  Debug: jq failed, using fallback"
             UPDATED_ROUTES="[${route_config}]"
+        else
+            echo "  Debug: Successfully built routes array with jq"
         fi
     else
         # Fallback without jq: just create array with new route
         # (DELETE should have removed duplicates, but this is a simple fallback)
+        echo "  Debug: jq not available, using fallback"
         UPDATED_ROUTES="[${route_config}]"
     fi
     
-    echo "  Debug: PUTting updated routes array..."
-    echo "  Debug: Routes array length: $(echo "$UPDATED_ROUTES" | jq 'length' 2>/dev/null || echo 'unknown')"
+    ROUTE_COUNT=$(echo "$UPDATED_ROUTES" | jq 'length' 2>/dev/null || echo "unknown")
+    echo "  Debug: PUTting updated routes array (length: ${ROUTE_COUNT})..."
+    
+    # Show the array we're about to PUT (first 500 chars)
+    echo "  Debug: Routes array preview: ${UPDATED_ROUTES:0:500}..."
     
     HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
         -H "Content-Type: application/json" \
@@ -244,18 +253,40 @@ EOF
         --max-time 5 \
         --connect-timeout 2 2>&1)
     
+    echo "  Debug: PUT response code: ${HTTP_CODE}"
+    
     if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
         echo "✗ Failed to register route: ${path_prefix} (Connection failed)"
         return 1
     elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
         echo "✓ Route registered: ${path_prefix}*"
         return 0
+    elif [ "$HTTP_CODE" = "409" ]; then
+        # HTTP 409 might mean route already exists - check if it's actually there
+        echo "  Debug: Got HTTP 409, checking if route was actually created..."
+        VERIFY_ROUTES=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null)
+        if echo "$VERIFY_ROUTES" | grep -q "\"${route_id}\""; then
+            echo "✓ Route already exists (HTTP 409 but route is present): ${path_prefix}*"
+            return 0
+        else
+            echo "✗ Failed to register route: ${path_prefix} (HTTP 409 - conflict)"
+            ERROR_MSG=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+                -H "Content-Type: application/json" \
+                -d "${UPDATED_ROUTES}" \
+                -s --max-time 5 2>&1 | head -10)
+            if [ -n "$ERROR_MSG" ]; then
+                echo "  Error: $ERROR_MSG"
+            fi
+            echo "  Debug: Current routes after failure:"
+            curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" | jq . 2>/dev/null || curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes"
+            return 1
+        fi
     else
         echo "✗ Failed to register route: ${path_prefix} (HTTP ${HTTP_CODE})"
-        ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+        ERROR_MSG=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
             -H "Content-Type: application/json" \
-            -d "${route_config}" \
-            -s --max-time 5 2>&1 | head -5)
+            -d "${UPDATED_ROUTES}" \
+            -s --max-time 5 2>&1 | head -10)
         if [ -n "$ERROR_MSG" ]; then
             echo "  Error: $ERROR_MSG"
         fi
