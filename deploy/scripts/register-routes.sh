@@ -111,6 +111,79 @@ ensure_server() {
 ensure_http_app || exit 1
 ensure_server || exit 1
 
+# Function to clear all routes for this PR (idempotency)
+clear_pr_routes() {
+    echo "Clearing existing routes for PR #${PR_NUMBER}..."
+    
+    # Get all existing routes
+    EXISTING_ROUTES_JSON=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null)
+    
+    # Handle null/empty response
+    if [ -z "$EXISTING_ROUTES_JSON" ] || [ "$EXISTING_ROUTES_JSON" = "null" ]; then
+        echo "  No existing routes to clear"
+        return 0
+    fi
+    
+    # Filter out routes matching this PR's pattern (pr-${PR_NUMBER}-*)
+    if command -v jq &> /dev/null; then
+        FILTERED_ROUTES=$(echo "$EXISTING_ROUTES_JSON" | jq "[.[] | select(.\"@id\" | startswith(\"pr-${PR_NUMBER}-\") | not)]" 2>/dev/null)
+        
+        if [ -z "$FILTERED_ROUTES" ] || [ "$FILTERED_ROUTES" = "null" ]; then
+            FILTERED_ROUTES="[]"
+        fi
+        
+        ROUTES_TO_REMOVE=$(echo "$EXISTING_ROUTES_JSON" | jq "[.[] | select(.\"@id\" | startswith(\"pr-${PR_NUMBER}-\"))] | length" 2>/dev/null || echo "0")
+        
+        if [ "$ROUTES_TO_REMOVE" = "0" ]; then
+            echo "  No PR routes to clear"
+            return 0
+        fi
+        
+        echo "  Removing ${ROUTES_TO_REMOVE} route(s) for PR #${PR_NUMBER}"
+        
+        # PATCH to replace existing routes (works when routes key already exists)
+        # Fallback to PUT if routes key doesn't exist (404)
+        HTTP_CODE=$(curl -X PATCH "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+            -H "Content-Type: application/json" \
+            -d "${FILTERED_ROUTES}" \
+            -s -o /dev/null -w "%{http_code}" \
+            --max-time 5 \
+            --connect-timeout 2 2>&1)
+        
+        # If PATCH returns 404, routes key doesn't exist yet, use PUT to create it
+        if [ "$HTTP_CODE" = "404" ]; then
+            echo "  Debug: Routes key doesn't exist, using PUT to create..."
+            HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+                -H "Content-Type: application/json" \
+                -d "${FILTERED_ROUTES}" \
+                -s -o /dev/null -w "%{http_code}" \
+                --max-time 5 \
+                --connect-timeout 2 2>&1)
+        fi
+        
+        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+            echo "✓ Cleared PR routes"
+            return 0
+        else
+            echo "⚠ Failed to clear PR routes (HTTP ${HTTP_CODE}), but continuing..."
+            ERROR_RESPONSE=$(curl -X PATCH "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+                -H "Content-Type: application/json" \
+                -d "${FILTERED_ROUTES}" \
+                -s --max-time 5 2>&1 | head -3)
+            if [ -n "$ERROR_RESPONSE" ]; then
+                echo "  Error: $ERROR_RESPONSE"
+            fi
+            return 0  # Don't fail, just continue
+        fi
+    else
+        echo "⚠ jq not available, cannot filter routes. Continuing anyway..."
+        return 0
+    fi
+}
+
+# Clear existing routes for this PR before registering new ones
+clear_pr_routes
+
 # Function to delete a route by @id (for idempotency)
 delete_route() {
     local route_id=$1
@@ -207,53 +280,18 @@ EOF
     echo "  Debug: Route config to POST:"
     echo "${route_config}" | jq . 2>/dev/null || echo "${route_config}"
     
-    # Caddy always expects an array (RouteList), even when empty
-    # So we need to GET existing routes, modify the array, and PUT it back
-    echo "  Debug: Using GET-modify-PUT approach (Caddy always expects array)..."
+    # After clearing PR routes, we can use POST to append (simpler and works reliably)
+    # POST appends a single route object to the routes array
+    echo "  Debug: Using POST to append route (PR routes were cleared earlier)..."
     
-    # Get existing routes array (returns null or [] if empty)
-    EXISTING_ROUTES_JSON=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null)
-    echo "  Debug: Raw existing routes response: ${EXISTING_ROUTES_JSON:0:200}..."
-    
-    # Handle null/empty response
-    if [ -z "$EXISTING_ROUTES_JSON" ] || [ "$EXISTING_ROUTES_JSON" = "null" ]; then
-        EXISTING_ROUTES_JSON="[]"
-        echo "  Debug: Normalized to empty array"
-    fi
-    
-    # Parse and append new route (using jq if available)
-    if command -v jq &> /dev/null; then
-        # Remove route with same @id if it exists, then append new one
-        UPDATED_ROUTES=$(echo "$EXISTING_ROUTES_JSON" | jq "[.[] | select(.\"@id\" != \"${route_id}\")] + [${route_config}]" 2>/dev/null)
-        
-        if [ -z "$UPDATED_ROUTES" ] || [ "$UPDATED_ROUTES" = "null" ]; then
-            # Fallback if jq fails
-            echo "  Debug: jq failed, using fallback"
-            UPDATED_ROUTES="[${route_config}]"
-        else
-            echo "  Debug: Successfully built routes array with jq"
-        fi
-    else
-        # Fallback without jq: just create array with new route
-        # (DELETE should have removed duplicates, but this is a simple fallback)
-        echo "  Debug: jq not available, using fallback"
-        UPDATED_ROUTES="[${route_config}]"
-    fi
-    
-    ROUTE_COUNT=$(echo "$UPDATED_ROUTES" | jq 'length' 2>/dev/null || echo "unknown")
-    echo "  Debug: PUTting updated routes array (length: ${ROUTE_COUNT})..."
-    
-    # Show the array we're about to PUT (first 500 chars)
-    echo "  Debug: Routes array preview: ${UPDATED_ROUTES:0:500}..."
-    
-    HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+    HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
         -H "Content-Type: application/json" \
-        -d "${UPDATED_ROUTES}" \
+        -d "${route_config}" \
         -s -o /dev/null -w "%{http_code}" \
         --max-time 5 \
         --connect-timeout 2 2>&1)
     
-    echo "  Debug: PUT response code: ${HTTP_CODE}"
+    echo "  Debug: POST response code: ${HTTP_CODE}"
     
     if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
         echo "✗ Failed to register route: ${path_prefix} (Connection failed)"
@@ -261,31 +299,11 @@ EOF
     elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
         echo "✓ Route registered: ${path_prefix}*"
         return 0
-    elif [ "$HTTP_CODE" = "409" ]; then
-        # HTTP 409 might mean route already exists - check if it's actually there
-        echo "  Debug: Got HTTP 409, checking if route was actually created..."
-        VERIFY_ROUTES=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null)
-        if echo "$VERIFY_ROUTES" | grep -q "\"${route_id}\""; then
-            echo "✓ Route already exists (HTTP 409 but route is present): ${path_prefix}*"
-            return 0
-        else
-            echo "✗ Failed to register route: ${path_prefix} (HTTP 409 - conflict)"
-            ERROR_MSG=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
-                -H "Content-Type: application/json" \
-                -d "${UPDATED_ROUTES}" \
-                -s --max-time 5 2>&1 | head -10)
-            if [ -n "$ERROR_MSG" ]; then
-                echo "  Error: $ERROR_MSG"
-            fi
-            echo "  Debug: Current routes after failure:"
-            curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" | jq . 2>/dev/null || curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes"
-            return 1
-        fi
     else
         echo "✗ Failed to register route: ${path_prefix} (HTTP ${HTTP_CODE})"
-        ERROR_MSG=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+        ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
             -H "Content-Type: application/json" \
-            -d "${UPDATED_ROUTES}" \
+            -d "${route_config}" \
             -s --max-time 5 2>&1 | head -10)
         if [ -n "$ERROR_MSG" ]; then
             echo "  Error: $ERROR_MSG"
