@@ -280,13 +280,36 @@ EOF
     echo "  Debug: Route config to POST:"
     echo "${route_config}" | jq . 2>/dev/null || echo "${route_config}"
     
-    # After clearing PR routes, we can use POST to append (simpler and works reliably)
-    # POST appends a single route object to the routes array
-    echo "  Debug: Using POST to append route (PR routes were cleared earlier)..."
+    # After clearing PR routes, ensure routes array exists (not null), then POST array
+    # Caddy requires routes to be an array, not null
+    echo "  Debug: Ensuring routes array exists before POSTing..."
     
+    # Check if routes is null (doesn't exist) vs empty array []
+    CURRENT_ROUTES=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null || echo "null")
+    
+    if [ "$CURRENT_ROUTES" = "null" ] || [ -z "$CURRENT_ROUTES" ]; then
+        echo "  Debug: Routes is null, initializing with empty array..."
+        # Initialize routes as empty array first
+        INIT_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+            -H "Content-Type: application/json" \
+            -d "[]" \
+            -s -o /dev/null -w "%{http_code}" \
+            --max-time 5 \
+            --connect-timeout 2 2>&1)
+        echo "  Debug: Routes initialization code: ${INIT_CODE}"
+    fi
+    
+    # POST route as an array (Caddy API expects RouteList = array)
+    # Wrap the route object in an array
+    local route_array=$(cat <<EOF
+[${route_config}]
+EOF
+)
+    
+    echo "  Debug: POSTing route as array..."
     HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
         -H "Content-Type: application/json" \
-        -d "${route_config}" \
+        -d "${route_array}" \
         -s -o /dev/null -w "%{http_code}" \
         --max-time 5 \
         --connect-timeout 2 2>&1)
@@ -303,7 +326,7 @@ EOF
         echo "✗ Failed to register route: ${path_prefix} (HTTP ${HTTP_CODE})"
         ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
             -H "Content-Type: application/json" \
-            -d "${route_config}" \
+            -d "${route_array}" \
             -s --max-time 5 2>&1 | head -10)
         if [ -n "$ERROR_MSG" ]; then
             echo "  Error: $ERROR_MSG"
