@@ -111,252 +111,108 @@ ensure_server() {
 ensure_http_app || exit 1
 ensure_server || exit 1
 
-# Function to clear all routes for this PR (idempotency)
-clear_pr_routes() {
-    echo "Clearing existing routes for PR #${PR_NUMBER}..."
-    
-    # Get all existing routes
-    EXISTING_ROUTES_JSON=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null)
-    
-    # Handle null/empty response
-    if [ -z "$EXISTING_ROUTES_JSON" ] || [ "$EXISTING_ROUTES_JSON" = "null" ]; then
-        echo "  No existing routes to clear"
-        return 0
-    fi
-    
-    # Filter out routes matching this PR's pattern (pr-${PR_NUMBER}-*)
-    if command -v jq &> /dev/null; then
-        FILTERED_ROUTES=$(echo "$EXISTING_ROUTES_JSON" | jq "[.[] | select(.\"@id\" | startswith(\"pr-${PR_NUMBER}-\") | not)]" 2>/dev/null)
-        
-        if [ -z "$FILTERED_ROUTES" ] || [ "$FILTERED_ROUTES" = "null" ]; then
-            FILTERED_ROUTES="[]"
-        fi
-        
-        ROUTES_TO_REMOVE=$(echo "$EXISTING_ROUTES_JSON" | jq "[.[] | select(.\"@id\" | startswith(\"pr-${PR_NUMBER}-\"))] | length" 2>/dev/null || echo "0")
-        
-        if [ "$ROUTES_TO_REMOVE" = "0" ]; then
-            echo "  No PR routes to clear"
-            return 0
-        fi
-        
-        echo "  Removing ${ROUTES_TO_REMOVE} route(s) for PR #${PR_NUMBER}"
-        
-        # PATCH to replace existing routes (works when routes key already exists)
-        # Fallback to PUT if routes key doesn't exist (404)
-        HTTP_CODE=$(curl -X PATCH "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
-            -H "Content-Type: application/json" \
-            -d "${FILTERED_ROUTES}" \
-            -s -o /dev/null -w "%{http_code}" \
-            --max-time 5 \
-            --connect-timeout 2 2>&1)
-        
-        # If PATCH returns 404, routes key doesn't exist yet, use PUT to create it
-        if [ "$HTTP_CODE" = "404" ]; then
-            echo "  Debug: Routes key doesn't exist, using PUT to create..."
-            HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
-                -H "Content-Type: application/json" \
-                -d "${FILTERED_ROUTES}" \
-                -s -o /dev/null -w "%{http_code}" \
-                --max-time 5 \
-                --connect-timeout 2 2>&1)
-        fi
-        
-        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
-            echo "✓ Cleared PR routes"
-            return 0
-        else
-            echo "⚠ Failed to clear PR routes (HTTP ${HTTP_CODE}), but continuing..."
-            ERROR_RESPONSE=$(curl -X PATCH "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
-                -H "Content-Type: application/json" \
-                -d "${FILTERED_ROUTES}" \
-                -s --max-time 5 2>&1 | head -3)
-            if [ -n "$ERROR_RESPONSE" ]; then
-                echo "  Error: $ERROR_RESPONSE"
-            fi
-            return 0  # Don't fail, just continue
-        fi
-    else
-        echo "⚠ jq not available, cannot filter routes. Continuing anyway..."
-        return 0
-    fi
-}
+# Ensure jq is available (required for Option 1 route filtering)
+if ! command -v jq &>/dev/null; then
+    echo "::error::jq is required by deploy/scripts/register-routes.sh (Option 1) but was not found on PATH"
+    exit 1
+fi
 
-# Clear existing routes for this PR before registering new ones
-clear_pr_routes
+make_route() {
+    local route_id="$1"
+    local path_prefix="$2"
+    local upstream_host="$3"
+    local upstream_port="$4"
 
-# Function to delete a route by @id (for idempotency)
-delete_route() {
-    local route_id=$1
-    
-    # Try deleting by route ID using @id path
-    HTTP_CODE=$(curl -X DELETE "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/@id/${route_id}" \
-        -s -o /dev/null -w "%{http_code}" \
-        --max-time 5 \
-        --connect-timeout 2 2>&1)
-    
-    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
-        echo "  Deleted existing route: ${route_id}"
-        return 0
-    elif [ "$HTTP_CODE" = "404" ]; then
-        # Route doesn't exist, that's fine
-        return 0
-    else
-        # Try alternative delete path (without @id)
-        HTTP_CODE=$(curl -X DELETE "${CADDY_API_URL}/config/apps/http/servers/srv0/routes/${route_id}" \
-            -s -o /dev/null -w "%{http_code}" \
-            --max-time 5 \
-            --connect-timeout 2 2>&1)
-        
-        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
-            echo "  Deleted existing route: ${route_id}"
-            return 0
-        elif [ "$HTTP_CODE" = "404" ]; then
-            # Route doesn't exist, that's fine
-            return 0
-        else
-            # Ignore other errors during deletion - we'll try to add anyway
-            return 0
-        fi
-    fi
-}
-
-# Function to register a route (idempotent: deletes by @id before adding)
-register_route() {
-    local service_name=$1
-    local path_prefix=$2
-    local upstream_host=$3
-    local upstream_port=$4
-    local route_id="pr-${PR_NUMBER}-${service_name}"
-    
-    echo "Registering route: ${path_prefix}* -> ${upstream_host}:${upstream_port}"
-    echo "  Route ID: ${route_id}"
-    
-    # Debug: Check current routes before deletion
-    echo "  Debug: Checking existing routes..."
-    EXISTING_ROUTES=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null || echo "[]")
-    ROUTE_COUNT=$(echo "$EXISTING_ROUTES" | jq 'length' 2>/dev/null || echo "0")
-    echo "  Debug: Found ${ROUTE_COUNT} existing route(s)"
-    
-    # Delete existing route by @id for idempotency
-    delete_route "${route_id}"
-    
-    # Debug: Check routes after deletion
-    EXISTING_ROUTES_AFTER=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null || echo "[]")
-    ROUTE_COUNT_AFTER=$(echo "$EXISTING_ROUTES_AFTER" | jq 'length' 2>/dev/null || echo "0")
-    echo "  Debug: Routes after deletion: ${ROUTE_COUNT_AFTER}"
-    
-    # Create route configuration JSON with strip_path_prefix
-    local route_config=$(cat <<EOF
+    cat <<EOF
 {
-    "@id": "${route_id}",
-    "match": [
+  "@id": "${route_id}",
+  "match": [
+    {
+      "path": ["${path_prefix}*"]
+    }
+  ],
+  "handle": [
+    {
+      "handler": "rewrite",
+      "strip_path_prefix": "${path_prefix}"
+    },
+    {
+      "handler": "reverse_proxy",
+      "upstreams": [
         {
-            "path": ["${path_prefix}*"]
+          "dial": "${upstream_host}:${upstream_port}"
         }
-    ],
-    "handle": [
-        {
-            "handler": "rewrite",
-            "strip_path_prefix": "${path_prefix}"
-        },
-        {
-            "handler": "reverse_proxy",
-            "upstreams": [
-                {
-                    "dial": "${upstream_host}:${upstream_port}"
-                }
-            ],
-            "transport": {
-                "protocol": "http"
-            }
-        }
-    ],
-    "terminal": true
+      ],
+      "transport": {
+        "protocol": "http"
+      }
+    }
+  ],
+  "terminal": true
 }
 EOF
-)
-    
-    # Debug: Show what we're about to POST
-    echo "  Debug: Route config to POST:"
-    echo "${route_config}" | jq . 2>/dev/null || echo "${route_config}"
-    
-    # After clearing PR routes, ensure routes array exists (not null), then POST array
-    # Caddy requires routes to be an array, not null
-    echo "  Debug: Ensuring routes array exists before POSTing..."
-    
-    # Check if routes is null (doesn't exist) vs empty array []
-    CURRENT_ROUTES=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null || echo "null")
-    
-    if [ "$CURRENT_ROUTES" = "null" ] || [ -z "$CURRENT_ROUTES" ]; then
-        echo "  Debug: Routes is null, initializing with empty array..."
-        # Initialize routes as empty array first
-        INIT_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
-            -H "Content-Type: application/json" \
-            -d "[]" \
-            -s -o /dev/null -w "%{http_code}" \
-            --max-time 5 \
-            --connect-timeout 2 2>&1)
-        echo "  Debug: Routes initialization code: ${INIT_CODE}"
+}
+
+apply_pr_routes() {
+    echo "Applying routes for PR #${PR_NUMBER} (Option 1: clear PR routes, keep others)..."
+
+    EXISTING_ROUTES_JSON=$(curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" 2>/dev/null || echo "null")
+    if [ -z "$EXISTING_ROUTES_JSON" ] || [ "$EXISTING_ROUTES_JSON" = "null" ]; then
+        EXISTING_ROUTES_JSON="[]"
     fi
-    
-    # POST route as an array (Caddy API expects RouteList = array)
-    # Wrap the route object in an array
-    local route_array=$(cat <<EOF
-[${route_config}]
+
+    # Remove any existing routes for this PR
+    FILTERED_ROUTES=$(echo "$EXISTING_ROUTES_JSON" | jq "[.[] | select(.\"@id\" | startswith(\"pr-${PR_NUMBER}-\") | not)]")
+
+    # Desired routes for this PR
+    DESIRED_ROUTES=$(cat <<EOF
+[
+$(make_route "pr-${PR_NUMBER}-airflow" "/pr-${PR_NUMBER}/airflow" "airflow-webserver" "8080"),
+$(make_route "pr-${PR_NUMBER}-airflow-slash" "/pr-${PR_NUMBER}/airflow/" "airflow-webserver" "8080"),
+$(make_route "pr-${PR_NUMBER}-app" "/pr-${PR_NUMBER}/app" "frontend" "3000"),
+$(make_route "pr-${PR_NUMBER}-app-slash" "/pr-${PR_NUMBER}/app/" "frontend" "3000"),
+$(make_route "pr-${PR_NUMBER}-api" "/pr-${PR_NUMBER}/api" "api" "8000"),
+$(make_route "pr-${PR_NUMBER}-api-slash" "/pr-${PR_NUMBER}/api/" "api" "8000"),
+$(make_route "pr-${PR_NUMBER}-pgadmin" "/pr-${PR_NUMBER}/pgadmin" "pgadmin" "80"),
+$(make_route "pr-${PR_NUMBER}-pgadmin-slash" "/pr-${PR_NUMBER}/pgadmin/" "pgadmin" "80")
+]
 EOF
 )
-    
-    echo "  Debug: POSTing route as array..."
-    HTTP_CODE=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+
+    NEW_ROUTES=$(echo "$FILTERED_ROUTES" | jq --argjson desired "$DESIRED_ROUTES" '. + $desired')
+
+    echo "  Debug: routes before: $(echo "$EXISTING_ROUTES_JSON" | jq 'length')"
+    echo "  Debug: routes after:  $(echo "$NEW_ROUTES" | jq 'length')"
+
+    # Use PATCH to replace existing routes value (works when key exists)
+    HTTP_CODE=$(curl -X PATCH "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
         -H "Content-Type: application/json" \
-        -d "${route_array}" \
+        -d "${NEW_ROUTES}" \
         -s -o /dev/null -w "%{http_code}" \
         --max-time 5 \
         --connect-timeout 2 2>&1)
-    
-    echo "  Debug: POST response code: ${HTTP_CODE}"
-    
-    if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
-        echo "✗ Failed to register route: ${path_prefix} (Connection failed)"
-        return 1
-    elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
-        echo "✓ Route registered: ${path_prefix}*"
-        return 0
-    else
-        echo "✗ Failed to register route: ${path_prefix} (HTTP ${HTTP_CODE})"
-        ERROR_MSG=$(curl -X POST "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
+
+    # If routes key doesn't exist yet, PATCH returns 404. Create with PUT.
+    if [ "$HTTP_CODE" = "404" ]; then
+        HTTP_CODE=$(curl -X PUT "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" \
             -H "Content-Type: application/json" \
-            -d "${route_array}" \
-            -s --max-time 5 2>&1 | head -10)
-        if [ -n "$ERROR_MSG" ]; then
-            echo "  Error: $ERROR_MSG"
-        fi
-        echo "  Debug: Current routes after failure:"
-        curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" | jq . 2>/dev/null || curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes"
-        return 1
+            -d "${NEW_ROUTES}" \
+            -s -o /dev/null -w "%{http_code}" \
+            --max-time 5 \
+            --connect-timeout 2 2>&1)
     fi
+
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+        echo "✓ Routes applied for PR #${PR_NUMBER}"
+        return 0
+    fi
+
+    echo "::error::Failed to apply routes (HTTP ${HTTP_CODE})"
+    curl -s "${CADDY_API_URL}/config/apps/http/servers/srv0/routes" | jq . || true
+    return 1
 }
 
-# Service configurations: service_name, path_prefix, upstream_host, upstream_port
-# Use Docker service names from docker-compose.pr.yml
-# Network name is prefixed with project name: pr-<NUMBER>-pr-network
-# Service names are: airflow-webserver, frontend, api, pgadmin
-
-# Airflow (service: airflow-webserver, port: 8080)
-register_route "airflow" "/pr-${PR_NUMBER}/airflow" "airflow-webserver" "8080"
-register_route "airflow-slash" "/pr-${PR_NUMBER}/airflow/" "airflow-webserver" "8080"
-
-# Frontend App (service: frontend, port: 3000)
-register_route "app" "/pr-${PR_NUMBER}/app" "frontend" "3000"
-register_route "app-slash" "/pr-${PR_NUMBER}/app/" "frontend" "3000"
-
-# API (service: api, port: 8000)
-register_route "api" "/pr-${PR_NUMBER}/api" "api" "8000"
-register_route "api-slash" "/pr-${PR_NUMBER}/api/" "api" "8000"
-
-# pgAdmin (service: pgadmin, port: 80 - internal port)
-register_route "pgadmin" "/pr-${PR_NUMBER}/pgadmin" "pgadmin" "80"
-register_route "pgadmin-slash" "/pr-${PR_NUMBER}/pgadmin/" "pgadmin" "80"
+apply_pr_routes || exit 1
 
 echo ""
 echo "✓ All routes registered successfully!"
