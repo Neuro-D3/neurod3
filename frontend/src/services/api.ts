@@ -2,7 +2,23 @@
  * API service for fetching neuroscience datasets from the backend.
  */
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+function inferApiBaseUrl(): string {
+  // Preferred: explicit env var (CI / custom deployments)
+  const envUrl = process.env.REACT_APP_API_URL;
+  if (envUrl && envUrl.trim()) return envUrl.replace(/\/+$/, '');
+
+  // PR preview default: derive `/pr-<N>/api` from current pathname.
+  // Example: `/pr-45/app/` -> `/pr-45/api`
+  if (typeof window !== 'undefined') {
+    const m = window.location.pathname.match(/^(\/pr-\d+)\b/);
+    if (m?.[1]) return `${m[1]}/api`;
+  }
+
+  // Local dev fallback (direct API port)
+  return 'http://localhost:8000';
+}
+
+const API_BASE_URL = inferApiBaseUrl();
 
 export interface Dataset {
   source: 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet';
