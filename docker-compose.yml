@@ -10,12 +10,13 @@ x-airflow-common:
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
     AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+    # Avoid compose warnings when not set; provide via env/.env in real deployments.
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY}
-    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:-}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-}
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
   volumes:
     - ./dags:/opt/airflow/dags
@@ -30,7 +31,9 @@ x-airflow-common:
 
 services:
   postgres:
-    image: postgres:16
+    # Keep aligned with existing named volume initialization (was created with Postgres 13).
+    # If you want to upgrade to Postgres 16, you must migrate or recreate the volume.
+    image: postgres:13
     environment:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: airflow
@@ -54,7 +57,8 @@ services:
       - "8080:8080"
     restart: always
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      # Airflow 3 api-server does not serve /health; use the v2 monitor health endpoint.
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
       interval: 30s
       timeout: 10s
       retries: 5
