@@ -5,6 +5,11 @@ on:
     types: [opened, synchronize, labeled, unlabeled, closed]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
 jobs:
   validate-pr:
     name: Validate PR
@@ -387,26 +392,26 @@ jobs:
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ needs.validate-pr.outputs.pr_number }}
-          PUBLIC_IP: ${{ env.PUBLIC_IP }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const prNumber = process.env.PR_NUMBER;
-            const publicIp = process.env.PUBLIC_IP;
             
-            const comment = `## 🚀 PR Preview Environment Deployed
-            
-            Your preview environment is now available at:
-            
-            - **Airflow**: http://${publicIp}/pr-${prNumber}/airflow
-            - **Frontend App**: http://${publicIp}/pr-${prNumber}/app
-            - **API**: http://${publicIp}/pr-${prNumber}/api
-            - **pgAdmin**: http://${publicIp}/pr-${prNumber}/pgadmin
-            
-            > **Note**: This environment will be automatically torn down when the PR is closed or the \`deploy-preview\` label is removed. Only one PR can have a preview environment active at a time.
-            
-            ---
-            *Deployed by GitHub Actions*`;
+            const comment = [
+              '## 🚀 PR Preview Environment Deployed',
+              '',
+              `Base URL: http://<PUBLIC_IP>/pr-${prNumber}`,
+              '',
+              '- **Airflow**: /airflow',
+              '- **Frontend App**: /app',
+              '- **API**: /api',
+              '- **pgAdmin**: /pgadmin',
+              '',
+              '> **Note**: Replace `<PUBLIC_IP>` with the shared runner VM public IP (stored as the repo secret `OCI_VM_RUNNER_PUBLIC_IP`).',
+              '',
+              '---',
+              '*Deployed by GitHub Actions*',
+            ].join('\n');
             
             github.rest.issues.createComment({
               issue_number: prNumber,
