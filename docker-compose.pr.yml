@@ -17,12 +17,19 @@ x-airflow-common:
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    # Airflow 3: LocalExecutor task runner reports status back to the execution API.
+    # In PR preview, the api-server runs in the `airflow-webserver` service/container.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-webserver:8080/execution/
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    # Keep auth signing stable across components/restarts; otherwise UI requests (incl. logs) can fail with
+    # "JWT token is not valid: Signature verification failed".
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:-dev-only-airflow-api-secret-key}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-dev-only-airflow-jwt-secret}
     # Airflow 3 SimpleAuthManager (stable credentials for PR previews)
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: 'airflow-admin:admin'
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: '/opt/airflow/config/simple_auth_manager_passwords.json'
