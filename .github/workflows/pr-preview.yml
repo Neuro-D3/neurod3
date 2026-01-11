@@ -123,6 +123,15 @@ jobs:
     needs: validate-pr
     if: needs.validate-pr.outputs.should_deploy == 'true'
     steps:
+      - name: Pre-checkout normalize workspace permissions
+        run: |
+          # Self-hosted runners can accumulate root/other-owned files from previous Docker runs.
+          # Fix ownership/permissions *before* actions/checkout tries to clean/reset the repo.
+          if [ -d "$GITHUB_WORKSPACE" ]; then
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
+            sudo chmod -R u+rwX "$GITHUB_WORKSPACE" || true
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
@@ -132,6 +141,7 @@ jobs:
         run: |
           echo "UID=$(id -u)" >> $GITHUB_ENV
           echo "GID=$(id -g)" >> $GITHUB_ENV
+          echo "AIRFLOW_UID=$(id -u)" >> $GITHUB_ENV
           echo "✓ Exported UID=$UID, GID=$GID"
 
       - name: Find and cleanup other PRs with deploy-preview label
@@ -225,9 +235,9 @@ jobs:
         run: |
           echo "Normalizing workspace permissions..."
           if [ -d "$GITHUB_WORKSPACE" ]; then
-            chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" || true
-            find "$GITHUB_WORKSPACE" -type f -exec chmod 644 {} \; 2>/dev/null || true
-            find "$GITHUB_WORKSPACE" -type d -exec chmod 755 {} \; 2>/dev/null || true
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
+            sudo find "$GITHUB_WORKSPACE" -type f -exec chmod 644 {} \; 2>/dev/null || true
+            sudo find "$GITHUB_WORKSPACE" -type d -exec chmod 755 {} \; 2>/dev/null || true
             echo "✓ Workspace permissions normalized"
           fi
 
@@ -239,23 +249,14 @@ jobs:
     environment:
       name: pr-preview
     steps:
-      - name: Clean up workspace and fix permissions
+      - name: Pre-checkout clean workspace and fix permissions
         run: |
-          # Fix permissions on workspace directory if it exists
+          # Ensure actions/checkout can clean/reset by removing any root/other-owned files from prior runs.
           if [ -d "$GITHUB_WORKSPACE" ]; then
-            echo "Fixing permissions on workspace directory..."
-            
-            # Remove specific problematic files/directories first
-            if [ -f "$GITHUB_WORKSPACE/dags/.airflowignore" ]; then
-              echo "Removing problematic .airflowignore file..."
-              rm -f "$GITHUB_WORKSPACE/dags/.airflowignore" 2>/dev/null || true
-            fi
-            
-            # Now try to remove all files (without sudo)
-            echo "Cleaning up workspace..."
-            rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.git "$GITHUB_WORKSPACE"/.* 2>/dev/null || true
-            
-            echo "✓ Workspace cleaned"
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
+            sudo chmod -R u+rwX "$GITHUB_WORKSPACE" || true
+            # Remove all contents (including .git) so checkout starts fresh.
+            sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
           fi
 
       - name: Checkout code
@@ -263,12 +264,13 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-          clean: false  # Disable checkout's cleanup since we handle it ourselves
+          clean: true  # Workspace is pre-cleaned; allow checkout to manage a clean tree
 
       - name: Export UID/GID
         run: |
           echo "UID=$(id -u)" >> $GITHUB_ENV
           echo "GID=$(id -g)" >> $GITHUB_ENV
+          echo "AIRFLOW_UID=$(id -u)" >> $GITHUB_ENV
           echo "✓ Exported UID=$UID, GID=$GID"
 
       - name: Get public IP address
@@ -316,12 +318,12 @@ jobs:
 
       - name: Build and deploy
         env:
-          REACT_APP_API_URL: http://${{ env.PUBLIC_IP }}/pr-${{ needs.validate-pr.outputs.pr_number }}/api
           UID: ${{ env.UID }}
           GID: ${{ env.GID }}
         run: |
           echo "Building and deploying PR #$PR_NUMBER..."
           echo "Using UID=$UID, GID=$GID for containers"
+          export REACT_APP_API_URL="http://${PUBLIC_IP}/pr-${PR_NUMBER}/api"
           docker compose -p "$PROJECT_NAME" -f docker-compose.pr.yml up -d --build
           
           echo "Waiting for services to start..."
@@ -418,9 +420,9 @@ jobs:
         run: |
           echo "Normalizing workspace permissions..."
           if [ -d "$GITHUB_WORKSPACE" ]; then
-            chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" || true
-            find "$GITHUB_WORKSPACE" -type f -exec chmod 644 {} \; 2>/dev/null || true
-            find "$GITHUB_WORKSPACE" -type d -exec chmod 755 {} \; 2>/dev/null || true
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
+            sudo find "$GITHUB_WORKSPACE" -type f -exec chmod 644 {} \; 2>/dev/null || true
+            sudo find "$GITHUB_WORKSPACE" -type d -exec chmod 755 {} \; 2>/dev/null || true
             echo "✓ Workspace permissions normalized"
           fi
 
@@ -481,9 +483,9 @@ jobs:
         run: |
           echo "Normalizing workspace permissions..."
           if [ -d "$GITHUB_WORKSPACE" ]; then
-            chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" || true
-            find "$GITHUB_WORKSPACE" -type f -exec chmod 644 {} \; 2>/dev/null || true
-            find "$GITHUB_WORKSPACE" -type d -exec chmod 755 {} \; 2>/dev/null || true
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
+            sudo find "$GITHUB_WORKSPACE" -type f -exec chmod 644 {} \; 2>/dev/null || true
+            sudo find "$GITHUB_WORKSPACE" -type d -exec chmod 755 {} \; 2>/dev/null || true
             echo "✓ Workspace permissions normalized"
           fi
 
