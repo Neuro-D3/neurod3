@@ -1,0 +1,38 @@
+version: '3.8'
+
+# Caddy reverse proxy service
+# This runs alongside PR environments to route traffic
+
+services:
+  caddy:
+    image: caddy:latest
+    container_name: caddy-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+      # Admin API should only be reachable locally on the VM/runner host
+      - "127.0.0.1:2019:2019"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - caddy-network
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+
+networks:
+  caddy-network:
+    driver: bridge
+    name: caddy-network
+
+volumes:
+  caddy_data:
+    # Caddy data for certificates
+  caddy_config:
+    # Caddy configuration
+
+
+
