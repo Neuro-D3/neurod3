@@ -98,8 +98,9 @@ total_count=4
 while [ $elapsed -lt $TIMEOUT ]; do
     ready_count=0
     
-    # Check Airflow (port 8080) - try health endpoint first, then root
-    if check_http "${AIRFLOW_CONTAINER}" "8080" "Airflow" "/health" 2>/dev/null || \
+    # Check Airflow (port 8080) - Airflow 3+ health endpoint is under the REST API
+    if check_http "${AIRFLOW_CONTAINER}" "8080" "Airflow" "/api/v2/monitor/health" 2>/dev/null || \
+       check_http "${AIRFLOW_CONTAINER}" "8080" "Airflow" "/health" 2>/dev/null || \
        check_http "${AIRFLOW_CONTAINER}" "8080" "Airflow" "/" 2>/dev/null; then
         ready_count=$((ready_count + 1))
     fi

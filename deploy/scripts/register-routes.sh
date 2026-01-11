@@ -21,7 +21,7 @@ echo "Caddy API URL: $CADDY_API_URL"
 echo "Checking if Caddy API is accessible..."
 if ! curl -fsS --max-time 2 "${CADDY_API_URL}/config/" > /dev/null 2>&1; then
     echo "✗ Caddy API is not accessible at ${CADDY_API_URL}"
-    echo "  Ensure Caddy is running and the admin API is bound to 0.0.0.0:2019"
+    echo "  Ensure Caddy is running and the admin API is reachable at ${CADDY_API_URL} (on Docker setups, bind 2019 to 127.0.0.1 on the host)"
     exit 1
 fi
 

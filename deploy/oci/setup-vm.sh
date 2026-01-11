@@ -94,7 +94,7 @@ ufw --force enable
 ufw allow 22/tcp    # SSH
 ufw allow 80/tcp    # HTTP
 ufw allow 443/tcp   # HTTPS
-ufw allow 2019/tcp  # Caddy admin API (consider restricting to localhost)
+# NOTE: Do NOT open 2019 publicly. The Caddy admin API should only be reachable locally.
 echo "✓ Firewall configured"
 
 # Create directories
