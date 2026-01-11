@@ -3,7 +3,6 @@
 # Usage: ./remove-routes.sh <PR_NUMBER>
 # Example: ./remove-routes.sh 123
 
-set +e  # Don't exit on error, we'll handle errors manually
 
 PR_NUMBER=$1
 CADDY_API_URL=${CADDY_API_URL:-http://localhost:2019}

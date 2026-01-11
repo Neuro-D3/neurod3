@@ -10,7 +10,7 @@ function inferApiBaseUrl(): string {
   // PR preview default: derive `/pr-<N>/api` from current pathname.
   // Example: `/pr-45/app/` -> `/pr-45/api`
   if (typeof window !== 'undefined') {
-    const m = window.location.pathname.match(/^(\/pr-\d+)\b/);
+    const m = window.location.pathname.match(/^(\/pr-\d+)(?=\/)/);
     if (m?.[1]) return `${m[1]}/api`;
   }
 

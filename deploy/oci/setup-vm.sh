@@ -181,7 +181,8 @@ echo "  sudo ./svc.sh start"
 
 # Create runner directory
 mkdir -p /opt/pr-preview/actions-runner
-chown -R $SUDO_USER:$SUDO_USER /opt/pr-preview/actions-runner
+RUN_USER="${SUDO_USER:-root}"
+chown -R "$RUN_USER":"$RUN_USER" /opt/pr-preview/actions-runner
 
 # Set up log rotation
 echo ""
