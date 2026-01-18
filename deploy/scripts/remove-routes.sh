@@ -3,7 +3,6 @@
 # Usage: ./remove-routes.sh <PR_NUMBER>
 # Example: ./remove-routes.sh 123
 
-set +e  # Don't exit on error, we'll handle errors manually
 
 PR_NUMBER=$1
 CADDY_API_URL=${CADDY_API_URL:-http://localhost:2019}
@@ -89,9 +88,6 @@ else
     echo "⚠ Failed to reload Caddy configuration (HTTP ${HTTP_CODE})"
 fi
 
-# Always exit successfully - route removal failure shouldn't block teardown
-exit 0
-
 # Disconnect Caddy from PR network (optional cleanup)
 NETWORK_NAME="pr-${PR_NUMBER}-pr-network"
 if docker network inspect "${NETWORK_NAME}" &>/dev/null; then
@@ -101,3 +97,5 @@ if docker network inspect "${NETWORK_NAME}" &>/dev/null; then
     fi
 fi
 
+# Always exit successfully - route removal failure shouldn't block teardown
+exit 0
