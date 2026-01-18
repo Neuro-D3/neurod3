@@ -3,12 +3,12 @@
 # Usage: ./health-check.sh <PR_NUMBER>
 # Example: ./health-check.sh 123
 
-set +e  # Don't exit on error, we want to continue even if some checks fail
+set -e  # Exit on unexpected errors; health checks handle expected failures explicitly
 
 PR_NUMBER=$1
 TIMEOUT=${TIMEOUT:-180}  # 3 minutes timeout (increased)
 INTERVAL=${INTERVAL:-5}  # Check every 5 seconds
-MIN_REQUIRED=${MIN_REQUIRED:-2}  # Minimum services that must be ready
+MIN_REQUIRED=${MIN_REQUIRED:-2}  # Minimum number of services that must be ready; default 2 assumes only a subset of services are critical in CI. Override via MIN_REQUIRED to match your required critical services.
 
 if [ -z "$PR_NUMBER" ]; then
     echo "Usage: $0 <PR_NUMBER>"
