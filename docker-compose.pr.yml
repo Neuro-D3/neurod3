@@ -51,7 +51,7 @@ x-airflow-common:
 services:
   postgres:
     # NOTE: Postgres data lives in a Docker named volume. If you change Postgres MAJOR versions,
-    # you must migrate the data or recreate the volume (e.g., `docker compose ... down -v`).
+    # you must migrate the data or recreate the volume (e.g., `docker compose -p pr-<PR_NUMBER> -f docker-compose.pr.yml down -v`).
     image: postgres:16
     environment:
       POSTGRES_USER: airflow
