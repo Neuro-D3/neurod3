@@ -1,3 +1,14 @@
+version: '3.8'
+
+# PR-scoped Docker Compose configuration
+# This file is used for PR preview environments
+# Usage: docker compose -p pr-<PR_NUMBER> -f docker-compose.pr.yml up -d --build
+#
+# Key differences from docker-compose.yml:
+# - No port bindings (all services are internal, accessed via reverse proxy)
+# - Isolated networks per PR (via project name prefix)
+# - Project-scoped volumes (via project name prefix)
+
 x-airflow-common:
   &airflow-common
   build:
@@ -6,33 +17,39 @@ x-airflow-common:
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
-    AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
+    # Airflow 3: LocalExecutor task runner reports status back to the execution API.
+    # In PR preview, the api-server runs in the `airflow-webserver` service/container.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-webserver:8080/execution/
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    # Avoid compose warnings when not set; provide via env/.env in real deployments.
-    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-9m9C9yN7OYMva9n-1kO-Y8I4JVXu2fLG3gNsYch0eK0=}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:-}
-    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-}
+    # Keep auth signing stable across components/restarts; otherwise UI requests (incl. logs) can fail with
+    # "JWT token is not valid: Signature verification failed".
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:-dev-only-airflow-api-secret-key}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-dev-only-airflow-jwt-secret}
+    # Airflow 3 SimpleAuthManager (stable credentials for PR previews)
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: 'airflow-admin:admin'
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: '/opt/airflow/config/simple_auth_manager_passwords.json'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
     - ./config:/opt/airflow/config
-  user: "${AIRFLOW_UID:-50000}:0"
+  networks:
+    - pr-network
+  # Airflow's image expects to run with GID=0 even when using a non-root UID.
+  user: "${UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
     postgres:
-      condition: service_healthy
+      condition: service_started
 
 services:
   postgres:
-    # Keep aligned with existing named volume initialization (was created with Postgres 13).
-    # If you want to upgrade to Postgres 16, you must migrate or recreate the volume.
     image: postgres:13
     environment:
       POSTGRES_USER: airflow
@@ -41,37 +58,19 @@ services:
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
       - ./database/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - pr-network
     restart: always
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow"]
-      interval: 10s
-      retries: 5
-      start_period: 5s
+    # No ports exposed - internal only
 
-  airflow-api-server:
+  airflow-webserver:
     <<: *airflow-common
+    # Airflow 3+ removed `airflow webserver`; use `api-server` instead.
     command: api-server
-    ports:
-      - "8080:8080"
+    networks:
+      - pr-network
     restart: always
-    healthcheck:
-      # Use the v2 monitor health endpoint for the Airflow 3 api-server healthcheck.
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    depends_on:
-      <<: *airflow-common-depends-on
-      airflow-init:
-        condition: service_completed_successfully
-
-  airflow-dag-processor:
-    <<: *airflow-common
-    command: dag-processor
-    restart: always
+    # Internal port 8080, accessed via reverse proxy
     depends_on:
       <<: *airflow-common-depends-on
       airflow-init:
@@ -80,17 +79,30 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    networks:
+      - pr-network
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
-      airflow-api-server:
-        condition: service_healthy
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    networks:
+      - pr-network
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
 
   airflow-triggerer:
     <<: *airflow-common
     command: triggerer
+    networks:
+      - pr-network
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -105,11 +117,8 @@ services:
       - |
         if [[ -z "${AIRFLOW_UID}" ]]; then
           echo
-          echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
-          echo "If you are on Linux, you SHOULD follow the instructions below to set "
-          echo "AIRFLOW_UID environment variable, otherwise files will be owned by root."
-          echo "For other operating systems you can get rid of the warning with manually created .env file:"
-          echo "    See: https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#setting-the-right-airflow-user"
+          echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\033[0m"
+          echo "If you are on Linux, you SHOULD set AIRFLOW_UID environment variable, otherwise files will be owned by root."
           echo
           export AIRFLOW_UID=$$(id -u)
         fi
@@ -118,30 +127,30 @@ services:
         cpus_available=$$(grep -cE 'cpu[0-9]+' /proc/stat)
         disk_available=$$(df / | tail -1 | awk '{print $$4}')
         warning_resources="false"
-        if (( mem_available < 4000 )) ; then
+        if (( mem_available < 4000 )); then
           echo
-          echo -e "\033[1;33mWARNING!!!: Not enough memory available for Docker.\e[0m"
-          echo "At least 4GB of memory required. You have $$(numfmt --to iec $$((mem_available * one_meg)))"
+          echo -e "\033[1;33mWARNING!!!: Not enough memory available for Docker.\033[0m"
+          echo "At least 4GB of memory required. You have $${mem_available}MB"
           echo
           warning_resources="true"
         fi
         if (( cpus_available < 2 )); then
           echo
-          echo -e "\033[1;33mWARNING!!!: Not enough CPUs available for Docker.\e[0m"
+          echo -e "\033[1;33mWARNING!!!: Not enough CPUS available for Docker.\033[0m"
           echo "At least 2 CPUs recommended. You have $${cpus_available}"
           echo
           warning_resources="true"
         fi
         if (( disk_available < one_meg * 10 )); then
           echo
-          echo -e "\033[1;33mWARNING!!!: Not enough Disk space available for Docker.\e[0m"
+          echo -e "\033[1;33mWARNING!!!: Not enough Disk space available for Docker.\033[0m"
           echo "At least 10 GBs recommended. You have $$(numfmt --to iec $$((disk_available * 1024 )))"
           echo
           warning_resources="true"
         fi
         if [[ $${warning_resources} == "true" ]]; then
           echo
-          echo -e "\033[1;33mWARNING!!!: You have not enough resources to run Airflow (see above)!\e[0m"
+          echo -e "\033[1;33mWARNING!!!: You have not enough resources to run Airflow (see above)!\033[0m"
           echo "Please follow the instructions to increase amount of resources available:"
           echo "   https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#before-you-begin"
           echo
@@ -184,7 +193,11 @@ services:
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
       _PIP_ADDITIONAL_REQUIREMENTS: ''
+      # Used by the init script; keep aligned with the UID we run Airflow containers as.
+      AIRFLOW_UID: ${UID:-50000}
     user: "0:0"
+    networks:
+      - pr-network
 
   pgadmin:
     image: dpage/pgadmin4:latest
@@ -193,21 +206,25 @@ services:
       PGADMIN_DEFAULT_PASSWORD: admin
       PGADMIN_CONFIG_SERVER_MODE: 'False'
       PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
-    ports:
-      - "5050:80"
+      # Serve pgAdmin under the PR preview subpath (no hardcoded PR number).
+      # Default PR_NUMBER to 0 for local usage when not provided.
+      SCRIPT_NAME: /pr-${PR_NUMBER:-0}/pgadmin
+    networks:
+      - pr-network
     volumes:
       - pgadmin-data:/var/lib/pgadmin
       - ./database/pgadmin-servers.json:/pgadmin4/servers.json:ro
     depends_on:
       - postgres
     restart: always
+    # Internal port 80, accessed via reverse proxy
 
   api:
     build:
       context: ./api
       dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
+    networks:
+      - pr-network
     environment:
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -217,16 +234,20 @@ services:
     depends_on:
       - postgres
     restart: always
+    # Internal port 8000, accessed via reverse proxy
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
+    networks:
+      - pr-network
     environment:
       - CHOKIDAR_USEPOLLING=true
-      - REACT_APP_API_URL=http://localhost:8000
+      # API URL for PR previews - will be set by GitHub Actions workflow
+      # Format: https://pr-<NUMBER>.api.<DOMAIN>
+      # Leave unset by default so the frontend can infer `/pr-<N>/api` from the current URL.
+      - REACT_APP_API_URL=${REACT_APP_API_URL:-}
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -234,8 +255,17 @@ services:
       - postgres
       - api
     restart: always
+    user: "${UID:-1000}:${GID:-1000}"
+    # Internal port 3000, accessed via reverse proxy
+
+networks:
+  pr-network:
+    driver: bridge
+    # Network name will be prefixed with project name (pr-<NUMBER>)
 
 volumes:
   postgres-db-volume:
+    # Volume name will be prefixed with project name (pr-<NUMBER>)
   pgadmin-data:
+    # Volume name will be prefixed with project name (pr-<NUMBER>)
 

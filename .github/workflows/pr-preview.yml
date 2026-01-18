@@ -1,0 +1,496 @@
+name: PR Preview Environment
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled, unlabeled, closed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  validate-pr:
+    name: Validate PR
+    runs-on: oci-hosted
+    if: |
+      (github.event.action == 'labeled' && github.event.label.name == 'deploy-preview') ||
+      (github.event.action == 'unlabeled' && github.event.label.name == 'deploy-preview') ||
+      (github.event.action == 'opened' && contains(github.event.pull_request.labels.*.name, 'deploy-preview')) ||
+      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'deploy-preview')) ||
+      (github.event.action == 'closed')
+    outputs:
+      pr_number: ${{ steps.get-pr.outputs.number }}
+      is_fork: ${{ steps.check-fork.outputs.is_fork }}
+      is_collaborator: ${{ steps.check-collaborator.outputs.is_collaborator }}
+      should_deploy: ${{ steps.decide.outputs.should_deploy }}
+      should_teardown: ${{ steps.decide.outputs.should_teardown }}
+    steps:
+      - name: Get PR number
+        id: get-pr
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "PR Number: $PR_NUMBER"
+
+      - name: Check if PR is from fork
+        id: check-fork
+        run: |
+          HEAD_REPO="${{ github.event.pull_request.head.repo.full_name }}"
+          BASE_REPO="${{ github.repository }}"
+          if [ "$HEAD_REPO" != "$BASE_REPO" ]; then
+            echo "is_fork=true" >> $GITHUB_OUTPUT
+            echo "⚠️ PR is from a fork: $HEAD_REPO"
+          else
+            echo "is_fork=false" >> $GITHUB_OUTPUT
+            echo "✓ PR is from same repository"
+          fi
+
+      - name: Check if actor is authorized
+        id: check-collaborator
+        if: steps.check-fork.outputs.is_fork == 'false'
+        env:
+          ACTOR: ${{ github.actor }}
+          ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+        run: |
+          # List of authorized users who can deploy PR previews
+          AUTHORIZED_USERS=("NathanielRose" "rly" "bendichter")
+          
+          echo "Checking if $ACTOR is authorized to deploy PR previews..."
+          
+          IS_COLLABORATOR="false"
+          
+          for user in "${AUTHORIZED_USERS[@]}"; do
+            if [ "$ACTOR" = "$user" ]; then
+              IS_COLLABORATOR="true"
+              echo "✅ Actor $ACTOR is authorized"
+              break
+            fi
+          done
+          
+          if [ "$IS_COLLABORATOR" != "true" ]; then
+            echo "❌ Actor $ACTOR is not authorized. Authorized users: ${AUTHORIZED_USERS[*]}"
+          fi
+          
+          # Set output
+          echo "is_collaborator=$IS_COLLABORATOR" >> $GITHUB_OUTPUT
+          
+          # Fail if unauthorized user tries to add the deploy-preview label
+          if [ "$ACTION" = "labeled" ] && [ "$LABEL_NAME" = "deploy-preview" ]; then
+            if [ "$IS_COLLABORATOR" != "true" ]; then
+              echo "::error::Only authorized users (NathanielRose, rly, bendichter) can add the 'deploy-preview' label"
+              exit 1
+            fi
+          fi
+
+      - name: Decide action
+        id: decide
+        run: |
+          PR_NUMBER="${{ steps.get-pr.outputs.number }}"
+          IS_FORK="${{ steps.check-fork.outputs.is_fork }}"
+          IS_COLLABORATOR="${{ steps.check-collaborator.outputs.is_collaborator }}"
+          ACTION="${{ github.event.action }}"
+          LABEL_NAME="${{ github.event.label.name }}"
+          
+          SHOULD_DEPLOY=false
+          SHOULD_TEARDOWN=false
+          
+          # Only deploy if not a fork and is a collaborator
+          if [ "$IS_FORK" = "false" ] && [ "$IS_COLLABORATOR" = "true" ]; then
+            if [ "$ACTION" = "labeled" ] && [ "$LABEL_NAME" = "deploy-preview" ]; then
+              SHOULD_DEPLOY=true
+            elif [ "$ACTION" = "opened" ] || [ "$ACTION" = "synchronize" ]; then
+              # Check if label exists
+              if echo "${{ toJSON(github.event.pull_request.labels) }}" | grep -q "deploy-preview"; then
+                SHOULD_DEPLOY=true
+              fi
+            fi
+          fi
+          
+          # Teardown on label removal or PR close
+          if [ "$ACTION" = "unlabeled" ] && [ "$LABEL_NAME" = "deploy-preview" ]; then
+            SHOULD_TEARDOWN=true
+          elif [ "$ACTION" = "closed" ]; then
+            SHOULD_TEARDOWN=true
+          fi
+          
+          echo "should_deploy=$SHOULD_DEPLOY" >> $GITHUB_OUTPUT
+          echo "should_teardown=$SHOULD_TEARDOWN" >> $GITHUB_OUTPUT
+          
+          echo "Deploy: $SHOULD_DEPLOY"
+          echo "Teardown: $SHOULD_TEARDOWN"
+
+  cleanup-other-prs:
+    name: Cleanup Other PR Previews
+    runs-on: oci-hosted
+    needs: validate-pr
+    if: needs.validate-pr.outputs.should_deploy == 'true'
+    steps:
+      - name: Pre-checkout normalize workspace permissions
+        run: |
+          # Self-hosted runners can accumulate root/other-owned files from previous Docker runs.
+          # Fix ownership/permissions *before* actions/checkout tries to clean/reset the repo.
+          if [ -d "$GITHUB_WORKSPACE" ]; then
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
+            sudo chmod -R u+rwX "$GITHUB_WORKSPACE" || true
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Export UID/GID
+        run: |
+          echo "UID=$(id -u)" >> $GITHUB_ENV
+          echo "GID=$(id -g)" >> $GITHUB_ENV
+          echo "AIRFLOW_UID=$(id -u)" >> $GITHUB_ENV
+          echo "✓ Exported UID=$UID, GID=$GID"
+
+      - name: Find and cleanup other PRs with deploy-preview label
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT_PR: ${{ needs.validate-pr.outputs.pr_number }}
+        run: |
+          REPO="${{ github.repository }}"
+          CURRENT_PR_NUMBER="$CURRENT_PR"
+          CADDY_API_URL="${{ vars.CADDY_API_URL || 'http://localhost:2019' }}"
+          
+          echo "Checking for other PRs with deploy-preview label..."
+          
+          # Get all open PRs with deploy-preview label
+          PRS_WITH_LABEL=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$REPO/pulls?state=open&per_page=100" | \
+            jq -r ".[] | select(.number != $CURRENT_PR_NUMBER) | select(.labels[]?.name == \"deploy-preview\") | .number")
+          
+          # Also check for any running PR containers (deadlock prevention)
+          echo "Checking for running PR containers..."
+          RUNNING_PR_CONTAINERS=$(docker ps --format "{{.Names}}" | grep -E "^pr-[0-9]+-" | sed 's/pr-\([0-9]*\)-.*/\1/' | sort -u || true)
+          
+          if [ -z "$PRS_WITH_LABEL" ] && [ -z "$RUNNING_PR_CONTAINERS" ]; then
+            echo "No other PRs with deploy-preview label or running containers found"
+            exit 0
+          fi
+          
+          # Combine PR numbers from labels and running containers
+          ALL_PR_NUMBERS=$(echo -e "$PRS_WITH_LABEL\n$RUNNING_PR_CONTAINERS" | grep -v '^$' | sort -u)
+          
+          if [ -z "$ALL_PR_NUMBERS" ]; then
+            echo "No other PRs to clean up"
+            exit 0
+          fi
+          
+          echo "Found PRs to clean up: $ALL_PR_NUMBERS"
+          
+          # For each PR, remove label and tear down
+          for PR_NUMBER in $ALL_PR_NUMBERS; do
+            echo "Cleaning up PR #$PR_NUMBER..."
+            
+            # Remove deploy-preview label if it exists
+            LABEL_EXISTS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" | \
+              jq -r '.[] | select(.name == "deploy-preview") | .name' || echo "")
+            
+            if [ -n "$LABEL_EXISTS" ]; then
+              curl -X DELETE \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels/deploy-preview" || true
+              echo "Removed deploy-preview label from PR #$PR_NUMBER"
+            fi
+            
+            # Tear down the environment
+            PROJECT_NAME="pr-$PR_NUMBER"
+            
+            # Remove Caddy routes
+            if [ -f deploy/scripts/remove-routes.sh ]; then
+              chmod +x deploy/scripts/remove-routes.sh
+              ./deploy/scripts/remove-routes.sh "$PR_NUMBER" || {
+                echo "Failed to remove routes for PR #$PR_NUMBER, but continuing..."
+              }
+            fi
+            
+            # Stop and remove containers
+            docker compose -p "$PROJECT_NAME" -f docker-compose.pr.yml down -v || {
+              echo "Failed to tear down PR #$PR_NUMBER, but continuing..."
+            }
+            
+            echo "✓ Cleaned up PR #$PR_NUMBER"
+            
+            # Comment on the PR if it's still open
+            PR_STATE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER" | \
+              jq -r '.state' || echo "unknown")
+            
+            if [ "$PR_STATE" = "open" ]; then
+              curl -X POST \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
+                -d "{\"body\":\"## 🔄 PR Preview Environment Removed\\n\\nThe \`deploy-preview\` label was removed from this PR because another PR (#$CURRENT_PR_NUMBER) now has the label. Only one PR can have a preview environment active at a time.\\n\\n---\\n*Automated cleanup by GitHub Actions*\"}" || true
+            fi
+          done
+          
+          echo "✓ Cleanup complete"
+
+      - name: Normalize workspace permissions
+        if: always()
+        run: |
+          echo "Normalizing workspace permissions..."
+          if [ -d "$GITHUB_WORKSPACE" ]; then
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
+            sudo find "$GITHUB_WORKSPACE" -type f -exec chmod 644 {} \; 2>/dev/null || true
+            sudo find "$GITHUB_WORKSPACE" -type d -exec chmod 755 {} \; 2>/dev/null || true
+            echo "✓ Workspace permissions normalized"
+          fi
+
+  deploy:
+    name: Deploy PR Preview
+    runs-on: oci-hosted
+    needs: [validate-pr, cleanup-other-prs]
+    if: needs.validate-pr.outputs.should_deploy == 'true'
+    environment:
+      name: pr-preview
+    steps:
+      - name: Pre-checkout clean workspace and fix permissions
+        run: |
+          # Ensure actions/checkout can clean/reset by removing any root/other-owned files from prior runs.
+          if [ -d "$GITHUB_WORKSPACE" ]; then
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
+            sudo chmod -R u+rwX "$GITHUB_WORKSPACE" || true
+            # Remove all contents (including .git) so checkout starts fresh.
+            sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          clean: true  # Workspace is pre-cleaned; allow checkout to manage a clean tree
+
+      - name: Export UID/GID
+        run: |
+          echo "UID=$(id -u)" >> $GITHUB_ENV
+          echo "GID=$(id -g)" >> $GITHUB_ENV
+          echo "AIRFLOW_UID=$(id -u)" >> $GITHUB_ENV
+          echo "✓ Exported UID=$UID, GID=$GID"
+
+      - name: Get public IP address
+        env:
+          OCI_VM_RUNNER_PUBLIC_IP: ${{ secrets.OCI_VM_RUNNER_PUBLIC_IP }}
+        run: |
+          # Get public IP from GitHub repository secret
+          PUBLIC_IP="$OCI_VM_RUNNER_PUBLIC_IP"
+          
+          if [ -z "$PUBLIC_IP" ]; then
+            echo "::error::Public IP address is empty. Please set OCI_VM_RUNNER_PUBLIC_IP as a GitHub repository secret"
+            exit 1
+          fi
+          
+          # Set to GITHUB_ENV for use in later steps (this is automatically masked in logs)
+          echo "PUBLIC_IP=$PUBLIC_IP" >> $GITHUB_ENV
+          echo "✓ Public IP address retrieved from secret"
+
+      - name: Set up environment
+        run: |
+          PR_NUMBER="${{ needs.validate-pr.outputs.pr_number }}"
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          echo "PROJECT_NAME=pr-$PR_NUMBER" >> $GITHUB_ENV
+
+      - name: Check for running PR containers (deadlock prevention)
+        run: |
+          echo "Checking for any running PR containers before deploying..."
+          RUNNING_CONTAINERS=$(docker ps --format "{{.Names}}" | grep -E "^pr-[0-9]+-" || true)
+          
+          if [ -n "$RUNNING_CONTAINERS" ]; then
+            echo "::warning::Found running PR containers. They should have been cleaned up, but stopping them now:"
+            echo "$RUNNING_CONTAINERS"
+            
+            # Extract PR numbers and stop them
+            for CONTAINER in $RUNNING_CONTAINERS; do
+              PR_NUM=$(echo "$CONTAINER" | sed 's/pr-\([0-9]*\)-.*/\1/')
+              if [ -n "$PR_NUM" ] && [ "$PR_NUM" != "$PR_NUMBER" ]; then
+                echo "Stopping containers for PR #$PR_NUM..."
+                docker compose -p "pr-$PR_NUM" -f docker-compose.pr.yml down -v || true
+              fi
+            done
+          else
+            echo "✓ No other PR containers running"
+          fi
+
+      - name: Build and deploy
+        env:
+          UID: ${{ env.UID }}
+          GID: ${{ env.GID }}
+        run: |
+          echo "Building and deploying PR #$PR_NUMBER..."
+          echo "Using UID=$UID, GID=$GID for containers"
+          export REACT_APP_API_URL="http://${PUBLIC_IP}/pr-${PR_NUMBER}/api"
+          docker compose -p "$PROJECT_NAME" -f docker-compose.pr.yml up -d --build
+          
+          echo "Waiting for services to start..."
+          sleep 10
+
+      - name: Health check
+        run: |
+          chmod +x deploy/scripts/health-check.sh
+          ./deploy/scripts/health-check.sh "$PR_NUMBER" || {
+            echo "Health check failed, but continuing..."
+          }
+
+      - name: Restart Caddy and wait for admin API
+        run: |
+          echo "Restarting Caddy via docker-compose..."
+          
+          # Resolve repo root correctly
+          REPO_ROOT="${GITHUB_WORKSPACE:-$(pwd)}"
+          CADDYFILE_PATH="$REPO_ROOT/deploy/caddy/Caddyfile"
+          COMPOSE_FILE="$REPO_ROOT/deploy/caddy/docker-compose.caddy.yml"
+          
+          # Hard-fail if files don't exist
+          if [ ! -f "$CADDYFILE_PATH" ]; then
+            echo "::error::Caddyfile not found at $CADDYFILE_PATH"
+            exit 1
+          fi
+          
+          if [ ! -f "$COMPOSE_FILE" ]; then
+            echo "::error::Caddy docker-compose file not found at $COMPOSE_FILE"
+            exit 1
+          fi
+          
+          # Restart Caddy using docker-compose
+          cd "$REPO_ROOT/deploy/caddy"
+          docker compose -f docker-compose.caddy.yml -p caddy restart || \
+            docker compose -f docker-compose.caddy.yml -p caddy up -d
+          cd "$REPO_ROOT"
+          
+          echo "Waiting for Caddy admin API to be ready..."
+          for i in {1..30}; do
+            if curl -fsS --max-time 2 "http://localhost:2019/config/" > /dev/null 2>&1; then
+              echo "✓ Caddy admin API is ready"
+              exit 0
+            fi
+            if [ $i -eq 30 ]; then
+              echo "::error::Caddy admin API not accessible after 30 seconds"
+              echo "Check Caddy logs: docker logs caddy-proxy"
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Register Caddy routes
+        env:
+          CADDY_API_URL: ${{ vars.CADDY_API_URL || 'http://localhost:2019' }}
+        run: |
+          chmod +x deploy/scripts/register-routes.sh
+          ./deploy/scripts/register-routes.sh "$PR_NUMBER"
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.validate-pr.outputs.pr_number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = process.env.PR_NUMBER;
+            
+            const comment = [
+              '## 🚀 PR Preview Environment Deployed',
+              '',
+              `Base URL: http://<PUBLIC_IP>/pr-${prNumber}`,
+              '',
+              '- **Airflow**: /airflow',
+              '- **Frontend App**: /app',
+              '- **API**: /api',
+              '- **pgAdmin**: /pgadmin',
+              '',
+              '> **Note**: Replace `<PUBLIC_IP>` with the shared runner VM public IP (stored as the repo secret `OCI_VM_RUNNER_PUBLIC_IP`).',
+              '',
+              '---',
+              '*Deployed by GitHub Actions*',
+            ].join('\n');
+            
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Normalize workspace permissions
+        if: always()
+        run: |
+          echo "Normalizing workspace permissions..."
+          if [ -d "$GITHUB_WORKSPACE" ]; then
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
+            sudo find "$GITHUB_WORKSPACE" -type f -exec chmod 644 {} \; 2>/dev/null || true
+            sudo find "$GITHUB_WORKSPACE" -type d -exec chmod 755 {} \; 2>/dev/null || true
+            echo "✓ Workspace permissions normalized"
+          fi
+
+  teardown:
+    name: Teardown PR Preview
+    runs-on: oci-hosted
+    needs: validate-pr
+    if: needs.validate-pr.outputs.should_teardown == 'true'
+    steps:
+      - name: Set up environment
+        run: |
+          PR_NUMBER="${{ needs.validate-pr.outputs.pr_number }}"
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          echo "PROJECT_NAME=pr-$PR_NUMBER" >> $GITHUB_ENV
+
+      - name: Remove Caddy routes
+        env:
+          CADDY_API_URL: ${{ vars.CADDY_API_URL || 'http://localhost:2019' }}
+        run: |
+          chmod +x deploy/scripts/remove-routes.sh
+          ./deploy/scripts/remove-routes.sh "$PR_NUMBER" || {
+            echo "Failed to remove routes, but continuing..."
+          }
+
+      - name: Stop and remove containers
+        run: |
+          echo "Tearing down PR #$PR_NUMBER..."
+          docker compose -p "$PROJECT_NAME" -f docker-compose.pr.yml down -v || {
+            echo "Failed to tear down, but continuing..."
+          }
+
+      - name: Comment on PR
+        if: github.event.action == 'closed'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.validate-pr.outputs.pr_number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = process.env.PR_NUMBER;
+            
+            const comment = `## 🧹 PR Preview Environment Removed
+            
+            The preview environment for this PR has been torn down and all resources have been cleaned up.
+            
+            ---
+            *Cleaned up by GitHub Actions*`;
+            
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Normalize workspace permissions
+        if: always()
+        run: |
+          echo "Normalizing workspace permissions..."
+          if [ -d "$GITHUB_WORKSPACE" ]; then
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
+            sudo find "$GITHUB_WORKSPACE" -type f -exec chmod 644 {} \; 2>/dev/null || true
+            sudo find "$GITHUB_WORKSPACE" -type d -exec chmod 755 {} \; 2>/dev/null || true
+            echo "✓ Workspace permissions normalized"
+          fi
+
