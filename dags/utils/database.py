@@ -214,7 +214,7 @@ def create_table_if_not_exists(table_name: str, schema: str) -> None:
 
 def create_unified_datasets_view(cursor) -> Dict[str, Any]:
     """
-    Create or replace the unified_datasets view that combines dandi_dataset and neuroscience_datasets.
+    Create or replace the unified_datasets view that combines available dataset source tables.
     
     This function checks which tables exist and creates the appropriate view SQL.
     Works with both psycopg2 and psycopg cursor objects.
@@ -228,6 +228,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         - total_rows: int - Total rows in the view
         - rows_by_source: dict - Row counts by source
         - dandi_table_exists: bool
+        - openneuro_table_exists: bool
         - neuro_table_exists: bool
     """
     import logging
@@ -242,6 +243,15 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         );
     """)
     dandi_table_exists = cursor.fetchone()[0]
+
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name = 'openneuro_dataset'
+        );
+    """)
+    openneuro_table_exists = cursor.fetchone()[0]
     
     cursor.execute("""
         SELECT EXISTS (
@@ -252,20 +262,24 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
     """)
     neuro_table_exists = cursor.fetchone()[0]
     
-    if not dandi_table_exists and not neuro_table_exists:
-        logger.warning("Neither dandi_dataset nor neuroscience_datasets tables exist. Cannot create view.")
+    if not dandi_table_exists and not openneuro_table_exists and not neuro_table_exists:
+        logger.warning(
+            "No dataset source tables exist (dandi_dataset, openneuro_dataset, neuroscience_datasets). Cannot create view."
+        )
         return {
             "view_created": False,
             "total_rows": 0,
             "rows_by_source": {},
             "dandi_table_exists": False,
+            "openneuro_table_exists": False,
             "neuro_table_exists": False,
         }
     
     # Build view SQL based on which tables exist
-    if dandi_table_exists and neuro_table_exists:
-        create_view_sql = """
-        CREATE OR REPLACE VIEW unified_datasets AS
+    selects: List[str] = []
+
+    if dandi_table_exists:
+        selects.append("""
         SELECT
             'DANDI'::text AS source,
             dataset_id,
@@ -278,9 +292,29 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             updated_at,
             version
         FROM dandi_dataset
-        
-        UNION ALL
-        
+        """.strip())
+
+    if openneuro_table_exists:
+        selects.append("""
+        SELECT
+            'OpenNeuro'::text AS source,
+            dataset_id,
+            title,
+            modality,
+            citations,
+            url,
+            description,
+            created_at,
+            updated_at,
+            version
+        FROM openneuro_dataset
+        """.strip())
+
+    if neuro_table_exists:
+        # Legacy table for multi-source ingestion. If OpenNeuro now has its own table,
+        # exclude OpenNeuro rows here to avoid duplicates.
+        where_clause = "WHERE source NOT IN ('DANDI', 'OpenNeuro')" if openneuro_table_exists else "WHERE source != 'DANDI'"
+        selects.append(f"""
         SELECT
             source::text,
             dataset_id,
@@ -293,42 +327,11 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             updated_at,
             NULL::VARCHAR(64) AS version
         FROM neuroscience_datasets
-        WHERE source != 'DANDI';
-        """
-    elif dandi_table_exists:
-        # Only dandi_dataset exists
-        create_view_sql = """
-        CREATE OR REPLACE VIEW unified_datasets AS
-        SELECT
-            'DANDI'::text AS source,
-            dataset_id,
-            title,
-            modality,
-            citations,
-            url,
-            description,
-            created_at,
-            updated_at,
-            version
-        FROM dandi_dataset;
-        """
-    else:
-        # Only neuroscience_datasets exists
-        create_view_sql = """
-        CREATE OR REPLACE VIEW unified_datasets AS
-        SELECT
-            source::text,
-            dataset_id,
-            title,
-            modality,
-            citations,
-            url,
-            description,
-            created_at,
-            updated_at,
-            NULL::VARCHAR(64) AS version
-        FROM neuroscience_datasets;
-        """
+        {where_clause}
+        """.strip())
+
+    # Join whichever sources exist
+    create_view_sql = "CREATE OR REPLACE VIEW unified_datasets AS\n" + "\nUNION ALL\n".join(selects) + ";"
     
     # Check if view exists before creating
     cursor.execute("""
@@ -340,7 +343,15 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
     """)
     view_existed = cursor.fetchone()[0]
     
-    # Create or replace the view
+    # IMPORTANT:
+    # Postgres does not allow CREATE OR REPLACE VIEW to change the existing view's column
+    # layout (adding/reordering columns). Since we may evolve the view schema over time,
+    # drop first to avoid errors like:
+    #   "cannot change name of view column ..."
+    if view_existed:
+        cursor.execute("DROP VIEW IF EXISTS unified_datasets;")
+
+    # Create the view
     cursor.execute(create_view_sql)
     
     # Get statistics
@@ -365,5 +376,6 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         "total_rows": total_rows,
         "rows_by_source": rows_by_source,
         "dandi_table_exists": dandi_table_exists,
+        "openneuro_table_exists": openneuro_table_exists,
         "neuro_table_exists": neuro_table_exists,
     }

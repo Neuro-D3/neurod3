@@ -56,7 +56,8 @@ type Dataset = {
   source: 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet';
   id: string;
   title: string;
-  modality: string;
+  modality: string | null;
+  tags?: string | null;
   citations: number;
   url: string;
 };
@@ -242,8 +243,8 @@ export default function NeuroDatasetDiscovery() {
 
     if (modalityFilter !== 'all') {
       const hasModality =
-        group.primary.modality.includes(modalityFilter) ||
-        group.alternates.some((alt) => alt.modality.includes(modalityFilter));
+        (group.primary.modality || '').includes(modalityFilter) ||
+        group.alternates.some((alt) => (alt.modality || '').includes(modalityFilter));
       if (!hasModality) return false;
     }
 
@@ -259,7 +260,7 @@ export default function NeuroDatasetDiscovery() {
     if (sortBy === 'title') comparison = aData.title.localeCompare(bData.title);
     else if (sortBy === 'id') comparison = aData.id.localeCompare(bData.id);
     else if (sortBy === 'source') comparison = aData.source.localeCompare(bData.source);
-    else if (sortBy === 'modality') comparison = aData.modality.localeCompare(bData.modality);
+    else if (sortBy === 'modality') comparison = (aData.modality || '').localeCompare(bData.modality || '');
     else if (sortBy === 'citations') comparison = aData.citations - bData.citations;
 
     return sortOrder === 'asc' ? comparison : -comparison;
@@ -408,9 +409,9 @@ export default function NeuroDatasetDiscovery() {
             }`}
           >
             <div className="text-2xl font-bold bg-gradient-to-r from-green-600 to-green-400 bg-clip-text text-transparent">
-              {stats.bySources['Kaggle'] || 0}
+              {stats.bySources['OpenNeuro'] || 0}
             </div>
-            <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>Kaggle</div>
+            <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>OpenNeuro</div>
           </div>
         </div>
 
@@ -648,7 +649,7 @@ export default function NeuroDatasetDiscovery() {
                             className="px-4 py-3 text-sm"
                             style={{ color: darkMode ? '#E5E7EB' : '#111827' }}
                           >
-                            {group.primary.modality}
+                            {group.primary.modality || '—'}
                           </td>
                           <td
                             className="px-4 py-3 text-sm font-semibold"

@@ -24,7 +24,8 @@ export interface Dataset {
   source: 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet';
   id: string;
   title: string;
-  modality: string;
+  modality: string | null;
+  tags?: string | null;
   citations: number;
   url: string;
   description?: string;
