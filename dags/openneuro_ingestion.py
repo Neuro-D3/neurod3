@@ -2200,4 +2200,4 @@ verify_data_task = PythonOperator(
 )
 
 # Set task dependencies
-create_openneuro_table_task >> fetch_datasets_task >> enrich_openneuro_data_task >> create_view_task >> verify_data_task
+create_openneuro_table_task >> fetch_datasets_task >> enrich_openneuro_data_task >> insert_datasets_task >> create_view_task >> verify_data_task
