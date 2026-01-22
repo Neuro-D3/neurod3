@@ -85,6 +85,28 @@ docker compose down -v
 
 ⚠️ **Warning**: The `-v` flag will delete all database data. Use this when you want a completely fresh start.
 
+#### PR preview teardown (project-scoped)
+
+If you started a PR preview stack with a project name (example: `pr-45`) using `docker-compose.pr.yml`, you must pass the same `-p` and `-f` flags when tearing it down:
+
+```bash
+docker compose -p pr-45 -f docker-compose.pr.yml down -v
+```
+
+#### Verifying the Postgres version
+
+After bringing the stack up, you can confirm the running Postgres version with:
+
+```bash
+docker compose exec -T postgres psql -U airflow -d airflow -c "SELECT version();"
+```
+
+For a PR preview stack (example: `pr-45`):
+
+```bash
+docker compose -p pr-45 -f docker-compose.pr.yml exec -T postgres psql -U airflow -d airflow -c "SELECT version();"
+```
+
 ---
 
 ## Localhost Locations and Ports
