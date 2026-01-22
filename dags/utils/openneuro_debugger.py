@@ -6,7 +6,7 @@ OpenNeuro modality extractor.
 - Falls back to inferring modalities from latestSnapshot.files filenames (robust)
 
 Usage:
-  python3 openneuro_modality.py ds000001
+  python3 openneuro_debugger.py ds000001
 """
 
 import sys

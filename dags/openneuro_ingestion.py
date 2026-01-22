@@ -65,6 +65,10 @@ from utils.database import get_db_connection, create_unified_datasets_view
 
 logger = logging.getLogger(__name__)
 
+# Cache for Dataset field specifications obtained via GraphQL introspection.
+# Initialized to None to indicate that introspection has not yet been performed.
+_DATASET_FIELD_SPECS_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
+
 default_args = {
     'owner': 'neurod3',
     'depends_on_past': False,
@@ -464,7 +468,7 @@ def _is_scalar_or_list_of_scalar(t: Dict[str, Any]) -> bool:
         return False
 
     kind = t.get("kind")
-    name = t.get("name")
+
     of_type = t.get("ofType")
 
     # SCALAR / ENUM
@@ -983,7 +987,7 @@ def _get_snapshot_description_and_paths(
                             paths.append(n[cand])
                             break
     paths = paths[:500]
-    paths = paths[:500]
+
 
     # Extract description/license: prefer README (256 chars), fall back to dataset_description.json
     readme_raw = snap.get("readme")
@@ -1399,19 +1403,11 @@ def fetch_openneuro_datasets(**context) -> List[Dict[str, Any]]:
     dataset_fields = set(dataset_field_specs.keys())
 
     name_field = "name" if "name" in dataset_fields and _is_scalar_or_list_of_scalar(dataset_field_specs.get("name", {})) else None
-    modified_field = _pick_first_available_field(dataset_fields, ["modified", "updated", "lastModified"])
-    if modified_field and not _is_scalar_or_list_of_scalar(dataset_field_specs.get(modified_field, {})):
-        modified_field = None
 
-    # Optional enrichable scalar fields (only if schema supports them directly on Dataset)
-    modalities_field = None
-    for cand in ["modalities", "modality"]:
-        if cand in dataset_fields and _is_scalar_or_list_of_scalar(dataset_field_specs.get(cand, {})):
-            modalities_field = cand
-            break
 
-    readme_field = "readme" if "readme" in dataset_fields and _is_scalar_or_list_of_scalar(dataset_field_specs.get("readme", {})) else None
-    license_field = "license" if "license" in dataset_fields and _is_scalar_or_list_of_scalar(dataset_field_specs.get("license", {})) else None
+
+
+
 
     # Keep the XCom payload small: only fetch identifiers (+ optional name for nicer logs).
     # Detailed metadata (analytics, license, readme, etc.) is fetched per-dataset in the enrich step.
@@ -2110,7 +2106,7 @@ def insert_openneuro_datasets(**context):
     )
     # Backwards compatibility: this task used to do the insert.
     # After refactor, enrichment persists to DB and returns only a small summary.
-    if datasets and isinstance(datasets, list) and datasets and isinstance(datasets[0], dict) and "dataset_id" in datasets[0]:
+    if datasets and isinstance(datasets, list) and isinstance(datasets[0], dict) and "dataset_id" in datasets[0]:
         _upsert_openneuro_datasets(datasets)
     else:
         logger.info("Insert task skipped (datasets were already persisted during enrichment).")
