@@ -34,13 +34,12 @@ OpenNeuro.Dataset
   description.License --------------> license fallback -> openneuro_dataset.license
 
 OpenNeuro.Snapshot (selected when needed)
-  latest/selected tag --------------> version -> openneuro_dataset.version
+  latest/selected tag --------------> internal snapshot tag for enrichment
   snapshot.description.Name --------> title fallback -> openneuro_dataset.title
   snapshot.description.Description -> description fallback -> openneuro_dataset.description
   snapshot.description.License ----> license fallback -> openneuro_dataset.license
   snapshot.created ----------------> updated_at fallback -> openneuro_dataset.updated_at
   snapshot.readme -----------------> description fallback -> openneuro_dataset.description
-  snapshot.files[].filename -------+> modality inference fallback (BIDS paths)
 
 Additional notes
 ----------------
@@ -88,9 +87,6 @@ dag = DAG(
         'num_datasets': 5000,  # Default number of datasets to fetch
         # OpenNeuro is sensitive to high concurrency; keep this lower than DANDI by default.
         'enrichment_max_workers': 5,
-        # When True, infer modality from snapshot file paths (BIDS anat/func/eeg/...) if missing.
-        # This is more expensive (extra snapshot.files resolver) but is the most reliable fallback.
-        'infer_modality_from_files': False,
     },
 )
 
@@ -117,14 +113,6 @@ _OPENNEURO_MODALITY_DEBUG = os.getenv("OPENNEURO_MODALITY_DEBUG", "0").strip().l
 _OPENNEURO_MODALITY_DEBUG_SAMPLES = int(os.getenv("OPENNEURO_MODALITY_DEBUG_SAMPLES", "25"))
 _OPENNEURO_MODALITY_DEBUG_LOCK = threading.Lock()
 _OPENNEURO_MODALITY_DEBUG_EMITTED = 0
-
-# When enabled, attempt BIDS file-path inference for modality if OpenNeuro doesn't return modalities.
-_OPENNEURO_INFER_MODALITY_FROM_FILES = os.getenv("OPENNEURO_INFER_MODALITY_FROM_FILES", "0").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-
 
 def _get_dataset_field_specs() -> Dict[str, Dict[str, Any]]:
     """
@@ -1319,8 +1307,6 @@ def parse_openneuro_dataset(dataset: Dict[str, Any]) -> Dict[str, Any]:
     # Prefer a dataset-level modified field (if present in the schema/query), fallback to created_at.
     updated_at = _parse_iso8601(dataset.get("modified") or dataset.get("updated") or dataset.get("lastModified")) or created_at
 
-    version_id = None
-    
     # `DatasetPermissions.public` is not present in the schema; use the dataset-level flag.
     public = bool(dataset.get("public", True))
     
@@ -1334,8 +1320,6 @@ def parse_openneuro_dataset(dataset: Dict[str, Any]) -> Dict[str, Any]:
     
     # Build URL
     url = f"https://openneuro.org/datasets/{dataset_id}" if dataset_id else ""
-    if version_id:
-        url = f"{url}/versions/{version_id}"
     
     # Modality/tags are best populated by the enrich step; keep nullable here unless present.
     modality = None
@@ -1355,14 +1339,12 @@ def parse_openneuro_dataset(dataset: Dict[str, Any]) -> Dict[str, Any]:
         "dataset_id": dataset_id,
         "title": title,
         "modality": modality,
-        "tags": tags,
         "citations": citations,
         "url": url,
         "description": description_text,
         "license": license_text,
         "created_at": created_at,
         "updated_at": updated_at,
-        "version": version_id,
         "public": public,
         "downloads": downloads,
         "views": views,
@@ -1383,7 +1365,6 @@ def create_openneuro_table(**context):
         license TEXT,
         created_at TIMESTAMP,
         updated_at TIMESTAMP,
-        version VARCHAR(64),
         public BOOLEAN DEFAULT true,
         downloads INTEGER DEFAULT 0,
         views INTEGER DEFAULT 0
@@ -1399,7 +1380,6 @@ def create_openneuro_table(**context):
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_dataset_id ON openneuro_dataset(dataset_id);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_modality ON openneuro_dataset(modality);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_citations ON openneuro_dataset(citations DESC);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_version ON openneuro_dataset(version);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_public ON openneuro_dataset(public);")
                 conn.commit()
         logger.info("Successfully created openneuro_dataset table (or it already exists)")
@@ -1532,7 +1512,7 @@ def fetch_openneuro_datasets(**context) -> List[Dict[str, Any]]:
         raise
 
 
-def _enrich_single_dataset(ds: Dict[str, Any], infer_modality_from_files: bool = False) -> tuple:
+def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
     """
     Enrich a single dataset by fetching detailed metadata from OpenNeuro GraphQL API.
     Returns a tuple of (enriched_dataset, stats_dict).
@@ -1772,19 +1752,21 @@ def _enrich_single_dataset(ds: Dict[str, Any], infer_modality_from_files: bool =
             enriched_ds["public"] = bool(dataset_data.get("public"))
 
         # Determine a snapshot tag for downstream enrichment (avoid relying on `latestSnapshot`).
-        if not enriched_ds.get("version"):
+        snap_tag = "draft"
+        try:
             tag, snap_created = _get_latest_snapshot_tag_and_created(dataset_id)
             if tag:
-                enriched_ds["version"] = tag
+                snap_tag = tag
             # If updated_at is missing or equals created_at, use snapshot created when it differs.
             if snap_created and (
                 (not enriched_ds.get("updated_at")) or (enriched_ds.get("updated_at") == enriched_ds.get("created_at"))
             ):
                 if enriched_ds.get("created_at") != snap_created:
                     enriched_ds["updated_at"] = snap_created
+        except Exception as e:
+            logger.warning("Failed to resolve snapshot tag for %s: %s", dataset_id, e)
 
         # Prefer snapshot description.Name as title when it's meaningful
-        snap_tag = enriched_ds.get("version") or "draft"
         try:
             if dataset_id == "ds000102":
                 logger.info("Title debug (pre-snapshot): dataset=%s dataset.name=%r tag=%s", dataset_id, enriched_ds.get("title"), snap_tag)
@@ -1832,9 +1814,9 @@ def _enrich_single_dataset(ds: Dict[str, Any], infer_modality_from_files: bool =
 
         # DEBUG: log what we have before snapshot-derived enrichment
         logger.info(
-            "OpenNeuro enrich debug: dataset=%s version=%s has_desc=%s has_modality=%s",
+            "OpenNeuro enrich debug: dataset=%s tag=%s has_desc=%s has_modality=%s",
             dataset_id,
-            enriched_ds.get("version"),
+            snap_tag,
             bool(enriched_ds.get("description")),
             bool(enriched_ds.get("modality")),
         )
@@ -1842,7 +1824,7 @@ def _enrich_single_dataset(ds: Dict[str, Any], infer_modality_from_files: bool =
         # Snapshot-derived enrichment: only for README/description/license now.
         # (Modality no longer comes from file structure.)
         if (not enriched_ds.get("description")) or (not enriched_ds.get("license")):
-            tag = enriched_ds.get("version") or "draft"
+            tag = snap_tag
             try:
                 snap_desc, snap_lic, paths = _get_snapshot_description_and_paths(
                     dataset_id=dataset_id,
@@ -1877,33 +1859,9 @@ def _enrich_single_dataset(ds: Dict[str, Any], infer_modality_from_files: bool =
                 # Don't fail enrichment if snapshot metadata fetching fails.
                 logger.warning("Failed to fetch snapshot metadata for %s@%s: %s", dataset_id, tag, e)
 
-        # Modality fallback (best-effort): infer from snapshot file paths (BIDS structure).
-        # OpenNeuro often doesn't return summary.modalities for older datasets, so this is critical.
-        # Default to True unless explicitly disabled via param.
-        infer_from_files = infer_modality_from_files if infer_modality_from_files is not None else True
-        if infer_from_files and not enriched_ds.get("modality"):
-            tag = enriched_ds.get("version") or "draft"
-            try:
-                logger.info("Attempting BIDS path modality inference for %s@%s", dataset_id, tag)
-                _desc, _lic, paths = _get_snapshot_description_and_paths(
-                    dataset_id=dataset_id,
-                    tag=tag,
-                    include_files=True,
-                )
-                logger.info("Got %d file paths for %s@%s", len(paths), dataset_id, tag)
-                inferred = _infer_modalities_from_bids_paths(paths)
-                if inferred:
-                    logger.info("Inferred modality %r from file paths for %s", inferred, dataset_id)
-                    enriched_ds["modality"] = inferred
-                    stats["enriched_modality"] = 1
-                else:
-                    logger.warning("No modality could be inferred from %d paths for %s", len(paths), dataset_id)
-            except Exception as e:
-                logger.warning("Failed to infer modality from snapshot files for %s@%s: %s", dataset_id, tag, e)
-
         # If description is still missing, try snapshot readme query directly (best effort)
         if not enriched_ds.get("description"):
-            tag = enriched_ds.get("version") or "draft"
+            tag = snap_tag
             try:
                 readme = _get_readme_from_latest_snapshot(dataset_id=dataset_id, tag=tag)
                 desc = _readme_to_description(readme, max_len=256) if readme else None
@@ -1951,7 +1909,6 @@ def _enrich_single_dataset(ds: Dict[str, Any], infer_modality_from_files: bool =
     enriched_ds.setdefault("license", None)
     enriched_ds.setdefault("created_at", None)
     enriched_ds.setdefault("updated_at", None)
-    enriched_ds.setdefault("version", None)
     enriched_ds.setdefault("public", True)
     enriched_ds.setdefault("downloads", 0)
     enriched_ds.setdefault("views", 0)
@@ -1982,11 +1939,11 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
     insert_sql = """
     INSERT INTO openneuro_dataset (
         dataset_id, title, modality, citations, url, description, license,
-        created_at, updated_at, version, public, downloads, views
+        created_at, updated_at, public, downloads, views
     )
     VALUES (
         %(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(url)s, %(description)s, %(license)s,
-        %(created_at)s, %(updated_at)s, %(version)s, %(public)s, %(downloads)s, %(views)s
+        %(created_at)s, %(updated_at)s, %(public)s, %(downloads)s, %(views)s
     )
     ON CONFLICT (dataset_id)
     DO UPDATE SET
@@ -1998,7 +1955,6 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
         license = EXCLUDED.license,
         created_at = EXCLUDED.created_at,
         updated_at = EXCLUDED.updated_at,
-        version = EXCLUDED.version,
         public = EXCLUDED.public,
         downloads = EXCLUDED.downloads,
         views = EXCLUDED.views
@@ -2022,7 +1978,6 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
                 dataset.setdefault("license", None)
                 dataset.setdefault("created_at", None)
                 dataset.setdefault("updated_at", None)
-                dataset.setdefault("version", None)
                 dataset.setdefault("public", True)
                 dataset.setdefault("downloads", 0)
                 dataset.setdefault("views", 0)
@@ -2034,7 +1989,6 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
                 dataset["url"] = _sanitize_string(dataset.get("url"))
                 dataset["description"] = _sanitize_string(dataset.get("description"))
                 dataset["license"] = _sanitize_string(dataset.get("license"))
-                dataset["version"] = _sanitize_string(dataset.get("version"))
                 
                 cursor.execute(insert_sql, dataset)
                 inserted_flag = cursor.fetchone()[0]
@@ -2060,7 +2014,6 @@ def enrich_openneuro_current_run(**context) -> List[Dict[str, Any]]:
     
     params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
     max_workers = params.get("enrichment_max_workers", 5)
-    infer_modality_from_files = bool(params.get("infer_modality_from_files", False))
     
     total = len(datasets)
     if not datasets:
@@ -2080,8 +2033,7 @@ def enrich_openneuro_current_run(**context) -> List[Dict[str, Any]]:
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_index = {
-            executor.submit(_enrich_single_dataset, ds, infer_modality_from_files): idx
-            for idx, ds in enumerate(datasets)
+            executor.submit(_enrich_single_dataset, ds): idx for idx, ds in enumerate(datasets)
         }
         
         completed = 0
