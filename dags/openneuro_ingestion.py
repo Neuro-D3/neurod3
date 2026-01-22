@@ -66,6 +66,10 @@ from utils.database import get_db_connection, create_unified_datasets_view
 
 logger = logging.getLogger(__name__)
 
+# Cache for Dataset field specifications obtained via GraphQL introspection.
+# Initialized to None to indicate that introspection has not yet been performed.
+_DATASET_FIELD_SPECS_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
+
 default_args = {
     'owner': 'neurod3',
     'depends_on_past': False,
