@@ -1727,11 +1727,11 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
             enriched_ds["modality"] = None
             # Log what we got from OpenNeuro for the first few datasets to help debug
             if _OPENNEURO_MODALITY_DEBUG:
-                global _OPENNEURO_MODALITY_DEBUG_EMITTED
+                emitted_local = 0
                 with _OPENNEURO_MODALITY_DEBUG_LOCK:
-                    emitted = _OPENNEURO_MODALITY_DEBUG_EMITTED
+                    emitted = emitted_local
                     if emitted < _OPENNEURO_MODALITY_DEBUG_SAMPLES:
-                        _OPENNEURO_MODALITY_DEBUG_EMITTED = emitted + 1
+                        emitted_local = emitted + 1
                         logger.info(
                             "OpenNeuro modality debug: dataset=%s desc.Modality=%r dataset.modalities=%r summary.modalities=%r",
                             dataset_id,
