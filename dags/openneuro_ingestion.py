@@ -96,7 +96,6 @@ dag = DAG(
 
 OPENNEURO_GRAPHQL_URL = "https://openneuro.org/crn/graphql"
 
-_DATASET_FIELD_SPECS_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
 _TYPE_FIELD_NAMES_CACHE: Dict[str, set] = {}
 _TYPE_FIELD_SPECS_CACHE: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _TYPE_FIELD_ARGS_CACHE: Dict[str, Dict[str, List[str]]] = {}
@@ -125,9 +124,10 @@ def _get_dataset_field_specs() -> Dict[str, Dict[str, Any]]:
     We use this to avoid GraphQL validation errors when the schema differs across versions.
     If introspection fails for any reason, we return an empty dict and fall back to safe fields.
     """
-    global _DATASET_FIELD_SPECS_CACHE
-    if _DATASET_FIELD_SPECS_CACHE is not None:
-        return _DATASET_FIELD_SPECS_CACHE
+    if not hasattr(_get_dataset_field_specs, "_cache"):
+        _get_dataset_field_specs._cache = None  # type: ignore[attr-defined]
+    if _get_dataset_field_specs._cache is not None:  # type: ignore[attr-defined]
+        return _get_dataset_field_specs._cache  # type: ignore[attr-defined]
 
     introspection_query = """
     query IntrospectDatasetFields {
@@ -173,12 +173,12 @@ def _get_dataset_field_specs() -> Dict[str, Dict[str, Any]]:
                 continue
             specs[name] = f.get("type") or {}
 
-        _DATASET_FIELD_SPECS_CACHE = specs
+        _get_dataset_field_specs._cache = specs  # type: ignore[attr-defined]
         return specs
     except Exception as e:
         logger.warning("Could not introspect Dataset fields from OpenNeuro; falling back to safe fields: %s", e)
-        _DATASET_FIELD_SPECS_CACHE = {}
-        return _DATASET_FIELD_SPECS_CACHE
+        _get_dataset_field_specs._cache = {}  # type: ignore[attr-defined]
+        return _get_dataset_field_specs._cache  # type: ignore[attr-defined]
 
 
 def _get_dataset_field_names() -> set:
@@ -1733,8 +1733,9 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
             if _OPENNEURO_MODALITY_DEBUG:
                 global _OPENNEURO_MODALITY_DEBUG_EMITTED
                 with _OPENNEURO_MODALITY_DEBUG_LOCK:
-                    if _OPENNEURO_MODALITY_DEBUG_EMITTED < _OPENNEURO_MODALITY_DEBUG_SAMPLES:
-                        _OPENNEURO_MODALITY_DEBUG_EMITTED += 1
+                    emitted = _OPENNEURO_MODALITY_DEBUG_EMITTED
+                    if emitted < _OPENNEURO_MODALITY_DEBUG_SAMPLES:
+                        _OPENNEURO_MODALITY_DEBUG_EMITTED = emitted + 1
                         logger.info(
                             "OpenNeuro modality debug: dataset=%s desc.Modality=%r dataset.modalities=%r summary.modalities=%r",
                             dataset_id,
