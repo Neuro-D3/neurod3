@@ -111,7 +111,6 @@ _OPENNEURO_LAST_REQUEST_AT = 0.0
 _OPENNEURO_MODALITY_DEBUG = os.getenv("OPENNEURO_MODALITY_DEBUG", "0").strip().lower() in ("1", "true", "yes")
 _OPENNEURO_MODALITY_DEBUG_SAMPLES = int(os.getenv("OPENNEURO_MODALITY_DEBUG_SAMPLES", "25"))
 _OPENNEURO_MODALITY_DEBUG_LOCK = threading.Lock()
-_OPENNEURO_MODALITY_DEBUG_EMITTED = 0
 
 def _get_dataset_field_specs() -> Dict[str, Dict[str, Any]]:
     """
