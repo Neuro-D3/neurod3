@@ -289,8 +289,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             url,
             description,
             created_at,
-            updated_at,
-            version
+            updated_at
         FROM dandi_dataset
         """.strip())
 
@@ -305,8 +304,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             url,
             description,
             created_at,
-            updated_at,
-            version
+            updated_at
         FROM openneuro_dataset
         """.strip())
 
@@ -324,8 +322,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             url,
             description,
             created_at,
-            updated_at,
-            NULL::VARCHAR(64) AS version
+            updated_at
         FROM neuroscience_datasets
         {where_clause}
         """.strip())
