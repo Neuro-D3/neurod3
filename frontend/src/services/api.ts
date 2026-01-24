@@ -29,6 +29,8 @@ export interface Dataset {
   citations: number;
   url: string;
   description?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface DatasetsResponse {

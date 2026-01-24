@@ -52,6 +52,7 @@ type Dataset = {
   tags?: string | null;
   citations: number;
   url: string;
+  created_at?: string | null;
 };
 
 const SOURCE_OPTIONS = ['DANDI', 'Kaggle', 'OpenNeuro', 'PhysioNet'] as const;
@@ -80,8 +81,8 @@ export default function NeuroDatasetDiscovery() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [noDatasetsFound, setNoDatasetsFound] = useState<boolean>(false);
-  const [sortBy, setSortBy] = useState<'citations' | 'title' | 'id' | 'source' | 'modality'>(
-    'citations',
+  const [sortBy, setSortBy] = useState<'published' | 'citations' | 'title' | 'id' | 'source' | 'modality'>(
+    'published',
   );
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet'>(
@@ -319,7 +320,11 @@ export default function NeuroDatasetDiscovery() {
     const aData = a;
     const bData = b;
 
-    if (sortBy === 'title') comparison = aData.title.localeCompare(bData.title);
+    if (sortBy === 'published') {
+      const aTime = aData.created_at ? Date.parse(aData.created_at) : Number.NEGATIVE_INFINITY;
+      const bTime = bData.created_at ? Date.parse(bData.created_at) : Number.NEGATIVE_INFINITY;
+      comparison = (aTime || Number.NEGATIVE_INFINITY) - (bTime || Number.NEGATIVE_INFINITY);
+    } else if (sortBy === 'title') comparison = aData.title.localeCompare(bData.title);
     else if (sortBy === 'id') comparison = aData.id.localeCompare(bData.id);
     else if (sortBy === 'source') comparison = aData.source.localeCompare(bData.source);
     else if (sortBy === 'modality') comparison = (aData.modality || '').localeCompare(bData.modality || '');
@@ -710,6 +715,7 @@ export default function NeuroDatasetDiscovery() {
                     <SortableHeader column="source">Source</SortableHeader>
                     <SortableHeader column="title">Dataset Title</SortableHeader>
                     <SortableHeader column="id">ID</SortableHeader>
+                    <SortableHeader column="published">Published</SortableHeader>
                     <SortableHeader column="modality">Modality</SortableHeader>
                     <SortableHeader column="citations">Citations</SortableHeader>
                     <th
@@ -750,6 +756,16 @@ export default function NeuroDatasetDiscovery() {
                             style={{ color: darkMode ? '#E5E7EB' : '#111827' }}
                           >
                             {ds.id}
+                          </td>
+                          <td
+                            className="px-4 py-3 text-sm text-center"
+                            style={{ color: darkMode ? '#E5E7EB' : '#111827' }}
+                          >
+                            <div className="flex justify-center">
+                              <span className="whitespace-nowrap tabular-nums">
+                                {ds.created_at ? new Date(ds.created_at).toLocaleDateString() : '—'}
+                              </span>
+                            </div>
                           </td>
                           <td
                             className="px-4 py-3 text-sm text-center"

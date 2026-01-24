@@ -223,7 +223,8 @@ async def get_datasets(
                     params.extend([search_pattern, search_pattern])
 
                 filter_sql = f" AND {' AND '.join(filters)}" if filters else ""
-                query = f"{base_select}{filter_sql} ORDER BY citations DESC, title ASC LIMIT %s OFFSET %s"
+                # Default ordering: newest first (published date), then citations
+                query = f"{base_select}{filter_sql} ORDER BY created_at DESC NULLS LAST, citations DESC, title ASC LIMIT %s OFFSET %s"
                 count_query = f"{base_count}{filter_sql}"
 
                 cursor.execute(count_query, params)
