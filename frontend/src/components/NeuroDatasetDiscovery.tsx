@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { fetchDatasets } from '../services/api';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { fetchDatasets, fetchDatasetStats } from '../services/api';
 
 // Lightweight icon stand-ins (avoid external deps in preview)
 const IconWrapper: React.FC<{ className?: string; children: React.ReactNode }> = ({
@@ -31,14 +31,6 @@ const Filter: React.FC<{ size?: number; className?: string }> = ({ className }) 
   <IconWrapper className={className}>☷</IconWrapper>
 );
 
-const ChevronDown: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>▾</IconWrapper>
-);
-
-const ChevronRight: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>▸</IconWrapper>
-);
-
 const Moon: React.FC<{ size?: number; className?: string }> = ({ className }) => (
   <IconWrapper className={className}>☾</IconWrapper>
 );
@@ -62,15 +54,29 @@ type Dataset = {
   url: string;
 };
 
-// Grouped version with potential duplicates
-type DatasetGroup = {
-  primary: Dataset;
-  alternates: Dataset[];
-  hasDuplicates: boolean;
-};
+const SOURCE_OPTIONS = ['DANDI', 'Kaggle', 'OpenNeuro', 'PhysioNet'] as const;
+const SOURCE_CANONICAL_BY_PARAM = SOURCE_OPTIONS.reduce<Record<string, Dataset['source']>>((acc, s) => {
+  acc[s.toLowerCase()] = s;
+  return acc;
+}, {});
+
+function isAcronymLike(token: string): boolean {
+  // Heuristic: keep original casing if it contains 2+ consecutive uppercase letters (EEG, fMRI, iEEG, MRI, PET, etc.)
+  return /[A-Z]{2,}/.test(token);
+}
+
+function formatModalityToken(token: string): string {
+  const t = token.trim();
+  if (!t) return t;
+  return isAcronymLike(t) ? t : t.toLowerCase();
+}
+
+function normalizeModalityForCompare(token: string): string {
+  return token.trim().toLowerCase();
+}
 
 export default function NeuroDatasetDiscovery() {
-  const [datasets, setDatasets] = useState<DatasetGroup[]>([]);
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [noDatasetsFound, setNoDatasetsFound] = useState<boolean>(false);
@@ -81,16 +87,21 @@ export default function NeuroDatasetDiscovery() {
   const [sourceFilter, setSourceFilter] = useState<'all' | 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet'>(
     'all',
   );
-  const [modalityFilter, setModalityFilter] = useState<string>('all');
+  const [selectedModalities, setSelectedModalities] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
   const [stats, setStats] = useState<{ total: number; unique: number; bySources: Record<string, number> }>({
     total: 0,
     unique: 0,
     bySources: {},
   });
+  const [page, setPage] = useState<number>(1);
+  const [pageSize] = useState<number>(25);
+  const [totalCount, setTotalCount] = useState<number>(0);
   const [darkMode, setDarkMode] = useState<boolean>(false);
-  const [allModalities, setAllModalities] = useState<string[]>([]);
+  const [availableSources, setAvailableSources] = useState<Dataset['source'][]>([...SOURCE_OPTIONS]);
+  const [availableModalities, setAvailableModalities] = useState<string[]>([]);
+  const [modalityDropdownOpen, setModalityDropdownOpen] = useState<boolean>(false);
+  const modalityDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Rotating placeholder examples (search is still non-functional)
   const promptExamples = [
@@ -101,8 +112,29 @@ export default function NeuroDatasetDiscovery() {
   ];
   const [placeholderIndex, setPlaceholderIndex] = useState<number>(0);
 
+  // Initialize filters from URL (?source=...&modality=...) on first render.
   useEffect(() => {
-    fetchAllDatasets();
+    if (typeof window === 'undefined') return;
+
+    const params = new URLSearchParams(window.location.search);
+
+    const sourceParam = params.get('source')?.trim();
+    if (sourceParam) {
+      const canonical = SOURCE_CANONICAL_BY_PARAM[sourceParam.toLowerCase()];
+      if (canonical) setSourceFilter(canonical);
+    }
+
+    const modalityParam = params.get('modality')?.trim();
+    if (modalityParam) {
+      const parts = modalityParam
+        .split(',')
+        .map((p) => p.trim())
+        .filter(Boolean);
+      // de-dupe while preserving order
+      const seen = new Set<string>();
+      const uniq = parts.filter((m) => (seen.has(m) ? false : (seen.add(m), true)));
+      if (uniq.length) setSelectedModalities(uniq);
+    }
   }, []);
 
   useEffect(() => {
@@ -112,110 +144,130 @@ export default function NeuroDatasetDiscovery() {
     return () => clearInterval(interval);
   }, []);
 
-  const fetchAllDatasets = async () => {
+  useEffect(() => {
+    setPage(1);
+  }, [sourceFilter, selectedModalities]);
+
+  // Keep URL in sync with active filters (shareable links).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const url = new URL(window.location.href);
+    const params = url.searchParams;
+
+    if (sourceFilter === 'all') params.delete('source');
+    else params.set('source', sourceFilter);
+
+    if (selectedModalities.length === 0) params.delete('modality');
+    else params.set('modality', selectedModalities.join(','));
+
+    // Avoid pushing a new history entry for each change.
+    window.history.replaceState(null, '', `${url.pathname}${params.toString() ? `?${params.toString()}` : ''}${url.hash}`);
+  }, [sourceFilter, selectedModalities]);
+
+  // Close modality dropdown on outside click.
+  useEffect(() => {
+    if (!modalityDropdownOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      const el = modalityDropdownRef.current;
+      if (!el) return;
+      if (e.target instanceof Node && !el.contains(e.target)) {
+        setModalityDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [modalityDropdownOpen]);
+
+  const fetchAllDatasets = useCallback(async () => {
     setLoading(true);
     setError(null);
     setNoDatasetsFound(false);
 
     try {
+      const offset = (page - 1) * pageSize;
+      const sourceParam = sourceFilter !== 'all' ? sourceFilter : undefined;
+      const modalitiesParam = selectedModalities.length ? selectedModalities : undefined;
       // Fetch datasets from backend API
-      const response = await fetchDatasets();
+      const response = await fetchDatasets({
+        source: sourceParam,
+        modalities: modalitiesParam,
+        limit: pageSize,
+        offset,
+      });
       const allDatasets: Dataset[] = response.datasets;
 
       // Check if datasets array is empty (connection successful but no data)
       if (!allDatasets || allDatasets.length === 0) {
         setNoDatasetsFound(true);
         setDatasets([]);
-        setAllModalities([]);
-        setStats({ total: 0, unique: 0, bySources: {} });
+        setTotalCount(0);
         setLoading(false);
         return;
       }
 
-      const groupedDatasets = groupDuplicates(allDatasets);
-
-      const modalitiesSet = new Set<string>();
-      allDatasets.forEach((ds) => {
-        const modalityValue = ds.modality || '';
-        modalityValue.split(',').forEach((mod) => {
-          const cleaned = mod.trim();
-          if (cleaned) modalitiesSet.add(cleaned);
-        });
-      });
-      setAllModalities(Array.from(modalitiesSet).sort());
-
-      setDatasets(groupedDatasets);
-      calculateStats(allDatasets, groupedDatasets);
+      setDatasets(allDatasets);
+      setTotalCount(response.count ?? 0);
       setLoading(false);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to connect to API';
       console.error('Error fetching datasets from API:', err);
       setError(`API connection error: ${errorMessage}. Please ensure the backend service is running.`);
       setNoDatasetsFound(false);
+      setTotalCount(0);
       setLoading(false);
     }
-  };
+  }, [page, pageSize, sourceFilter, selectedModalities]);
 
-  const groupDuplicates = (all: Dataset[]): DatasetGroup[] => {
-    const groups: DatasetGroup[] = [];
-    const processed = new Set<number>();
+  useEffect(() => {
+    fetchAllDatasets();
+  }, [fetchAllDatasets]);
 
-    all.forEach((dataset, index) => {
-      if (processed.has(index)) return;
+  const fetchStats = useCallback(async () => {
+    try {
+      const sourceParam = sourceFilter !== 'all' ? sourceFilter : undefined;
+      const modalitiesParam = selectedModalities.length ? selectedModalities : undefined;
 
-      const normalizedTitle = dataset.title
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
+      const response = await fetchDatasetStats({ source: sourceParam, modalities: modalitiesParam });
 
-      const keywords = normalizedTitle.split(' ').filter((w) => w.length > 4);
-      const duplicates: Dataset[] = [];
+      // Faceted options
+      const bySource = response.by_source || {};
+      const sources = SOURCE_OPTIONS.filter((s) => (bySource[s] || 0) > 0);
+      setAvailableSources(sources as Dataset['source'][]);
 
-      all.forEach((otherDataset, otherIndex) => {
-        if (index === otherIndex || processed.has(otherIndex)) return;
+      const byModality = response.by_modality || {};
+      const modalities = Object.entries(byModality)
+        .filter(([, count]) => Number(count) > 0)
+        .map(([m]) => m)
+        .sort((a, b) => a.localeCompare(b));
+      setAvailableModalities(modalities);
 
-        const otherNormalizedTitle = otherDataset.title
-          .toLowerCase()
-          .replace(/[^a-z0-9\s]/g, '')
-          .replace(/\s+/g, ' ')
-          .trim();
-
-        const otherKeywords = otherNormalizedTitle.split(' ').filter((w) => w.length > 4);
-        const commonKeywords = keywords.filter((k) => otherKeywords.includes(k));
-
-        if (Math.min(keywords.length, otherKeywords.length) > 0) {
-          if (commonKeywords.length / Math.min(keywords.length, otherKeywords.length) > 0.6) {
-            duplicates.push(otherDataset);
-            processed.add(otherIndex);
-          }
-        }
+      setStats({
+        total: response.total,
+        unique: response.total,
+        bySources: response.by_source || {},
       });
+    } catch (err) {
+      console.error('Error fetching dataset stats from API:', err);
+    }
+  }, [sourceFilter, selectedModalities]);
 
-      groups.push({
-        primary: dataset,
-        alternates: duplicates,
-        hasDuplicates: duplicates.length > 0,
-      });
+  useEffect(() => {
+    fetchStats();
+  }, [fetchStats]);
 
-      processed.add(index);
-    });
+  // If current selections become unavailable, reset to All.
+  useEffect(() => {
+    if (sourceFilter !== 'all' && !availableSources.includes(sourceFilter)) {
+      setSourceFilter('all');
+    }
+  }, [availableSources, sourceFilter]);
 
-    return groups;
-  };
-
-  const calculateStats = (allDatasets: Dataset[], groupedDatasets: DatasetGroup[]) => {
-    const bySources: Record<string, number> = {};
-    allDatasets.forEach((ds) => {
-      bySources[ds.source] = (bySources[ds.source] || 0) + 1;
-    });
-
-    setStats({
-      total: allDatasets.length,
-      unique: groupedDatasets.length,
-      bySources,
-    });
-  };
+  useEffect(() => {
+    if (selectedModalities.length === 0) return;
+    // Don't auto-remove selected modalities if they fall out of the
+    // current available list (e.g. facets are limited, or selection yields 0).
+  }, [availableModalities, selectedModalities]);
 
   const handleSort = (column: typeof sortBy) => {
     if (sortBy === column) {
@@ -226,36 +278,46 @@ export default function NeuroDatasetDiscovery() {
     }
   };
 
-  const toggleRow = (index: number) => {
-    const newExpanded = new Set(expandedRows);
-    if (newExpanded.has(index)) newExpanded.delete(index);
-    else newExpanded.add(index);
-    setExpandedRows(newExpanded);
-  };
+  const filteredDatasets = datasets.filter((ds) => {
+    // Server already filters by source/modality, but keep a defensive client-side filter too.
+    if (sourceFilter !== 'all' && ds.source !== sourceFilter) return false;
 
-  const filteredDatasets = datasets.filter((group) => {
-    if (sourceFilter !== 'all') {
-      const hasSource =
-        group.primary.source === sourceFilter ||
-        group.alternates.some((alt) => alt.source === sourceFilter);
-      if (!hasSource) return false;
-    }
-
-    if (modalityFilter !== 'all') {
-      const hasModality =
-        (group.primary.modality || '').includes(modalityFilter) ||
-        group.alternates.some((alt) => (alt.modality || '').includes(modalityFilter));
-      if (!hasModality) return false;
+    if (selectedModalities.length) {
+      const parts = (ds.modality || '')
+        .split(/[;,]/)
+        .map((p) => p.trim().toLowerCase())
+        .filter(Boolean);
+      const partSet = new Set(parts);
+      for (const m of selectedModalities) {
+        if (!partSet.has(m.toLowerCase())) return false;
+      }
     }
 
     // NOTE: searchQuery is not yet wired to filtering on purpose
     return true;
   });
 
+  const isSelectedModality = (token: string) => {
+    const norm = normalizeModalityForCompare(token);
+    return selectedModalities.some((m) => normalizeModalityForCompare(m) === norm);
+  };
+
+  const toggleSelectedModality = (token: string) => {
+    const canonical = formatModalityToken(token);
+    if (!canonical) return;
+    setSelectedModalities((prev) => {
+      const canonNorm = normalizeModalityForCompare(canonical);
+      if (prev.some((m) => normalizeModalityForCompare(m) === canonNorm)) {
+        return prev.filter((m) => normalizeModalityForCompare(m) !== canonNorm);
+      }
+      return [...prev, canonical];
+    });
+  };
+
   const sortedDatasets = [...filteredDatasets].sort((a, b) => {
     let comparison = 0;
-    const aData = a.primary;
-    const bData = b.primary;
+    const aData = a;
+    const bData = b;
 
     if (sortBy === 'title') comparison = aData.title.localeCompare(bData.title);
     else if (sortBy === 'id') comparison = aData.id.localeCompare(bData.id);
@@ -266,6 +328,15 @@ export default function NeuroDatasetDiscovery() {
     return sortOrder === 'asc' ? comparison : -comparison;
   });
 
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const pageOffset = (page - 1) * pageSize;
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
+
   const SortableHeader = ({
     column,
     children,
@@ -274,12 +345,12 @@ export default function NeuroDatasetDiscovery() {
     children: React.ReactNode;
   }) => (
     <th
-      className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider cursor-pointer transition-all select-none ${
+      className={`px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider cursor-pointer transition-all select-none ${
         darkMode ? 'text-gray-300 hover:bg-white/10' : 'text-gray-700 hover:bg-white/60'
       }`}
       onClick={() => handleSort(column)}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center justify-center gap-2">
         {children}
         <ArrowUpDown
           size={14}
@@ -300,6 +371,11 @@ export default function NeuroDatasetDiscovery() {
       PhysioNet: 'bg-orange-100 text-orange-800',
     };
     return colors[source] || 'bg-gray-100 text-gray-800';
+  };
+
+  const handleRefresh = () => {
+    fetchAllDatasets();
+    fetchStats();
   };
 
   return (
@@ -372,7 +448,7 @@ export default function NeuroDatasetDiscovery() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
           <div
             className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
               darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
@@ -382,16 +458,6 @@ export default function NeuroDatasetDiscovery() {
               {stats.total}
             </div>
             <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>Total Datasets</div>
-          </div>
-          <div
-            className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
-              darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
-            }`}
-          >
-            <div className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-blue-400 bg-clip-text text-transparent">
-              {stats.unique}
-            </div>
-            <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>Unique Datasets</div>
           </div>
           <div
             className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
@@ -439,12 +505,12 @@ export default function NeuroDatasetDiscovery() {
 
         {/* Controls */}
         <div
-          className={`rounded-2xl shadow-xl mb-6 p-4 backdrop-blur-xl ${
+          className={`relative z-30 rounded-2xl shadow-xl mb-6 p-4 backdrop-blur-xl ${
             darkMode ? 'bg-white/5 border border-white/10' : 'bg-white/70 border border-white/20'
           }`}
         >
-          <div className="flex items-center justify-between flex-wrap gap-4">
-            <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex flex-col md:flex-row items-center justify-center md:justify-between gap-4">
+            <div className="flex items-center justify-center md:justify-start gap-4 flex-wrap">
               <div className="flex items-center gap-2">
                 <Filter size={18} className={darkMode ? 'text-gray-300' : 'text-gray-600'} />
                 <span className={darkMode ? 'text-sm font-medium text-gray-200' : 'text-sm font-medium text-gray-700'}>
@@ -455,43 +521,104 @@ export default function NeuroDatasetDiscovery() {
               <select
                 value={sourceFilter}
                 onChange={(e) => setSourceFilter(e.target.value as any)}
-                className={`border rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 backdrop-blur-xl transition-all ${
+                className={`w-44 border rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 backdrop-blur-xl transition-all ${
                   darkMode ? 'bg-white/10 border-white/20 text-white' : 'bg-white/80 border-gray-200 text-gray-900'
                 }`}
               >
                 <option value="all">All Sources</option>
-                <option value="DANDI">DANDI</option>
-                <option value="Kaggle">Kaggle</option>
-                <option value="OpenNeuro">OpenNeuro</option>
-                <option value="PhysioNet">PhysioNet</option>
-              </select>
-
-              <select
-                value={modalityFilter}
-                onChange={(e) => setModalityFilter(e.target.value)}
-                className={`border rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 backdrop-blur-xl transition-all ${
-                  darkMode ? 'bg-white/10 border-white/20 text-white' : 'bg-white/80 border-gray-200 text-gray-900'
-                }`}
-              >
-                <option value="all">All Modalities</option>
-                {allModalities.map((modality) => (
-                  <option key={modality} value={modality}>
-                    {modality}
+                {availableSources.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
                   </option>
                 ))}
               </select>
 
-              <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>
+              <div className="relative" ref={modalityDropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => setModalityDropdownOpen((v) => !v)}
+                  className={`w-44 border rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 backdrop-blur-xl transition-all text-left ${
+                    darkMode ? 'bg-white/10 border-white/20 text-white' : 'bg-white/80 border-gray-200 text-gray-900'
+                  }`}
+                  title={
+                    selectedModalities.length
+                      ? selectedModalities.map((m) => formatModalityToken(m)).join(', ')
+                      : 'All Modalities'
+                  }
+                >
+                  {selectedModalities.length === 0
+                    ? 'All Modalities'
+                    : selectedModalities.length === 1
+                      ? formatModalityToken(selectedModalities[0])
+                      : `${selectedModalities.length} selected`}
+                </button>
+
+                {modalityDropdownOpen && (
+                  <div
+                    className={`absolute z-50 mt-2 w-64 rounded-xl shadow-2xl border p-2 max-h-72 overflow-auto ${
+                      darkMode ? 'bg-gray-900/95 border-white/10 text-gray-100' : 'bg-white border-gray-200 text-gray-900'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setSelectedModalities([])}
+                      className={`w-full text-left px-2 py-2 rounded-lg text-sm font-medium ${
+                        darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-50'
+                      }`}
+                    >
+                      All Modalities
+                    </button>
+                    <div className={`my-2 h-px ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
+
+                    {availableModalities.length === 0 ? (
+                      <div className={`px-2 py-2 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                        No modalities available
+                      </div>
+                    ) : (
+                      availableModalities.map((modality) => {
+                        const checked = selectedModalities.includes(modality);
+                        return (
+                          <label
+                            key={modality}
+                            className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-sm ${
+                              darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-50'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                setSelectedModalities((prev) =>
+                                  prev.includes(modality)
+                                    ? prev.filter((m) => m !== modality)
+                                    : [...prev, modality],
+                                );
+                              }}
+                            />
+                            <span>{formatModalityToken(modality)}</span>
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className={darkMode ? 'text-sm text-gray-300 text-center' : 'text-sm text-gray-600 text-center'}>
                 Showing{' '}
                 <span className={darkMode ? 'font-semibold text-white' : 'font-semibold text-gray-900'}>
                   {sortedDatasets.length}
                 </span>{' '}
-                unique datasets
+                of{' '}
+                <span className={darkMode ? 'font-semibold text-white' : 'font-semibold text-gray-900'}>
+                  {totalCount}
+                </span>{' '}
+                datasets
               </div>
             </div>
 
             <button
-              onClick={fetchAllDatasets}
+              onClick={handleRefresh}
               disabled={loading}
               className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-xl border border-white/10 shadow-xl hover:from-blue-500 hover:to-blue-400 disabled:from-gray-500 disabled:to-gray-400 disabled:opacity-60 disabled:cursor-not-allowed backdrop-blur-xl transition-all text-sm font-medium"
             >
@@ -518,7 +645,7 @@ export default function NeuroDatasetDiscovery() {
               {error}
             </p>
             <button
-              onClick={fetchAllDatasets}
+              onClick={handleRefresh}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
               Retry Connection
@@ -537,11 +664,10 @@ export default function NeuroDatasetDiscovery() {
               No Datasets Found
             </h3>
             <p className={darkMode ? 'text-gray-300 mb-4' : 'text-gray-600 mb-4'}>
-              The database connection is working, but no datasets were found in the database. 
-              The tables may be empty or need to be populated.
+              No datasets match the current filters, or the database may be empty.
             </p>
             <button
-              onClick={fetchAllDatasets}
+              onClick={handleRefresh}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
               Retry Connection
@@ -575,13 +701,12 @@ export default function NeuroDatasetDiscovery() {
                     <th
                       className={
                         darkMode
-                          ? 'px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-300'
-                          : 'px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-700'
+                          ? 'px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-300'
+                          : 'px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-700'
                       }
                     >
                       #
                     </th>
-                    <th className="px-4 py-3 w-8"></th>
                     <SortableHeader column="source">Source</SortableHeader>
                     <SortableHeader column="title">Dataset Title</SortableHeader>
                     <SortableHeader column="id">ID</SortableHeader>
@@ -590,8 +715,8 @@ export default function NeuroDatasetDiscovery() {
                     <th
                       className={
                         darkMode
-                          ? 'px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-300'
-                          : 'px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-700'
+                          ? 'px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-300'
+                          : 'px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-700'
                       }
                     >
                       Links
@@ -599,131 +724,127 @@ export default function NeuroDatasetDiscovery() {
                   </tr>
                 </thead>
                 <tbody className={darkMode ? 'divide-y divide-gray-800' : 'divide-y divide-gray-200'}>
-                  {sortedDatasets.map((group, index) => {
-                    const isExpanded = expandedRows.has(index);
-                    return (
-                      <React.Fragment
-                        key={`${group.primary.source}-${group.primary.id}-${index}`}
-                      >
-                        <tr className={darkMode ? 'hover:bg-white/5' : 'hover:bg-gray-50'}>
-                          <td className="px-4 py-3 text-sm text-gray-800">{index + 1}</td>
-                          <td className="px-4 py-3 text-sm">
-                            {group.hasDuplicates && (
-                              <button
-                                onClick={() => toggleRow(index)}
-                                className={`inline-flex items-center justify-center h-7 w-7 rounded-full border text-xs transition-colors ${
-                                  darkMode
-                                    ? 'border-white/20 text-gray-200 hover:bg-white/10'
-                                    : 'border-gray-300 text-gray-700 hover:bg-gray-100'
-                                }`}
-                                aria-label={
-                                  isExpanded ? 'Hide alternate sources' : 'Show alternate sources'
-                                }
-                              >
-                                {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                              </button>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-sm">
-                            <span
-                              className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${getSourceBadgeColor(
-                                group.primary.source,
-                              )}`}
-                            >
-                              {group.primary.source}
-                            </span>
+                  {sortedDatasets.map((ds, index) => (
+                    <tr key={`${ds.source}-${ds.id}-${index}`} className={darkMode ? 'hover:bg-white/5' : 'hover:bg-gray-50'}>
+                      <td className="px-4 py-3 text-sm text-center text-gray-800">{pageOffset + index + 1}</td>
+                      <td className="px-4 py-3 text-sm text-center">
+                        <button
+                          type="button"
+                          onClick={() => setSourceFilter((prev) => (prev === ds.source ? 'all' : ds.source))}
+                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium transition-all ${
+                            sourceFilter !== 'all' && sourceFilter === ds.source ? 'ring-1 ring-blue-500/40 shadow-sm' : ''
+                          } ${getSourceBadgeColor(ds.source)}`}
+                          title="Click to toggle filter"
+                        >
+                          {ds.source}
+                        </button>
                           </td>
                           <td
-                            className="px-4 py-3 text-sm font-medium"
+                            className="px-4 py-3 text-sm font-medium text-center"
                             style={{ color: darkMode ? '#F9FAFB' : '#111827' }}
                           >
-                            {group.primary.title}
+                            {ds.title}
                           </td>
                           <td
-                            className="px-4 py-3 text-sm"
+                            className="px-4 py-3 text-sm text-center"
                             style={{ color: darkMode ? '#E5E7EB' : '#111827' }}
                           >
-                            {group.primary.id}
+                            {ds.id}
                           </td>
                           <td
-                            className="px-4 py-3 text-sm"
+                            className="px-4 py-3 text-sm text-center"
                             style={{ color: darkMode ? '#E5E7EB' : '#111827' }}
                           >
-                            {group.primary.modality || '—'}
+                            {(() => {
+                              const parts = (ds.modality || '')
+                                .split(/[;,]/)
+                                .map((p) => p.trim())
+                                .filter(Boolean);
+                              if (parts.length === 0) return '—';
+                              return (
+                                <div className="flex flex-wrap items-center justify-center gap-1">
+                                  {parts.map((m) => (
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleSelectedModality(m)}
+                                      key={m}
+                                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-all cursor-pointer ${
+                                        isSelectedModality(m)
+                                          ? 'text-sky-200 bg-gradient-to-r from-slate-950/80 via-blue-950/70 to-blue-900/60 shadow-md shadow-blue-900/40 ring-1 ring-blue-400/25'
+                                          : darkMode
+                                            ? 'bg-white/10 text-gray-200'
+                                            : 'bg-gray-100 text-gray-700'
+                                      }`}
+                                      title="Click to toggle filter"
+                                    >
+                                      {formatModalityToken(m)}
+                                    </button>
+                                  ))}
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td
-                            className="px-4 py-3 text-sm font-semibold"
+                            className="px-4 py-3 text-sm font-semibold text-center"
                             style={{ color: darkMode ? '#F9FAFB' : '#111827' }}
                           >
-                            {group.primary.citations.toLocaleString()}
+                            {ds.citations.toLocaleString()}
                           </td>
-                          <td className="px-4 py-3 text-sm">
+                          <td className="px-4 py-3 text-sm text-center">
                             <a
-                              href={group.primary.url}
+                              href={ds.url}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-500"
+                              className="inline-flex items-center justify-center gap-1 text-blue-600 hover:text-blue-500"
                             >
                               Open
                               <ExternalLink size={14} />
                             </a>
-                            {group.alternates.length > 0 && (
-                              <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
-                                +{group.alternates.length} more source
-                                {group.alternates.length > 1 ? 's' : ''}
-                              </span>
-                            )}
                           </td>
-                        </tr>
-                        {isExpanded && group.alternates.length > 0 && (
-                          <tr className={darkMode ? 'bg-white/5' : 'bg-gray-50'}>
-                            <td colSpan={8} className="px-10 py-3">
-                              <div className="text-xs font-semibold mb-2 text-gray-500 dark:text-gray-400">
-                                Alternate sources for this dataset
-                              </div>
-                              <div className="space-y-2">
-                                {group.alternates.map((alt, altIndex) => (
-                                  <div
-                                    key={`${alt.source}-${alt.id}-${altIndex}`}
-                                    className="flex flex-wrap items-center justify-between gap-2 text-xs"
-                                  >
-                                    <div className="flex items-center gap-2">
-                                      <span
-                                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${getSourceBadgeColor(
-                                          alt.source,
-                                        )}`}
-                                      >
-                                        {alt.source}
-                                      </span>
-                                      <span className="font-medium text-gray-900 dark:text-gray-100">
-                                        {alt.title}
-                                      </span>
-                                    </div>
-                                    <div className="flex items-center gap-3">
-                                      <span className="text-gray-500 dark:text-gray-400">
-                                        {alt.citations.toLocaleString()} citations
-                                      </span>
-                                      <a
-                                        href={alt.url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-500"
-                                      >
-                                        Open
-                                        <ExternalLink size={12} />
-                                      </a>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
+            </div>
+            <div
+              className={`flex items-center justify-between px-4 py-3 border-t ${
+                darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-600'
+              }`}
+            >
+              <div className="text-sm">
+                Page{' '}
+                <span className={darkMode ? 'font-semibold text-white' : 'font-semibold text-gray-900'}>
+                  {page}
+                </span>{' '}
+                of{' '}
+                <span className={darkMode ? 'font-semibold text-white' : 'font-semibold text-gray-900'}>
+                  {totalPages}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+                  disabled={page <= 1 || loading}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                    darkMode
+                      ? 'bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10 disabled:opacity-40'
+                      : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-40'
+                  }`}
+                >
+                  Previous
+                </button>
+                <button
+                  onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+                  disabled={page >= totalPages || loading}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                    darkMode
+                      ? 'bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10 disabled:opacity-40'
+                      : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-40'
+                  }`}
+                >
+                  Next
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -773,7 +894,17 @@ export default function NeuroDatasetDiscovery() {
               PhysioNet
             </a>
           </div>
-          <p className="mt-3 text-xs opacity-75">Developed by the Foresight Institute</p>
+          <p className="mt-3 text-xs opacity-75">
+            Developed by{' '}
+            <a
+              href="https://foresight.org/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-500 hover:text-blue-400 transition-colors"
+            >
+              Foresight Institute
+            </a>
+          </p>
         </div>
       </div>
     </div>
