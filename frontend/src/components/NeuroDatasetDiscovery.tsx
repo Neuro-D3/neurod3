@@ -341,7 +341,7 @@ export default function NeuroDatasetDiscovery() {
     if (sortBy === 'published') {
       const aTime = aData.created_at ? Date.parse(aData.created_at) : Number.NEGATIVE_INFINITY;
       const bTime = bData.created_at ? Date.parse(bData.created_at) : Number.NEGATIVE_INFINITY;
-      comparison = (aTime || Number.NEGATIVE_INFINITY) - (bTime || Number.NEGATIVE_INFINITY);
+      comparison = aTime - bTime;
     } else if (sortBy === 'title') comparison = aData.title.localeCompare(bData.title);
     else if (sortBy === 'id') comparison = aData.id.localeCompare(bData.id);
     else if (sortBy === 'source') comparison = aData.source.localeCompare(bData.source);

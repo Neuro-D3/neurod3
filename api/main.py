@@ -389,7 +389,7 @@ async def get_dataset_stats(
 
                 total_where = sql.SQL("")
                 if total_where_clauses:
-                    total_where = sql.SQL("WHERE ").join([sql.SQL(""), sql.SQL(" AND ").join(total_where_clauses)])
+                    total_where = sql.SQL("WHERE ") + sql.SQL(" AND ").join(total_where_clauses)
 
                 query_total = sql.SQL("SELECT COUNT(*) as total FROM {table} {where}").format(
                     table=table_identifier,
