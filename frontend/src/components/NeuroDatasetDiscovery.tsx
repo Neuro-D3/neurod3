@@ -43,6 +43,14 @@ const Search: React.FC<{ size?: number; className?: string }> = ({ className }) 
   <IconWrapper className={className}>🔍</IconWrapper>
 );
 
+const ChevronUp: React.FC<{ size?: number; className?: string }> = ({ className }) => (
+  <IconWrapper className={className}>▴</IconWrapper>
+);
+
+const ChevronDown: React.FC<{ size?: number; className?: string }> = ({ className }) => (
+  <IconWrapper className={className}>▾</IconWrapper>
+);
+
 // Simple dataset type
 type Dataset = {
   source: 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet';
@@ -103,6 +111,7 @@ export default function NeuroDatasetDiscovery() {
   const [availableModalities, setAvailableModalities] = useState<string[]>([]);
   const [modalityDropdownOpen, setModalityDropdownOpen] = useState<boolean>(false);
   const modalityDropdownRef = useRef<HTMLDivElement | null>(null);
+  const [expandedModalityRows, setExpandedModalityRows] = useState<Set<string>>(new Set());
 
   // Rotating placeholder examples (search is still non-functional)
   const promptExamples = [
@@ -303,6 +312,15 @@ export default function NeuroDatasetDiscovery() {
     return selectedModalities.some((m) => normalizeModalityForCompare(m) === norm);
   };
 
+  const toggleRowModalities = (rowKey: string) => {
+    setExpandedModalityRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  };
+
   const toggleSelectedModality = (token: string) => {
     const canonical = formatModalityToken(token);
     if (!canonical) return;
@@ -345,14 +363,16 @@ export default function NeuroDatasetDiscovery() {
   const SortableHeader = ({
     column,
     children,
+    className,
   }: {
     column: typeof sortBy;
     children: React.ReactNode;
+    className?: string;
   }) => (
     <th
       className={`px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider cursor-pointer transition-all select-none ${
         darkMode ? 'text-gray-300 hover:bg-white/10' : 'text-gray-700 hover:bg-white/60'
-      }`}
+      } ${className || ''}`}
       onClick={() => handleSort(column)}
     >
       <div className="flex items-center justify-center gap-2">
@@ -713,7 +733,7 @@ export default function NeuroDatasetDiscovery() {
                       #
                     </th>
                     <SortableHeader column="source">Source</SortableHeader>
-                    <SortableHeader column="title">Dataset Title</SortableHeader>
+                    <SortableHeader column="title" className="w-[34rem]">Dataset Title</SortableHeader>
                     <SortableHeader column="id">ID</SortableHeader>
                     <SortableHeader column="published">Published</SortableHeader>
                     <SortableHeader column="modality">Modality</SortableHeader>
@@ -772,14 +792,19 @@ export default function NeuroDatasetDiscovery() {
                             style={{ color: darkMode ? '#E5E7EB' : '#111827' }}
                           >
                             {(() => {
+                              const rowKey = `${ds.source}:${ds.id}`;
                               const parts = (ds.modality || '')
                                 .split(/[;,]/)
                                 .map((p) => p.trim())
                                 .filter(Boolean);
                               if (parts.length === 0) return '—';
+                              const isExpanded = expandedModalityRows.has(rowKey);
+                              const previewCount = 3;
+                              const visible = isExpanded ? parts : parts.slice(0, previewCount);
+                              const remaining = parts.length - visible.length;
                               return (
                                 <div className="flex flex-wrap items-center justify-center gap-1">
-                                  {parts.map((m) => (
+                                  {visible.map((m) => (
                                     <button
                                       type="button"
                                       onClick={() => toggleSelectedModality(m)}
@@ -796,6 +821,22 @@ export default function NeuroDatasetDiscovery() {
                                       {formatModalityToken(m)}
                                     </button>
                                   ))}
+
+                                  {parts.length > previewCount && (
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleRowModalities(rowKey)}
+                                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold transition-all ${
+                                        darkMode
+                                          ? 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
+                                          : 'bg-white/70 text-gray-800 hover:bg-white border border-gray-200'
+                                      }`}
+                                      title={isExpanded ? 'Collapse modalities' : 'Expand modalities'}
+                                    >
+                                      {isExpanded ? <ChevronUp /> : <ChevronDown />}
+                                      {!isExpanded && remaining > 0 ? `+${remaining}` : 'Less'}
+                                    </button>
+                                  )}
                                 </div>
                               );
                             })()}
