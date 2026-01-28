@@ -54,7 +54,11 @@ ALLOWED_MODALITIES = {
     "EEG",
     "Electrophysiology",
     "fMRI",
+    "iEEG",
+    "MEG",
     "MRI",
+    "NIRS",
+    "PET",
     "Survey",
     "X-ray",
 }
@@ -415,6 +419,15 @@ async def debug_view_info():
                     );
                 """)
                 dandi_exists = cursor.fetchone()[0]
+
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                        AND table_name = 'openneuro_dataset'
+                    );
+                """)
+                openneuro_exists = cursor.fetchone()[0]
                 
                 cursor.execute("""
                     SELECT EXISTS (
@@ -428,12 +441,17 @@ async def debug_view_info():
                 result = {
                     "unified_datasets_view_exists": view_exists,
                     "dandi_dataset_table_exists": dandi_exists,
+                    "openneuro_dataset_table_exists": openneuro_exists,
                     "neuroscience_datasets_table_exists": neuro_exists,
                 }
                 
                 if dandi_exists:
                     cursor.execute("SELECT COUNT(*) FROM dandi_dataset")
                     result["dandi_dataset_count"] = cursor.fetchone()[0]
+
+                if openneuro_exists:
+                    cursor.execute("SELECT COUNT(*) FROM openneuro_dataset")
+                    result["openneuro_dataset_count"] = cursor.fetchone()[0]
                 
                 if neuro_exists:
                     cursor.execute("SELECT COUNT(*) FROM neuroscience_datasets")
