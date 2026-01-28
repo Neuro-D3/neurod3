@@ -400,7 +400,7 @@ def get_dataset_modalities(dataset_id: str) -> Dict[str, Any]:
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python3 openneuro_modality.py ds000001")
+        print("Usage: python3 openneuro_debugger.py ds000001")
         return 2
 
     dataset_id = sys.argv[1].strip()

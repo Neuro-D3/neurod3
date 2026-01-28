@@ -29,6 +29,8 @@ export interface Dataset {
   citations: number;
   url: string;
   description?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface DatasetsResponse {
@@ -52,8 +54,10 @@ export interface ApiHealthResponse {
  */
 export async function fetchDatasets(params?: {
   source?: string;
-  modality?: string;
+  modalities?: string[];
   search?: string;
+  limit?: number;
+  offset?: number;
 }): Promise<DatasetsResponse> {
   try {
     const queryParams = new URLSearchParams();
@@ -61,11 +65,17 @@ export async function fetchDatasets(params?: {
     if (params?.source) {
       queryParams.append('source', params.source);
     }
-    if (params?.modality) {
-      queryParams.append('modality', params.modality);
+    if (params?.modalities?.length) {
+      queryParams.append('modality', params.modalities.join(','));
     }
     if (params?.search) {
       queryParams.append('search', params.search);
+    }
+    if (typeof params?.limit === 'number') {
+      queryParams.append('limit', String(params.limit));
+    }
+    if (typeof params?.offset === 'number') {
+      queryParams.append('offset', String(params.offset));
     }
 
     const url = `${API_BASE_URL}/api/datasets${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
@@ -85,9 +95,13 @@ export async function fetchDatasets(params?: {
 /**
  * Fetch dataset statistics from the backend API.
  */
-export async function fetchDatasetStats(): Promise<DatasetStats> {
+export async function fetchDatasetStats(params?: { source?: string; modalities?: string[] }): Promise<DatasetStats> {
   try {
-    const url = `${API_BASE_URL}/api/datasets/stats`;
+    const queryParams = new URLSearchParams();
+    if (params?.source) queryParams.append('source', params.source);
+    if (params?.modalities?.length) queryParams.append('modality', params.modalities.join(','));
+
+    const url = `${API_BASE_URL}/api/datasets/stats${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
 
     const response = await fetch(url);
 

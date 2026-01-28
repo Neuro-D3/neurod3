@@ -111,6 +111,7 @@ _OPENNEURO_LAST_REQUEST_AT = 0.0
 _OPENNEURO_MODALITY_DEBUG = os.getenv("OPENNEURO_MODALITY_DEBUG", "0").strip().lower() in ("1", "true", "yes")
 _OPENNEURO_MODALITY_DEBUG_SAMPLES = int(os.getenv("OPENNEURO_MODALITY_DEBUG_SAMPLES", "25"))
 _OPENNEURO_MODALITY_DEBUG_LOCK = threading.Lock()
+_OPENNEURO_MODALITY_DEBUG_EMITTED = 0
 
 def _get_dataset_field_specs() -> Dict[str, Dict[str, Any]]:
     """
@@ -1727,8 +1728,8 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
             # Log what we got from OpenNeuro for the first few datasets to help debug
             if _OPENNEURO_MODALITY_DEBUG:
                 with _OPENNEURO_MODALITY_DEBUG_LOCK:
-                    emitted = emitted_local
-                    if emitted < _OPENNEURO_MODALITY_DEBUG_SAMPLES:
+                    global _OPENNEURO_MODALITY_DEBUG_EMITTED
+                    if _OPENNEURO_MODALITY_DEBUG_EMITTED < _OPENNEURO_MODALITY_DEBUG_SAMPLES:
                         logger.info(
                             "OpenNeuro modality debug: dataset=%s desc.Modality=%r dataset.modalities=%r summary.modalities=%r",
                             dataset_id,
@@ -1736,6 +1737,7 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
                             dataset_data.get("modalities") or dataset_data.get("modality"),
                             (summ_obj.get("modalities") if isinstance(summ_obj, dict) else None),
                         )
+                        _OPENNEURO_MODALITY_DEBUG_EMITTED += 1
 
         # public flag
         if "public" in dataset_data:
