@@ -46,22 +46,6 @@ app = FastAPI(title="NeuroD3 API", version="1.0.0")
 
 # Allowed filter values
 ALLOWED_SOURCES = {"DANDI", "Kaggle", "OpenNeuro", "PhysioNet"}
-ALLOWED_MODALITIES = {
-    "Behavioral",
-    "Calcium Imaging",
-    "Clinical",
-    "ECG",
-    "EEG",
-    "Electrophysiology",
-    "fMRI",
-    "iEEG",
-    "MEG",
-    "MRI",
-    "NIRS",
-    "PET",
-    "Survey",
-    "X-ray",
-}
 
 # CORS configuration to allow frontend to access the API
 app.add_middleware(
@@ -149,8 +133,10 @@ async def health_check():
 @app.get("/api/datasets")
 async def get_datasets(
     source: Optional[str] = Query(None, description="Filter by source (DANDI, Kaggle, OpenNeuro, PhysioNet)"),
-    modality: Optional[str] = Query(None, description="Filter by modality"),
+    modality: Optional[str] = Query(None, description="Filter by modality (comma-separated for AND)"),
     search: Optional[str] = Query(None, description="Search in title and description"),
+    limit: int = Query(25, ge=1, le=200, description="Max number of datasets to return"),
+    offset: int = Query(0, ge=0, description="Number of datasets to skip"),
 ):
     """
     Fetch neuroscience datasets from the database.
@@ -195,59 +181,56 @@ async def get_datasets(
                 # Build dynamic query based on filters
                 if view_exists:
                     logger.info("Using unified_datasets view for query")
-                    query = """
-                        SELECT
-                            source,
-                            dataset_id as id,
-                            title,
-                            modality,
-                            citations,
-                            url,
-                            description,
-                            created_at,
-                            updated_at
-                        FROM unified_datasets
-                        WHERE 1=1
-                    """
+                    table_name = "unified_datasets"
                 else:
                     # Fallback to neuroscience_datasets table if view doesn't exist
                     logger.warning("unified_datasets view does not exist, falling back to neuroscience_datasets table")
-                    query = """
-                        SELECT
-                            source,
-                            dataset_id as id,
-                            title,
-                            modality,
-                            citations,
-                            url,
-                            description,
-                            created_at,
-                            updated_at
-                        FROM neuroscience_datasets
-                        WHERE 1=1
-                    """
+                    table_name = "neuroscience_datasets"
+
+                base_select = f"""
+                    SELECT
+                        source,
+                        dataset_id as id,
+                        title,
+                        modality,
+                        citations,
+                        url,
+                        description,
+                        created_at,
+                        updated_at
+                    FROM {table_name}
+                    WHERE 1=1
+                """
+                base_count = f"SELECT COUNT(*) as total FROM {table_name} WHERE 1=1"
+                filters = []
                 params = []
 
                 if source:
                     if source not in ALLOWED_SOURCES:
                         raise HTTPException(status_code=400, detail=f"Invalid source: {source}")
-                    query += " AND source = %s"
+                    filters.append("source = %s")
                     params.append(source)
 
                 if modality:
-                    if modality not in ALLOWED_MODALITIES:
-                        raise HTTPException(status_code=400, detail=f"Invalid modality: {modality}")
-                    query += " AND modality = %s"
-                    params.append(modality)
+                    modalities = [m.strip() for m in modality.split(",") if m.strip()]
+                    for m in modalities:
+                        filters.append("modality ILIKE %s")
+                        params.append(f"%{m}%")
 
                 if search:
-                    query += " AND (title ILIKE %s OR description ILIKE %s)"
+                    filters.append("(title ILIKE %s OR description ILIKE %s)")
                     search_pattern = f"%{search}%"
                     params.extend([search_pattern, search_pattern])
 
-                query += " ORDER BY citations DESC, title ASC"
+                filter_sql = f" AND {' AND '.join(filters)}" if filters else ""
+                # Default ordering: newest first (published date), then citations
+                query = f"{base_select}{filter_sql} ORDER BY created_at DESC NULLS LAST, citations DESC, title ASC LIMIT %s OFFSET %s"
+                count_query = f"{base_count}{filter_sql}"
 
-                cursor.execute(query, params)
+                cursor.execute(count_query, params)
+                total = cursor.fetchone()["total"]
+
+                cursor.execute(query, params + [limit, offset])
                 datasets = cursor.fetchall()
 
                 # Convert to list of dicts
@@ -255,7 +238,7 @@ async def get_datasets(
 
                 return {
                     "datasets": result,
-                    "count": len(result)
+                    "count": total
                 }
 
     except psycopg.Error as e:
@@ -267,7 +250,10 @@ async def get_datasets(
 
 
 @app.get("/api/datasets/stats")
-async def get_dataset_stats():
+async def get_dataset_stats(
+    source: Optional[str] = Query(None, description="Facet by source (applies to modality counts)"),
+    modality: Optional[str] = Query(None, description="Facet by modality (applies to source counts)"),
+):
     """
     Get statistics about datasets in the database.
     Returns counts by source and modality.
@@ -323,30 +309,94 @@ async def get_dataset_stats():
                 # Use psycopg.sql.Identifier() for safe table name construction
                 table_identifier = sql.Identifier(table_name)
                 
-                # Get counts by source
-                query_source = sql.SQL("""
+                # Parse/validate incoming filters (used for facets/total)
+                if source and source not in ALLOWED_SOURCES:
+                    raise HTTPException(status_code=400, detail=f"Invalid source: {source}")
+                modalities = []
+                if modality:
+                    modalities = [m.strip() for m in modality.split(",") if m.strip()]
+
+                # Facet counts
+                # - by_source: apply modality filter (but not source)
+                # - by_modality: apply source filter (but not modality)
+                by_source_params = []
+                by_source_where = sql.SQL("")
+                if modalities:
+                    by_source_where = sql.SQL("WHERE ") + sql.SQL(" AND ").join([sql.SQL("modality ILIKE %s")] * len(modalities))
+                    by_source_params.extend([f"%{m}%" for m in modalities])
+
+                query_by_source = sql.SQL("""
                     SELECT source, COUNT(*) as count
-                    FROM {}
+                    FROM {table}
+                    {where}
                     GROUP BY source
                     ORDER BY count DESC
-                """).format(table_identifier)
-                cursor.execute(query_source)
-                by_source = {row['source']: row['count'] for row in cursor.fetchall()}
+                """).format(table=table_identifier, where=by_source_where)
+                cursor.execute(query_by_source, by_source_params)
+                by_source = {row["source"]: row["count"] for row in cursor.fetchall()}
 
-                # Get counts by modality
-                query_modality = sql.SQL("""
-                    SELECT modality, COUNT(*) as count
-                    FROM {}
-                    GROUP BY modality
-                    ORDER BY count DESC
-                """).format(table_identifier)
-                cursor.execute(query_modality)
-                by_modality = {row['modality']: row['count'] for row in cursor.fetchall()}
+                by_modality_params = []
+                by_modality_clauses = []
+                if source:
+                    by_modality_clauses.append(sql.SQL("source = %s"))
+                    by_modality_params.append(source)
+                if modalities:
+                    for m in modalities:
+                        by_modality_clauses.append(sql.SQL("modality ILIKE %s"))
+                        by_modality_params.append(f"%{m}%")
 
-                # Get total count
-                query_total = sql.SQL("SELECT COUNT(*) as total FROM {}").format(table_identifier)
-                cursor.execute(query_total)
-                total = cursor.fetchone()['total']
+                by_modality_where = sql.SQL("")
+                if by_modality_clauses:
+                    by_modality_where = sql.SQL("WHERE ") + sql.SQL(" AND ").join(by_modality_clauses)
+
+                # Dynamic modality facets:
+                # - Split comma-separated modality strings into tokens
+                # - Count occurrences across datasets that match current filters (source + selected modalities)
+                query_by_modality = sql.SQL("""
+                    SELECT
+                        CASE
+                            -- Preserve acronyms / tokens containing 2+ consecutive uppercase letters (e.g. EEG, fMRI, iEEG)
+                            -- NOTE: avoid curly-brace quantifiers here because psycopg.sql uses braces for formatting.
+                            WHEN token_raw ~ '.*[A-Z][A-Z]+.*' THEN token_raw
+                            ELSE LOWER(token_raw)
+                        END AS modality,
+                        COUNT(*)::int AS count
+                    FROM (
+                        SELECT
+                            TRIM(regexp_split_to_table(COALESCE(modality, ''), '\\s*[,;]\\s*')) AS token_raw
+                        FROM {table}
+                        {where}
+                    ) t
+                    WHERE token_raw <> ''
+                    GROUP BY 1
+                    ORDER BY count DESC, modality ASC
+                    LIMIT 300
+                """).format(table=table_identifier, where=by_modality_where)
+
+                cursor.execute(query_by_modality, by_modality_params)
+                by_modality = {row["modality"]: row["count"] for row in cursor.fetchall()}
+
+                # Total count (apply BOTH filters)
+                total_where_clauses = []
+                total_params = []
+                if source:
+                    total_where_clauses.append(sql.SQL("source = %s"))
+                    total_params.append(source)
+                if modalities:
+                    for m in modalities:
+                        total_where_clauses.append(sql.SQL("modality ILIKE %s"))
+                        total_params.append(f"%{m}%")
+
+                total_where = sql.SQL("")
+                if total_where_clauses:
+                    total_where = sql.SQL("WHERE ") + sql.SQL(" AND ").join(total_where_clauses)
+
+                query_total = sql.SQL("SELECT COUNT(*) as total FROM {table} {where}").format(
+                    table=table_identifier,
+                    where=total_where,
+                )
+                cursor.execute(query_total, total_params)
+                total = cursor.fetchone()["total"]
 
                 return {
                     "total": total,
