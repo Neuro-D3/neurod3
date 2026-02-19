@@ -40,7 +40,10 @@ def create_neuroscience_datasets_table(**context):
         dataset_id VARCHAR(255) NOT NULL,
         title TEXT NOT NULL,
         modality VARCHAR(100) NOT NULL,
-        citations INTEGER DEFAULT 0,
+        -- Legacy field (no longer maintained). Keep nullable for backward compatibility.
+        citations INTEGER,
+        -- Number of associated papers (nullable by default; populated for DANDI over time).
+        papers INTEGER,
         url TEXT NOT NULL,
         description TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -50,7 +53,7 @@ def create_neuroscience_datasets_table(**context):
 
     CREATE INDEX IF NOT EXISTS idx_datasets_source ON neuroscience_datasets(source);
     CREATE INDEX IF NOT EXISTS idx_datasets_modality ON neuroscience_datasets(modality);
-    CREATE INDEX IF NOT EXISTS idx_datasets_citations ON neuroscience_datasets(citations DESC);
+    CREATE INDEX IF NOT EXISTS idx_datasets_papers ON neuroscience_datasets(papers DESC);
     """
 
     try:
@@ -68,9 +71,12 @@ def create_neuroscience_datasets_table(**context):
 
                 if table_exists:
                     logger.info("neuroscience_datasets table already exists")
+                    # Allow schema evolution without forcing a full drop/recreate.
+                    cursor.execute("ALTER TABLE neuroscience_datasets ADD COLUMN IF NOT EXISTS papers INTEGER;")
                 else:
                     logger.info("neuroscience_datasets table does not exist, creating it...")
                     cursor.execute(create_table_sql)
+                    cursor.execute("ALTER TABLE neuroscience_datasets ADD COLUMN IF NOT EXISTS papers INTEGER;")
                     conn.commit()
                     logger.info("Successfully created neuroscience_datasets table")
     except Exception as e:
@@ -102,7 +108,8 @@ def insert_datasets():
             'dataset_id': '000004',
             'title': 'NWB-based dataset of human single-neuron activity',
             'modality': 'Electrophysiology',
-            'citations': 67,
+            'citations': None,
+            'papers': None,
             'url': 'https://dandiarchive.org/dandiset/000004',
             'description': 'Human single-neuron recordings from medial temporal lobe during declarative memory tasks'
         },
@@ -111,7 +118,8 @@ def insert_datasets():
             'dataset_id': '000006',
             'title': 'Mouse anterior lateral motor cortex',
             'modality': 'Calcium Imaging',
-            'citations': 412,
+            'citations': None,
+            'papers': None,
             'url': 'https://dandiarchive.org/dandiset/000006',
             'description': 'Two-photon calcium imaging of mouse motor cortex during behavior'
         },
@@ -120,7 +128,8 @@ def insert_datasets():
             'dataset_id': '000008',
             'title': 'Brain Observatory - Neuropixels',
             'modality': 'Electrophysiology',
-            'citations': 892,
+            'citations': None,
+            'papers': None,
             'url': 'https://dandiarchive.org/dandiset/000008',
             'description': 'Allen Institute Neuropixels recordings across multiple brain regions'
         },
@@ -129,7 +138,8 @@ def insert_datasets():
             'dataset_id': '000009',
             'title': 'Visual Behavior - Ophys',
             'modality': 'Calcium Imaging',
-            'citations': 234,
+            'citations': None,
+            'papers': None,
             'url': 'https://dandiarchive.org/dandiset/000009',
             'description': 'Allen Institute visual behavior optical physiology dataset'
         },
@@ -138,7 +148,8 @@ def insert_datasets():
             'dataset_id': '000017',
             'title': 'IBL Behavior Data',
             'modality': 'Behavioral',
-            'citations': 156,
+            'citations': None,
+            'papers': None,
             'url': 'https://dandiarchive.org/dandiset/000017',
             'description': 'International Brain Laboratory standardized behavior dataset'
         },
@@ -149,7 +160,8 @@ def insert_datasets():
             'dataset_id': 'broach/button-tone-sz',
             'title': 'EEG Brain Wave for Confusion',
             'modality': 'EEG',
-            'citations': 45,
+            'citations': None,
+            'papers': None,
             'url': 'https://kaggle.com/datasets/broach/button-tone-sz',
             'description': 'EEG recordings measuring mental state and confusion levels'
         },
@@ -158,7 +170,8 @@ def insert_datasets():
             'dataset_id': 'birdy654/eeg-brainwave-dataset-feeling-emotions',
             'title': 'EEG Brainwave Dataset: Feeling Emotions',
             'modality': 'EEG',
-            'citations': 289,
+            'citations': None,
+            'papers': None,
             'url': 'https://kaggle.com/datasets/birdy654/eeg-brainwave-dataset-feeling-emotions',
             'description': 'EEG data collected during various emotional states'
         },
@@ -167,7 +180,8 @@ def insert_datasets():
             'dataset_id': 'Berkeley-mhse/MHSE-dataset',
             'title': 'Mental Health in Tech Survey',
             'modality': 'Survey',
-            'citations': 567,
+            'citations': None,
+            'papers': None,
             'url': 'https://kaggle.com/datasets/Berkeley-mhse/MHSE-dataset',
             'description': 'Survey data on mental health in technology workplace'
         },
@@ -176,7 +190,8 @@ def insert_datasets():
             'dataset_id': 'UCI/epileptic-seizure',
             'title': 'Epileptic Seizure Recognition',
             'modality': 'EEG',
-            'citations': 1234,
+            'citations': None,
+            'papers': None,
             'url': 'https://kaggle.com/datasets/UCI/epileptic-seizure',
             'description': 'EEG data for epileptic seizure detection and classification'
         },
@@ -185,7 +200,8 @@ def insert_datasets():
             'dataset_id': 'harunshimanto/stroke-prediction-dataset',
             'title': 'Stroke Prediction Dataset',
             'modality': 'Clinical',
-            'citations': 423,
+            'citations': None,
+            'papers': None,
             'url': 'https://kaggle.com/datasets/harunshimanto/stroke-prediction-dataset',
             'description': 'Clinical data for predicting stroke risk factors'
         },
@@ -194,7 +210,8 @@ def insert_datasets():
             'dataset_id': 'shashwatwork/brain-tumor-classification',
             'title': 'Brain Tumor MRI Dataset',
             'modality': 'MRI',
-            'citations': 678,
+            'citations': None,
+            'papers': None,
             'url': 'https://kaggle.com/datasets/shashwatwork/brain-tumor-classification',
             'description': 'MRI scans for brain tumor classification'
         },
@@ -205,7 +222,8 @@ def insert_datasets():
             'dataset_id': 'ds003775',
             'title': 'EEG visual working memory dataset',
             'modality': 'EEG',
-            'citations': 12,
+            'citations': None,
+            'papers': None,
             'url': 'https://openneuro.org/datasets/ds003775',
             'description': 'EEG recordings during visual working memory tasks'
         },
@@ -214,7 +232,8 @@ def insert_datasets():
             'dataset_id': 'ds002336',
             'title': 'UCLA Consortium for Neuropsychiatric Phenomics',
             'modality': 'fMRI',
-            'citations': 234,
+            'citations': None,
+            'papers': None,
             'url': 'https://openneuro.org/datasets/ds002336',
             'description': 'Multi-modal neuroimaging and behavioral data'
         },
@@ -313,13 +332,14 @@ def insert_datasets():
     ]
 
     insert_sql = """
-    INSERT INTO neuroscience_datasets (source, dataset_id, title, modality, citations, url, description, updated_at)
-    VALUES (%(source)s, %(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(url)s, %(description)s, CURRENT_TIMESTAMP)
+    INSERT INTO neuroscience_datasets (source, dataset_id, title, modality, citations, papers, url, description, updated_at)
+    VALUES (%(source)s, %(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(papers)s, %(url)s, %(description)s, CURRENT_TIMESTAMP)
     ON CONFLICT (source, dataset_id)
     DO UPDATE SET
         title = EXCLUDED.title,
         modality = EXCLUDED.modality,
         citations = EXCLUDED.citations,
+        papers = COALESCE(EXCLUDED.papers, neuroscience_datasets.papers),
         url = EXCLUDED.url,
         description = EXCLUDED.description,
         updated_at = CURRENT_TIMESTAMP
@@ -329,6 +349,10 @@ def insert_datasets():
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 for dataset in datasets:
+                    # Legacy field no longer maintained; keep nullable.
+                    dataset.setdefault("citations", None)
+                    # Not computed for these static seed rows.
+                    dataset.setdefault("papers", None)
                     cursor.execute(insert_sql, dataset)
                 conn.commit()
         logger.info(f"Successfully inserted/updated {len(datasets)} datasets")

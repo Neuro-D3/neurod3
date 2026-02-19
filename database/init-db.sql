@@ -15,7 +15,10 @@ CREATE TABLE IF NOT EXISTS neuroscience_datasets (
     dataset_id VARCHAR(255) NOT NULL,
     title TEXT NOT NULL,
     modality VARCHAR(100) NOT NULL,
-    citations INTEGER DEFAULT 0,
+    -- Legacy field (no longer maintained). Keep nullable for backward compatibility.
+    citations INTEGER,
+    -- Number of associated papers (nullable by default; populated for DANDI over time).
+    papers INTEGER,
     url TEXT NOT NULL,
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -26,7 +29,7 @@ CREATE TABLE IF NOT EXISTS neuroscience_datasets (
 -- Create index for faster queries
 CREATE INDEX IF NOT EXISTS idx_datasets_source ON neuroscience_datasets(source);
 CREATE INDEX IF NOT EXISTS idx_datasets_modality ON neuroscience_datasets(modality);
-CREATE INDEX IF NOT EXISTS idx_datasets_citations ON neuroscience_datasets(citations DESC);
+CREATE INDEX IF NOT EXISTS idx_datasets_papers ON neuroscience_datasets(papers DESC);
 
 -- Grant permissions to airflow user
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO airflow;

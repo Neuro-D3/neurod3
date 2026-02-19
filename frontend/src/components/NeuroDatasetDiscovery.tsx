@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { fetchDatasets, fetchDatasetStats } from '../services/api';
 
 // Lightweight icon stand-ins (avoid external deps in preview)
@@ -58,7 +59,9 @@ type Dataset = {
   title: string;
   modality: string | null;
   tags?: string | null;
-  citations: number;
+  papers: number | null;
+  paper_dois?: string[] | null;
+  paper_titles?: string[] | null;
   url: string;
   created_at?: string | null;
 };
@@ -89,7 +92,7 @@ export default function NeuroDatasetDiscovery() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [noDatasetsFound, setNoDatasetsFound] = useState<boolean>(false);
-  const [sortBy, setSortBy] = useState<'published' | 'citations' | 'title' | 'id' | 'source' | 'modality'>(
+  const [sortBy, setSortBy] = useState<'published' | 'papers' | 'title' | 'id' | 'source' | 'modality'>(
     'published',
   );
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
@@ -113,10 +116,109 @@ export default function NeuroDatasetDiscovery() {
   const modalityDropdownRef = useRef<HTMLDivElement | null>(null);
   const [expandedModalityRows, setExpandedModalityRows] = useState<Set<string>>(new Set());
 
+  type PapersTooltipState = {
+    dataset: Dataset;
+    left: number;
+    top: number;
+    width: number;
+    maxHeight: number;
+    anchorEl: HTMLElement;
+    closing: boolean;
+  };
+  const [papersTooltip, setPapersTooltip] = useState<PapersTooltipState | null>(null);
+  const papersTooltipRef = useRef<HTMLDivElement | null>(null);
+  const papersTooltipCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closePapersTooltip = useCallback(() => {
+    setPapersTooltip((prev) => {
+      if (!prev) return null;
+      if (prev.closing) return prev;
+      return { ...prev, closing: true };
+    });
+
+    if (papersTooltipCloseTimer.current) clearTimeout(papersTooltipCloseTimer.current);
+    papersTooltipCloseTimer.current = setTimeout(() => {
+      setPapersTooltip(null);
+      papersTooltipCloseTimer.current = null;
+    }, 160);
+  }, []);
+  const openPapersTooltip = useCallback((dataset: Dataset, anchorEl: HTMLElement | null) => {
+    if (dataset.source !== 'DANDI') return;
+    if (!anchorEl) return;
+
+    if (papersTooltipCloseTimer.current) {
+      clearTimeout(papersTooltipCloseTimer.current);
+      papersTooltipCloseTimer.current = null;
+    }
+
+    // Toggle if clicking the same dataset again.
+    if (papersTooltip && papersTooltip.dataset.source === dataset.source && papersTooltip.dataset.id === dataset.id) {
+      closePapersTooltip();
+      return;
+    }
+
+    const rect = anchorEl.getBoundingClientRect();
+    const viewportPadding = 8;
+    const desiredWidth = 34 * 16; // 34rem
+    const width = Math.max(280, Math.min(desiredWidth, window.innerWidth - viewportPadding * 2));
+    const centerX = rect.left + rect.width / 2;
+    const left = Math.min(
+      Math.max(centerX - width / 2, viewportPadding),
+      Math.max(viewportPadding, window.innerWidth - width - viewportPadding),
+    );
+    const top = Math.min(rect.bottom + 8, window.innerHeight - viewportPadding);
+    const maxHeight = Math.max(160, window.innerHeight - top - viewportPadding);
+
+    setPapersTooltip({ dataset, left, top, width, maxHeight, anchorEl, closing: false });
+  }, [papersTooltip, closePapersTooltip]);
+
+  useEffect(() => {
+    if (!papersTooltip) return;
+
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+
+      if (papersTooltipRef.current && papersTooltipRef.current.contains(target)) return;
+      if (papersTooltip.anchorEl && papersTooltip.anchorEl.contains(target)) return;
+
+      closePapersTooltip();
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closePapersTooltip();
+    };
+
+    // Capture so it works even if inner handlers stop propagation.
+    document.addEventListener('mousedown', onMouseDown, true);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown, true);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [papersTooltip, closePapersTooltip]);
+
+  useEffect(() => {
+    return () => {
+      if (papersTooltipCloseTimer.current) clearTimeout(papersTooltipCloseTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!papersTooltip) return;
+    const close = () => closePapersTooltip();
+    // Capture scroll events from nested containers (table wrapper, etc.)
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [papersTooltip, closePapersTooltip]);
+
   // Rotating placeholder examples (search is still non-functional)
   const promptExamples = [
     'How many datasets include EEG modality and were generated after 2020?',
-    'Show intracranial EEG datasets with more than 100 citations.',
+    'Show intracranial EEG datasets associated with more than 3 papers.',
     'Find sleep-related EEG datasets across all repositories.',
     'List multimodal EEG + fMRI datasets with open licenses.',
   ];
@@ -202,6 +304,8 @@ export default function NeuroDatasetDiscovery() {
       const response = await fetchDatasets({
         source: sourceParam,
         modalities: modalitiesParam,
+        sort_by: sortBy,
+        sort_order: sortOrder,
         limit: pageSize,
         offset,
       });
@@ -227,7 +331,7 @@ export default function NeuroDatasetDiscovery() {
       setTotalCount(0);
       setLoading(false);
     }
-  }, [page, pageSize, sourceFilter, selectedModalities]);
+  }, [page, pageSize, sourceFilter, selectedModalities, sortBy, sortOrder]);
 
   useEffect(() => {
     fetchAllDatasets();
@@ -286,6 +390,7 @@ export default function NeuroDatasetDiscovery() {
       setSortBy(column);
       setSortOrder('desc');
     }
+    setPage(1);
   };
 
   const filteredDatasets = datasets.filter((ds) => {
@@ -333,23 +438,8 @@ export default function NeuroDatasetDiscovery() {
     });
   };
 
-  const sortedDatasets = [...filteredDatasets].sort((a, b) => {
-    let comparison = 0;
-    const aData = a;
-    const bData = b;
-
-    if (sortBy === 'published') {
-      const aTime = aData.created_at ? Date.parse(aData.created_at) : Number.NEGATIVE_INFINITY;
-      const bTime = bData.created_at ? Date.parse(bData.created_at) : Number.NEGATIVE_INFINITY;
-      comparison = aTime - bTime;
-    } else if (sortBy === 'title') comparison = aData.title.localeCompare(bData.title);
-    else if (sortBy === 'id') comparison = aData.id.localeCompare(bData.id);
-    else if (sortBy === 'source') comparison = aData.source.localeCompare(bData.source);
-    else if (sortBy === 'modality') comparison = (aData.modality || '').localeCompare(bData.modality || '');
-    else if (sortBy === 'citations') comparison = aData.citations - bData.citations;
-
-    return sortOrder === 'asc' ? comparison : -comparison;
-  });
+  // IMPORTANT: sorting is done server-side so pagination is correct.
+  const sortedDatasets = filteredDatasets;
 
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const pageOffset = (page - 1) * pageSize;
@@ -737,7 +827,7 @@ export default function NeuroDatasetDiscovery() {
                     <SortableHeader column="id">ID</SortableHeader>
                     <SortableHeader column="published">Published</SortableHeader>
                     <SortableHeader column="modality">Modality</SortableHeader>
-                    <SortableHeader column="citations">Citations</SortableHeader>
+                    <SortableHeader column="papers">Papers</SortableHeader>
                     <th
                       className={
                         darkMode
@@ -845,7 +935,27 @@ export default function NeuroDatasetDiscovery() {
                             className="px-4 py-3 text-sm font-semibold text-center"
                             style={{ color: darkMode ? '#F9FAFB' : '#111827' }}
                           >
-                            {ds.citations.toLocaleString()}
+                            <div
+                              className={`relative inline-flex items-center justify-center ${
+                                ds.source === 'DANDI' ? 'cursor-pointer' : ''
+                              }`}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                openPapersTooltip(ds, e.currentTarget);
+                              }}
+                            >
+                              <span
+                                className={`tabular-nums ${
+                                  typeof ds.papers === 'number' && ds.papers > 0
+                                    ? darkMode
+                                      ? 'text-emerald-300'
+                                      : 'text-emerald-700'
+                                    : ''
+                                }`}
+                              >
+                                {ds.papers?.toLocaleString?.() ?? '—'}
+                              </span>
+                            </div>
                           </td>
                           <td className="px-4 py-3 text-sm text-center">
                             <a
@@ -963,6 +1073,76 @@ export default function NeuroDatasetDiscovery() {
             </a>
           </p>
         </div>
+
+        {papersTooltip &&
+          createPortal(
+            <div
+              ref={papersTooltipRef}
+              className={`fixed z-[9999] rounded-xl border p-3 text-left shadow-2xl transition-opacity transition-transform duration-150 ${
+                darkMode ? 'bg-slate-950/95 border-white/10 text-gray-100' : 'bg-white border-gray-200 text-gray-900'
+              } ${papersTooltip.closing ? 'opacity-0 -translate-y-1 scale-[0.98] pointer-events-none' : 'opacity-100 translate-y-0 scale-100 pointer-events-auto'}`}
+              style={{
+                left: papersTooltip.left,
+                top: papersTooltip.top,
+                width: papersTooltip.width,
+                maxHeight: papersTooltip.maxHeight,
+              }}
+            >
+              <div className="text-xs font-semibold uppercase tracking-wide opacity-70 mb-2">Associated papers</div>
+
+              {papersTooltip.dataset.papers == null ? (
+                <div className={darkMode ? 'text-gray-300 text-sm' : 'text-gray-700 text-sm'}>
+                  Papers not computed yet.
+                </div>
+              ) : Array.isArray(papersTooltip.dataset.paper_dois) && papersTooltip.dataset.paper_dois.length > 0 ? (
+                (() => {
+                  const maxShow = 10;
+                  const dois = papersTooltip.dataset.paper_dois ?? [];
+                  const titles = Array.isArray(papersTooltip.dataset.paper_titles)
+                    ? papersTooltip.dataset.paper_titles
+                    : [];
+                  const visibleDois = dois.slice(0, maxShow);
+                  const remaining = dois.length - visibleDois.length;
+                  const doiToHref = (doi: string) =>
+                    `https://doi.org/${encodeURIComponent(doi).replace(/%2F/gi, '/')}`;
+                  return (
+                    <div className="space-y-1 overflow-auto" style={{ maxHeight: papersTooltip.maxHeight - 40 }}>
+                      <div className="grid grid-cols-1 gap-1 text-sm">
+                        {visibleDois.map((doi, i) => {
+                          const title = titles[i];
+                          const label = title && String(title).trim().length > 0 ? title : doi;
+                          return (
+                            <a
+                              key={`${papersTooltip.dataset.source}-${papersTooltip.dataset.id}-paper-${i}`}
+                              href={doiToHref(doi)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={`pointer-events-auto underline leading-snug ${
+                                darkMode ? 'text-sky-300' : 'text-blue-600'
+                              }`}
+                              title={doi}
+                            >
+                              {label}
+                            </a>
+                          );
+                        })}
+                      </div>
+                      {remaining > 0 && (
+                        <div className={darkMode ? 'text-gray-300 text-xs' : 'text-gray-600 text-xs'}>
+                          +{remaining} more
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()
+              ) : (
+                <div className={darkMode ? 'text-gray-300 text-sm' : 'text-gray-700 text-sm'}>
+                  No paper titles found yet.
+                </div>
+              )}
+            </div>,
+            document.body,
+          )}
       </div>
     </div>
   );

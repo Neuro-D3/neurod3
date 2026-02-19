@@ -51,7 +51,6 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import logging
 import os
-import random
 import re
 import threading
 import time
@@ -1310,13 +1309,15 @@ def parse_openneuro_dataset(dataset: Dict[str, Any]) -> Dict[str, Any]:
     # `DatasetPermissions.public` is not present in the schema; use the dataset-level flag.
     public = bool(dataset.get("public", True))
     
-    # Analytics for downloads (can be used as a proxy for citations)
+    # Analytics for downloads/views
     analytics = dataset.get("analytics") or {}
     downloads = analytics.get("downloads", 0)
     views = analytics.get("views", 0)
-    
-    # Use downloads as a proxy for citations, or generate random if not available
-    citations = downloads if downloads > 0 else random.randint(1, 100)
+
+    # Legacy field (no longer maintained). Keep nullable for backward compatibility.
+    citations = None
+    # Number of associated papers. Not computed for OpenNeuro yet; keep nullable.
+    papers = None
     
     # Build URL
     url = f"https://openneuro.org/datasets/{dataset_id}" if dataset_id else ""
@@ -1340,6 +1341,7 @@ def parse_openneuro_dataset(dataset: Dict[str, Any]) -> Dict[str, Any]:
         "title": title,
         "modality": modality,
         "citations": citations,
+        "papers": papers,
         "url": url,
         "description": description_text,
         "license": license_text,
@@ -1359,7 +1361,10 @@ def create_openneuro_table(**context):
         dataset_id VARCHAR(255) NOT NULL UNIQUE,
         title TEXT,
         modality TEXT,
-        citations INTEGER DEFAULT 0,
+        -- Legacy field (no longer maintained). Keep nullable for backward compatibility.
+        citations INTEGER,
+        -- Number of associated papers (nullable by default; not computed yet for OpenNeuro).
+        papers INTEGER,
         url TEXT,
         description TEXT,
         license TEXT,
@@ -1376,10 +1381,11 @@ def create_openneuro_table(**context):
                 cursor.execute(create_table_sql)
                 # Allow schema evolution without forcing a full drop/recreate.
                 cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS license TEXT;")
+                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;")
                 # Indexes (create after columns exist, otherwise upgrades can fail)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_dataset_id ON openneuro_dataset(dataset_id);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_modality ON openneuro_dataset(modality);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_citations ON openneuro_dataset(citations DESC);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_papers ON openneuro_dataset(papers DESC);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_public ON openneuro_dataset(public);")
                 conn.commit()
         logger.info("Successfully created openneuro_dataset table (or it already exists)")
@@ -1895,7 +1901,10 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
     enriched_ds.setdefault("dataset_id", dataset_id)
     enriched_ds.setdefault("title", dataset_id or "Unknown")
     enriched_ds.setdefault("modality", None)
-    enriched_ds.setdefault("citations", 0)
+    # Legacy field (no longer maintained). Keep nullable.
+    enriched_ds.setdefault("citations", None)
+    # Number of associated papers (not computed for OpenNeuro yet). Keep nullable.
+    enriched_ds.setdefault("papers", None)
     enriched_ds.setdefault("url", f"https://openneuro.org/datasets/{dataset_id}" if dataset_id else "")
     enriched_ds.setdefault("description", None)
     enriched_ds.setdefault("license", None)
@@ -1930,11 +1939,11 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
 
     insert_sql = """
     INSERT INTO openneuro_dataset (
-        dataset_id, title, modality, citations, url, description, license,
+        dataset_id, title, modality, citations, papers, url, description, license,
         created_at, updated_at, public, downloads, views
     )
     VALUES (
-        %(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(url)s, %(description)s, %(license)s,
+        %(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(papers)s, %(url)s, %(description)s, %(license)s,
         %(created_at)s, %(updated_at)s, %(public)s, %(downloads)s, %(views)s
     )
     ON CONFLICT (dataset_id)
@@ -1942,6 +1951,7 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
         title = EXCLUDED.title,
         modality = EXCLUDED.modality,
         citations = EXCLUDED.citations,
+        papers = COALESCE(EXCLUDED.papers, openneuro_dataset.papers),
         url = EXCLUDED.url,
         description = EXCLUDED.description,
         license = EXCLUDED.license,
@@ -1964,7 +1974,8 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
                     continue
                 dataset.setdefault("title", dataset.get("dataset_id"))
                 dataset.setdefault("modality", None)
-                dataset.setdefault("citations", 0)
+                dataset.setdefault("citations", None)
+                dataset.setdefault("papers", None)
                 dataset.setdefault("url", f"https://openneuro.org/datasets/{dataset.get('dataset_id')}")
                 dataset.setdefault("description", None)
                 dataset.setdefault("license", None)
