@@ -935,27 +935,50 @@ export default function NeuroDatasetDiscovery() {
                             className="px-4 py-3 text-sm font-semibold text-center"
                             style={{ color: darkMode ? '#F9FAFB' : '#111827' }}
                           >
-                            <div
-                              className={`relative inline-flex items-center justify-center ${
-                                ds.source === 'DANDI' ? 'cursor-pointer' : ''
-                              }`}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                openPapersTooltip(ds, e.currentTarget);
-                              }}
-                            >
-                              <span
-                                className={`tabular-nums ${
-                                  typeof ds.papers === 'number' && ds.papers > 0
-                                    ? darkMode
-                                      ? 'text-emerald-300'
-                                      : 'text-emerald-700'
-                                    : ''
-                                }`}
-                              >
-                                {ds.papers?.toLocaleString?.() ?? '—'}
-                              </span>
-                            </div>
+                            {(() => {
+                              const popoverId = `papers-popover-${ds.source}-${ds.id}`;
+                              const isExpanded =
+                                !!papersTooltip &&
+                                !papersTooltip.closing &&
+                                papersTooltip.dataset.source === ds.source &&
+                                papersTooltip.dataset.id === ds.id;
+
+                              return (
+                                <button
+                                  type="button"
+                                  className={`relative inline-flex items-center justify-center tabular-nums bg-transparent border-0 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 rounded ${
+                                    ds.source === 'DANDI' ? 'cursor-pointer' : 'cursor-default'
+                                  } disabled:opacity-60 disabled:cursor-not-allowed ${
+                                    typeof ds.papers === 'number' && ds.papers > 0
+                                      ? darkMode
+                                        ? 'text-emerald-300'
+                                        : 'text-emerald-700'
+                                      : ''
+                                  }`}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    openPapersTooltip(ds, e.currentTarget);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      openPapersTooltip(ds, e.currentTarget);
+                                    }
+                                  }}
+                                  disabled={ds.source !== 'DANDI'}
+                                  aria-label={
+                                    ds.source === 'DANDI'
+                                      ? `Show associated papers for dataset ${ds.id}`
+                                      : 'Papers popover available for DANDI only'
+                                  }
+                                  aria-haspopup="dialog"
+                                  aria-expanded={isExpanded}
+                                  aria-controls={isExpanded ? popoverId : undefined}
+                                >
+                                  {ds.papers?.toLocaleString?.() ?? '—'}
+                                </button>
+                              );
+                            })()}
                           </td>
                           <td className="px-4 py-3 text-sm text-center">
                             <a
@@ -1077,6 +1100,7 @@ export default function NeuroDatasetDiscovery() {
         {papersTooltip &&
           createPortal(
             <div
+              id={`papers-popover-${papersTooltip.dataset.source}-${papersTooltip.dataset.id}`}
               ref={papersTooltipRef}
               className={`fixed z-[9999] rounded-xl border p-3 text-left shadow-2xl transition-opacity transition-transform duration-150 ${
                 darkMode ? 'bg-slate-950/95 border-white/10 text-gray-100' : 'bg-white border-gray-200 text-gray-900'
@@ -1087,6 +1111,8 @@ export default function NeuroDatasetDiscovery() {
                 width: papersTooltip.width,
                 maxHeight: papersTooltip.maxHeight,
               }}
+              role="dialog"
+              aria-label="Associated papers"
             >
               <div className="text-xs font-semibold uppercase tracking-wide opacity-70 mb-2">Associated papers</div>
 
