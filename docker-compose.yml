@@ -181,13 +181,13 @@ services:
         echo
         echo "Ensuring Airflow pool dandi_paper_api_pool exists:"
         echo
-        DANDI_PAPER_API_POOL_SLOTS="${DANDI_PAPER_API_POOL_SLOTS:-2}"
+        DANDI_PAPER_API_POOL_SLOTS="$${DANDI_PAPER_API_POOL_SLOTS:-2}"
         for i in {1..30}; do
-          /entrypoint airflow pools set dandi_paper_api_pool "$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency" && break
-          echo "Pool creation failed; retrying in 2s ($i/30)..."
+          /entrypoint airflow pools set dandi_paper_api_pool "$$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency" && break
+          echo "Pool creation failed; retrying in 2s ($$i/30)..."
           sleep 2
         done
-        /entrypoint airflow pools set dandi_paper_api_pool "$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency"
+        /entrypoint airflow pools set dandi_paper_api_pool "$$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency"
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'
