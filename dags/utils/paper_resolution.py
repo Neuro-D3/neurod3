@@ -22,10 +22,8 @@ from utils.find_reuse_core import (
     extract_dois_from_text,
     http_get_json,
     normalize_doi,
-    resolve_crossref_authors,
-    resolve_crossref_title,
-    resolve_openalex_authors,
-    resolve_openalex_metadata,
+    resolve_crossref_metadata,
+    resolve_openalex_work,
 )
 
 logger = logging.getLogger(__name__)
@@ -271,8 +269,8 @@ def resolve_papers_for_dandiset(
         if not doi:
             continue
 
-        # Try Crossref for title/authors first (fast, reliable)
-        title = resolve_crossref_title(
+        # Try Crossref first (fast, reliable) – fetch once and extract title+authors.
+        cr = resolve_crossref_metadata(
             session,
             doi,
             telemetry=telemetry,
@@ -280,24 +278,16 @@ def resolve_papers_for_dandiset(
             max_retries=max_retries,
             backoff_seconds=backoff_seconds,
         )
-        authors = resolve_crossref_authors(
-            session,
-            doi,
-            telemetry=telemetry,
-            min_interval_seconds=min_interval_seconds,
-            max_retries=max_retries,
-            backoff_seconds=backoff_seconds,
-        )
-        if title:
-            p["title"] = title
+        if cr.get("title"):
+            p["title"] = cr.get("title")
             p["paper_metadata_source"] = "crossref"
-        if authors:
-            p["authors"] = authors
-            # Only set if not already set by title path
+        if cr.get("authors"):
+            p["authors"] = cr.get("authors")
             p["paper_metadata_source"] = p.get("paper_metadata_source") or "crossref"
-        else:
-            # Fallback to OpenAlex metadata
-            oa = resolve_openalex_metadata(
+
+        # If Crossref didn't populate what we need, fall back to OpenAlex (fetch once).
+        if not p.get("title") or not p.get("authors") or not p.get("openalex_id"):
+            oa = resolve_openalex_work(
                 session,
                 doi,
                 telemetry=telemetry,
@@ -305,21 +295,14 @@ def resolve_papers_for_dandiset(
                 max_retries=max_retries,
                 backoff_seconds=backoff_seconds,
             )
-            oa_authors = resolve_openalex_authors(
-                session,
-                doi,
-                telemetry=telemetry,
-                min_interval_seconds=min_interval_seconds,
-                max_retries=max_retries,
-                backoff_seconds=backoff_seconds,
-            )
-            if oa.get("title"):
+            if not p.get("title") and oa.get("title"):
                 p["title"] = oa.get("title")
-            if oa.get("openalex_id"):
+            if not p.get("openalex_id") and oa.get("openalex_id"):
                 p["openalex_id"] = oa.get("openalex_id")
-            if oa_authors:
-                p["authors"] = oa_authors
-            p["paper_metadata_source"] = "openalex" if (oa.get("title") or oa.get("openalex_id")) else None
+            if not p.get("authors") and oa.get("authors"):
+                p["authors"] = oa.get("authors")
+            if (oa.get("title") or oa.get("openalex_id") or oa.get("authors")) and not p.get("paper_metadata_source"):
+                p["paper_metadata_source"] = "openalex"
 
         # Keep a normalized DOI for storage safety
         p["doi"] = normalize_doi(doi)

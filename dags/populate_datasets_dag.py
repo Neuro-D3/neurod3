@@ -350,7 +350,7 @@ def insert_datasets():
             with conn.cursor() as cursor:
                 for dataset in datasets:
                     # Legacy field no longer maintained; keep nullable.
-                    dataset.setdefault("citations", None)
+                    dataset["citations"] = None
                     # Not computed for these static seed rows.
                     dataset.setdefault("papers", None)
                     cursor.execute(insert_sql, dataset)

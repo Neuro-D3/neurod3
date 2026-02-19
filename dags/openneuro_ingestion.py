@@ -1881,8 +1881,8 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
             views = int(analytics.get("views") or 0)
             enriched_ds["downloads"] = downloads
             enriched_ds["views"] = views
-            if downloads and not enriched_ds.get("citations"):
-                enriched_ds["citations"] = downloads
+            # citations is deprecated (no longer maintained). Keep nullable.
+            enriched_ds["citations"] = None
         
         stats["enriched_metadata"] = 1
         
@@ -1902,7 +1902,7 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
     enriched_ds.setdefault("title", dataset_id or "Unknown")
     enriched_ds.setdefault("modality", None)
     # Legacy field (no longer maintained). Keep nullable.
-    enriched_ds.setdefault("citations", None)
+    enriched_ds["citations"] = None
     # Number of associated papers (not computed for OpenNeuro yet). Keep nullable.
     enriched_ds.setdefault("papers", None)
     enriched_ds.setdefault("url", f"https://openneuro.org/datasets/{dataset_id}" if dataset_id else "")
@@ -1974,7 +1974,7 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
                     continue
                 dataset.setdefault("title", dataset.get("dataset_id"))
                 dataset.setdefault("modality", None)
-                dataset.setdefault("citations", None)
+                dataset["citations"] = None
                 dataset.setdefault("papers", None)
                 dataset.setdefault("url", f"https://openneuro.org/datasets/{dataset.get('dataset_id')}")
                 dataset.setdefault("description", None)

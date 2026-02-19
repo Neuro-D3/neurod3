@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional, Tuple
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
 
@@ -176,8 +176,11 @@ def fetch_fulltext_oa(
                     txt = _strip_xml_to_text(xml_text) if xml_text else None
                     if txt:
                         return txt, "pmc", True, "ok"
-    except Exception:
-        pass
+    except json.JSONDecodeError as e:
+        logger.debug("PMC esearch JSON decode failed doi=%s err=%s", doi_norm, e)
+    except Exception as e:
+        # Best-effort OA lookup: surface details in debug logs, but don't fail the whole resolution.
+        logger.debug("PMC eutils lookup failed doi=%s err=%s", doi_norm, e, exc_info=True)
 
     return None, "none", False, "no_oa_fulltext_found"
 

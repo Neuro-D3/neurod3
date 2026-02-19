@@ -188,6 +188,17 @@ services:
         echo "Files in shared volumes:"
         echo
         ls -la /opt/airflow/{logs,dags,plugins,config}
+
+        echo
+        echo "Ensuring Airflow pool dandi_paper_api_pool exists:"
+        echo
+        DANDI_PAPER_API_POOL_SLOTS="${DANDI_PAPER_API_POOL_SLOTS:-2}"
+        for i in {1..30}; do
+          /entrypoint airflow pools set dandi_paper_api_pool "$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency" && break
+          echo "Pool creation failed; retrying in 2s ($i/30)..."
+          sleep 2
+        done
+        /entrypoint airflow pools set dandi_paper_api_pool "$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency"
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'
@@ -197,6 +208,7 @@ services:
       _PIP_ADDITIONAL_REQUIREMENTS: ''
       # Used by the init script; keep aligned with the UID we run Airflow containers as.
       AIRFLOW_UID: ${UID:-50000}
+      DANDI_PAPER_API_POOL_SLOTS: ${DANDI_PAPER_API_POOL_SLOTS:-2}
     user: "0:0"
     networks:
       - pr-network

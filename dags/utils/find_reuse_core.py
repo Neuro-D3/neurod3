@@ -18,6 +18,7 @@ import logging
 import re
 import threading
 import time
+import warnings
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -194,6 +195,11 @@ def resolve_crossref_title(
     max_retries: int,
     backoff_seconds: float,
 ) -> Optional[str]:
+    warnings.warn(
+        "resolve_crossref_title() is deprecated; use resolve_crossref_metadata() to avoid duplicate API calls.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     doi_norm = normalize_doi(doi)
     if not doi_norm:
         return None
@@ -232,6 +238,11 @@ def resolve_crossref_authors(
     Return list of author display names if available.
     Crossref shape: message.author = [{given, family, name, literal, ...}, ...]
     """
+    warnings.warn(
+        "resolve_crossref_authors() is deprecated; use resolve_crossref_metadata() to avoid duplicate API calls.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     doi_norm = normalize_doi(doi)
     if not doi_norm:
         return None
@@ -293,6 +304,11 @@ def resolve_openalex_metadata(
     """
     Return {openalex_id, title} when possible.
     """
+    warnings.warn(
+        "resolve_openalex_metadata() is deprecated; use resolve_openalex_work() to avoid duplicate API calls.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     doi_norm = normalize_doi(doi)
     if not doi_norm:
         return {"openalex_id": None, "title": None}
@@ -332,6 +348,11 @@ def resolve_openalex_authors(
     Return list of author display names if available.
     OpenAlex shape: authorships = [{author: {display_name}}, ...]
     """
+    warnings.warn(
+        "resolve_openalex_authors() is deprecated; use resolve_openalex_work() to avoid duplicate API calls.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     doi_norm = normalize_doi(doi)
     if not doi_norm:
         return None
@@ -366,4 +387,136 @@ def resolve_openalex_authors(
         if n not in deduped:
             deduped.append(n)
     return deduped or None
+
+
+def resolve_crossref_metadata(
+    session: requests.Session,
+    doi: str,
+    *,
+    telemetry: Telemetry,
+    min_interval_seconds: float,
+    max_retries: int,
+    backoff_seconds: float,
+) -> Dict[str, Any]:
+    """
+    Fetch Crossref once and return both title + authors.
+
+    Returns:
+      { "title": Optional[str], "authors": Optional[List[str]] }
+    """
+    doi_norm = normalize_doi(doi)
+    if not doi_norm:
+        return {"title": None, "authors": None}
+    url = f"https://api.crossref.org/works/{quote(doi_norm)}"
+    data = http_get_json(
+        session,
+        url,
+        timeout=20,
+        min_interval_seconds=min_interval_seconds,
+        max_retries=max_retries,
+        backoff_seconds=backoff_seconds,
+        telemetry=telemetry,
+    )
+    if not data:
+        return {"title": None, "authors": None}
+    msg = data.get("message") or {}
+
+    # Title
+    title_out: Optional[str] = None
+    title = msg.get("title")
+    if isinstance(title, list) and title:
+        t0 = title[0]
+        title_out = t0.strip() if isinstance(t0, str) and t0.strip() else None
+    elif isinstance(title, str) and title.strip():
+        title_out = title.strip()
+
+    # Authors
+    authors_out: Optional[List[str]] = None
+    authors = msg.get("author")
+    if isinstance(authors, list) and authors:
+        out: List[str] = []
+        for a in authors:
+            if not isinstance(a, dict):
+                continue
+            for key in ("name", "literal"):
+                v = a.get(key)
+                if isinstance(v, str) and v.strip():
+                    out.append(v.strip())
+                    break
+            else:
+                given = a.get("given")
+                family = a.get("family")
+                parts = []
+                if isinstance(given, str) and given.strip():
+                    parts.append(given.strip())
+                if isinstance(family, str) and family.strip():
+                    parts.append(family.strip())
+                if parts:
+                    out.append(" ".join(parts))
+
+        deduped: List[str] = []
+        for n in out:
+            if n not in deduped:
+                deduped.append(n)
+        authors_out = deduped or None
+
+    return {"title": title_out, "authors": authors_out}
+
+
+def resolve_openalex_work(
+    session: requests.Session,
+    doi: str,
+    *,
+    telemetry: Telemetry,
+    min_interval_seconds: float,
+    max_retries: int,
+    backoff_seconds: float,
+) -> Dict[str, Any]:
+    """
+    Fetch OpenAlex once and return id + title + authors.
+
+    Returns:
+      { "openalex_id": Optional[str], "title": Optional[str], "authors": Optional[List[str]] }
+    """
+    doi_norm = normalize_doi(doi)
+    if not doi_norm:
+        return {"openalex_id": None, "title": None, "authors": None}
+    url = f"https://api.openalex.org/works/doi:{doi_norm}"
+    data = http_get_json(
+        session,
+        url,
+        timeout=20,
+        min_interval_seconds=min_interval_seconds,
+        max_retries=max_retries,
+        backoff_seconds=backoff_seconds,
+        telemetry=telemetry,
+    )
+    if not data:
+        return {"openalex_id": None, "title": None, "authors": None}
+
+    title = data.get("title")
+    title_out = title.strip() if isinstance(title, str) and title.strip() else None
+
+    openalex_id = data.get("id")
+    openalex_id_out = openalex_id.strip() if isinstance(openalex_id, str) and openalex_id.strip() else None
+
+    authorships = data.get("authorships")
+    authors_out: Optional[List[str]] = None
+    if isinstance(authorships, list) and authorships:
+        out: List[str] = []
+        for a in authorships:
+            if not isinstance(a, dict):
+                continue
+            author = a.get("author")
+            if isinstance(author, dict):
+                dn = author.get("display_name")
+                if isinstance(dn, str) and dn.strip():
+                    out.append(dn.strip())
+        deduped: List[str] = []
+        for n in out:
+            if n not in deduped:
+                deduped.append(n)
+        authors_out = deduped or None
+
+    return {"openalex_id": openalex_id_out, "title": title_out, "authors": authors_out}
 

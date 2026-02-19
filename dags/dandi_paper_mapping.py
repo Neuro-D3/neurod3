@@ -1667,6 +1667,11 @@ build_batches_task = PythonOperator(
 )
 
 # Mapped batch task (bounded concurrency via Airflow pool).
+if XComArg is None:  # pragma: no cover
+    raise RuntimeError(
+        "Dynamic task mapping requires XComArg (airflow.models.xcom_arg). "
+        "Upgrade Airflow or update imports to enable mapped batch execution."
+    )
 resolve_and_persist_batch_task = (
     PythonOperator.partial(
         task_id="resolve_and_persist_batch",
