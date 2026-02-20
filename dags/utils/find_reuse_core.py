@@ -46,7 +46,25 @@ def normalize_doi(doi: str) -> Optional[str]:
     # Trim trailing punctuation
     d = d.rstrip(" .;,)")
     d = d.lstrip("(")
-    return d if d.lower().startswith("10.") else None
+    if not d.lower().startswith("10."):
+        return None
+
+    # Canonicalize common preprint DOI variants.
+    # bioRxiv / medRxiv commonly appear with a trailing version suffix like `v1` which is NOT part of the DOI.
+    # Example: `10.1101/2024.04.23.590673v1` -> `10.1101/2024.04.23.590673`
+    if d.lower().startswith("10.1101/"):
+        # Strip common suffixes that appear in free text but are not part of the DOI.
+        # Examples:
+        # - `...v1` -> `...`
+        # - `...v4.abstract` -> `...`
+        # - `....abstract` -> `...`
+        d = re.sub(r"(?:v\d+)(?:\.(?:abstract|full|pdf))?$", "", d, flags=re.IGNORECASE)
+        d = re.sub(r"\.(?:abstract|full|pdf)$", "", d, flags=re.IGNORECASE)
+        # Guard against obviously incomplete year-only extractions.
+        if re.fullmatch(r"10\.1101/\d{4}", d, flags=re.IGNORECASE):
+            return None
+
+    return d
 
 
 def extract_dois_from_text(text: Optional[str]) -> list[str]:
@@ -59,6 +77,84 @@ def extract_dois_from_text(text: Optional[str]) -> list[str]:
         if d and d not in out:
             out.append(d)
     return out
+
+
+_ZENODO_DOI_RE = re.compile(r"^10\.5281/zenodo\.(\d+)$", flags=re.IGNORECASE)
+
+
+def _zenodo_record_id_from_doi(doi: str) -> Optional[int]:
+    d = normalize_doi(doi) or ""
+    m = _ZENODO_DOI_RE.match(d)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def resolve_zenodo_metadata(
+    session: requests.Session,
+    doi: str,
+    *,
+    telemetry: Telemetry,
+    min_interval_seconds: float = 0.2,
+    max_retries: int = 6,
+    backoff_seconds: float = 2.0,
+) -> Dict[str, Any]:
+    """
+    Resolve metadata for Zenodo DOIs (10.5281/zenodo.<record_id>).
+
+    Returns keys:
+    - title: str | None
+    - authors: list[dict] | None  (format: {"name": "...", ...})
+    - url: str | None
+    - record_id: int | None
+    """
+    record_id = _zenodo_record_id_from_doi(doi)
+    if record_id is None:
+        return {"title": None, "authors": None, "url": None, "record_id": None}
+
+    url = f"https://zenodo.org/api/records/{record_id}"
+    data = http_get_json(
+        session,
+        url,
+        timeout=30,
+        min_interval_seconds=min_interval_seconds,
+        max_retries=max_retries,
+        backoff_seconds=backoff_seconds,
+        telemetry=telemetry,
+    ) or {}
+
+    md = data.get("metadata") if isinstance(data, dict) else None
+    md = md if isinstance(md, dict) else {}
+
+    title = md.get("title") if isinstance(md.get("title"), str) else None
+
+    creators = md.get("creators")
+    authors: Optional[List[Dict[str, Any]]] = None
+    if isinstance(creators, list):
+        out: List[Dict[str, Any]] = []
+        for c in creators:
+            if not isinstance(c, dict):
+                continue
+            name = c.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            entry: Dict[str, Any] = {"name": name.strip()}
+            if isinstance(c.get("orcid"), str) and c.get("orcid").strip():
+                entry["orcid"] = c.get("orcid").strip()
+            if isinstance(c.get("affiliation"), str) and c.get("affiliation").strip():
+                entry["affiliation"] = c.get("affiliation").strip()
+            out.append(entry)
+        authors = out or None
+
+    links = data.get("links") if isinstance(data, dict) else None
+    links = links if isinstance(links, dict) else {}
+    html_url = links.get("html") if isinstance(links.get("html"), str) else None
+    resolved_url = html_url or f"https://zenodo.org/records/{record_id}"
+
+    return {"title": title, "authors": authors, "url": resolved_url, "record_id": record_id}
 
 
 @dataclass

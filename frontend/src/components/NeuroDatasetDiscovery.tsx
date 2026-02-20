@@ -142,7 +142,7 @@ export default function NeuroDatasetDiscovery() {
     }, 160);
   }, []);
   const openPapersTooltip = useCallback((dataset: Dataset, anchorEl: HTMLElement | null) => {
-    if (dataset.source !== 'DANDI') return;
+    if (dataset.source !== 'DANDI' && dataset.source !== 'OpenNeuro') return;
     if (!anchorEl) return;
 
     if (papersTooltipCloseTimer.current) {
@@ -947,7 +947,7 @@ export default function NeuroDatasetDiscovery() {
                                 <button
                                   type="button"
                                   className={`relative inline-flex items-center justify-center tabular-nums bg-transparent border-0 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 rounded ${
-                                    ds.source === 'DANDI' ? 'cursor-pointer' : 'cursor-default'
+                                    ds.source === 'DANDI' || ds.source === 'OpenNeuro' ? 'cursor-pointer' : 'cursor-default'
                                   } disabled:opacity-60 disabled:cursor-not-allowed ${
                                     typeof ds.papers === 'number' && ds.papers > 0
                                       ? darkMode
@@ -965,11 +965,11 @@ export default function NeuroDatasetDiscovery() {
                                       openPapersTooltip(ds, e.currentTarget);
                                     }
                                   }}
-                                  disabled={ds.source !== 'DANDI'}
+                                  disabled={ds.source !== 'DANDI' && ds.source !== 'OpenNeuro'}
                                   aria-label={
-                                    ds.source === 'DANDI'
+                                    ds.source === 'DANDI' || ds.source === 'OpenNeuro'
                                       ? `Show associated papers for dataset ${ds.id}`
-                                      : 'Papers popover available for DANDI only'
+                                      : 'Papers popover available for DANDI/OpenNeuro only'
                                   }
                                   aria-haspopup="dialog"
                                   aria-expanded={isExpanded}
@@ -1129,14 +1129,28 @@ export default function NeuroDatasetDiscovery() {
                     : [];
                   const visibleDois = dois.slice(0, maxShow);
                   const remaining = dois.length - visibleDois.length;
-                  const doiToHref = (doi: string) =>
-                    `https://doi.org/${encodeURIComponent(doi).replace(/%2F/gi, '/')}`;
+                  const canonicalizeDoiForLink = (doiRaw: string) => {
+                    const doi = String(doiRaw || '').trim();
+                    if (!doi) return doi;
+                    // bioRxiv / medRxiv appear with `vN` (and sometimes `.abstract`) in free text; doi.org often 404s on those.
+                    if (/^10\.1101\//i.test(doi)) {
+                      return doi
+                        .replace(/(v\d+)(\.(abstract|full|pdf))?$/i, '')
+                        .replace(/\.(abstract|full|pdf)$/i, '');
+                    }
+                    return doi;
+                  };
+                  const doiToHref = (doiRaw: string) => {
+                    const doi = canonicalizeDoiForLink(doiRaw);
+                    return `https://doi.org/${encodeURIComponent(doi).replace(/%2F/gi, '/')}`;
+                  };
                   return (
                     <div className="space-y-1 overflow-auto" style={{ maxHeight: papersTooltip.maxHeight - 40 }}>
                       <div className="grid grid-cols-1 gap-1 text-sm">
                         {visibleDois.map((doi, i) => {
                           const title = titles[i];
-                          const label = title && String(title).trim().length > 0 ? title : doi;
+                          const doiCanon = canonicalizeDoiForLink(doi);
+                          const label = title && String(title).trim().length > 0 ? title : doiCanon;
                           return (
                             <a
                               key={`${papersTooltip.dataset.source}-${papersTooltip.dataset.id}-paper-${i}`}
@@ -1146,7 +1160,7 @@ export default function NeuroDatasetDiscovery() {
                               className={`pointer-events-auto underline leading-snug ${
                                 darkMode ? 'text-sky-300' : 'text-blue-600'
                               }`}
-                              title={doi}
+                              title={doiCanon}
                             >
                               {label}
                             </a>

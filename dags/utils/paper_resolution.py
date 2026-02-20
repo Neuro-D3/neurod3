@@ -23,6 +23,7 @@ from utils.find_reuse_core import (
     http_get_json,
     normalize_doi,
     resolve_crossref_metadata,
+    resolve_zenodo_metadata,
     resolve_openalex_work,
 )
 
@@ -268,6 +269,26 @@ def resolve_papers_for_dandiset(
         doi = p.get("doi")
         if not doi:
             continue
+
+        # Zenodo DOIs are often not well-covered by Crossref/OpenAlex for titles/authors.
+        # Resolve via Zenodo API first, then fall back to Crossref/OpenAlex as needed.
+        if str(doi).lower().startswith("10.5281/zenodo."):
+            z = resolve_zenodo_metadata(
+                session,
+                doi,
+                telemetry=telemetry,
+                min_interval_seconds=min_interval_seconds,
+                max_retries=max_retries,
+                backoff_seconds=backoff_seconds,
+            )
+            if z.get("title"):
+                p["title"] = z.get("title")
+                p["paper_metadata_source"] = "zenodo"
+            if z.get("authors"):
+                p["authors"] = z.get("authors")
+                p["paper_metadata_source"] = p.get("paper_metadata_source") or "zenodo"
+            if z.get("url") and (not p.get("url") or "doi.org/" in str(p.get("url"))):
+                p["url"] = z.get("url")
 
         # Try Crossref first (fast, reliable) – fetch once and extract title+authors.
         cr = resolve_crossref_metadata(

@@ -10,6 +10,8 @@ x-airflow-common:
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
     AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    # Ensure `from utils...` imports work for DAG parse + task runtime.
+    PYTHONPATH: /opt/airflow/dags
     # Avoid compose warnings when not set; provide via env/.env in real deployments.
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
@@ -183,11 +185,11 @@ services:
         echo
         DANDI_PAPER_API_POOL_SLOTS="$${DANDI_PAPER_API_POOL_SLOTS:-2}"
         for i in {1..30}; do
-          /entrypoint airflow pools set dandi_paper_api_pool "$$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency" && break
+          airflow pools set dandi_paper_api_pool "$$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency" && break
           echo "Pool creation failed; retrying in 2s ($$i/30)..."
           sleep 2
         done
-        /entrypoint airflow pools set dandi_paper_api_pool "$$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency"
+        airflow pools set dandi_paper_api_pool "$$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency"
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'

@@ -258,9 +258,15 @@ async def get_datasets(
                 # Convert to list of dicts
                 result = [dict(row) for row in datasets]
 
-                # Attach paper titles for DANDI rows (best-effort).
-                # This keeps the main dataset query simple and adds one extra query per request.
+                # Attach paper titles/DOIs (best-effort).
+                # This keeps the main dataset query simple and adds at most one extra query per source per request.
+                for r in result:
+                    r["paper_dois"] = None
+                    r["paper_titles"] = None
+
                 dandi_ids = [r["id"] for r in result if r.get("source") == "DANDI" and r.get("id")]
+                openneuro_ids = [r["id"] for r in result if r.get("source") == "OpenNeuro" and r.get("id")]
+
                 if dandi_ids:
                     try:
                         cursor.execute(
@@ -281,19 +287,33 @@ async def get_datasets(
                                 entry = papers_by_id.get(r.get("id"), {})
                                 r["paper_dois"] = entry.get("paper_dois")
                                 r["paper_titles"] = entry.get("paper_titles")
-                            else:
-                                r["paper_dois"] = None
-                                r["paper_titles"] = None
                     except Exception as e:
                         # View may not exist yet; fail soft.
                         logger.warning("Could not attach paper_titles from dandi_dataset_papers: %s", e)
+
+                if openneuro_ids:
+                    try:
+                        cursor.execute(
+                            """
+                            SELECT openneuro_id, paper_dois, paper_titles
+                            FROM openneuro_dataset_papers
+                            WHERE openneuro_id = ANY(%s);
+                            """,
+                            (openneuro_ids,),
+                        )
+                        rows = cursor.fetchall()
+                        papers_by_id = {
+                            row["openneuro_id"]: {"paper_dois": row["paper_dois"], "paper_titles": row["paper_titles"]}
+                            for row in rows
+                        }
                         for r in result:
-                            r["paper_dois"] = None
-                            r["paper_titles"] = None
-                else:
-                    for r in result:
-                        r["paper_dois"] = None
-                        r["paper_titles"] = None
+                            if r.get("source") == "OpenNeuro":
+                                entry = papers_by_id.get(r.get("id"), {})
+                                r["paper_dois"] = entry.get("paper_dois")
+                                r["paper_titles"] = entry.get("paper_titles")
+                    except Exception as e:
+                        # View may not exist yet; fail soft.
+                        logger.warning("Could not attach paper_titles from openneuro_dataset_papers: %s", e)
 
                 return {
                     "datasets": result,
