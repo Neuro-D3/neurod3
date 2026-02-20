@@ -21,6 +21,8 @@ x-airflow-common:
     # In PR preview, the api-server runs in the `airflow-webserver` service/container.
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-webserver:8080/execution/
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    # Ensure `from utils...` imports work for DAG parse + task runtime.
+    PYTHONPATH: /opt/airflow/dags
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-9m9C9yN7OYMva9n-1kO-Y8I4JVXu2fLG3gNsYch0eK0=}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
@@ -188,6 +190,20 @@ services:
         echo "Files in shared volumes:"
         echo
         ls -la /opt/airflow/{logs,dags,plugins,config}
+
+        echo
+        echo "Ensuring Airflow pool dandi_paper_api_pool exists:"
+        echo
+        DANDI_PAPER_API_POOL_SLOTS="$${DANDI_PAPER_API_POOL_SLOTS:-2}"
+        pool_ok=0
+        for i in {1..30}; do
+          /entrypoint airflow pools set dandi_paper_api_pool "$$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency" && pool_ok=1 && break
+          echo "Pool creation failed; retrying in 2s ($$i/30)..."
+          sleep 2
+        done
+        if [[ "$$pool_ok" -ne 1 ]]; then
+          echo "WARNING: Could not ensure pool dandi_paper_api_pool after retries; continuing anyway."
+        fi
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'
@@ -197,6 +213,7 @@ services:
       _PIP_ADDITIONAL_REQUIREMENTS: ''
       # Used by the init script; keep aligned with the UID we run Airflow containers as.
       AIRFLOW_UID: ${UID:-50000}
+      DANDI_PAPER_API_POOL_SLOTS: ${DANDI_PAPER_API_POOL_SLOTS:-2}
     user: "0:0"
     networks:
       - pr-network
