@@ -168,6 +168,10 @@ jobs:
           # Also check for any running PR containers (deadlock prevention)
           echo "Checking for running PR containers..."
           RUNNING_PR_CONTAINERS=$(docker ps --format "{{.Names}}" | grep -E "^pr-[0-9]+-" | sed 's/pr-\([0-9]*\)-.*/\1/' | sort -u || true)
+          # Never clean up the PR that is currently being deployed (self-cleanup bugfix).
+          if [ -n "$CURRENT_PR_NUMBER" ]; then
+            RUNNING_PR_CONTAINERS=$(echo "$RUNNING_PR_CONTAINERS" | grep -v "^$CURRENT_PR_NUMBER$" || true)
+          fi
           
           if [ -z "$PRS_WITH_LABEL" ] && [ -z "$RUNNING_PR_CONTAINERS" ]; then
             echo "No other PRs with deploy-preview label or running containers found"
@@ -186,6 +190,10 @@ jobs:
           
           # For each PR, remove label and tear down
           for PR_NUMBER in $ALL_PR_NUMBERS; do
+            if [ -n "$CURRENT_PR_NUMBER" ] && [ "$PR_NUMBER" = "$CURRENT_PR_NUMBER" ]; then
+              echo "Skipping cleanup for current PR #$CURRENT_PR_NUMBER"
+              continue
+            fi
             echo "Cleaning up PR #$PR_NUMBER..."
             
             # Remove deploy-preview label if it exists

@@ -26,7 +26,9 @@ export interface Dataset {
   title: string;
   modality: string | null;
   tags?: string | null;
-  citations: number;
+  papers: number | null;
+  paper_dois?: string[] | null;
+  paper_titles?: string[] | null;
   url: string;
   description?: string;
   created_at?: string;
@@ -56,6 +58,8 @@ export async function fetchDatasets(params?: {
   source?: string;
   modalities?: string[];
   search?: string;
+  sort_by?: 'published' | 'papers' | 'title' | 'id' | 'source' | 'modality';
+  sort_order?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }): Promise<DatasetsResponse> {
@@ -70,6 +74,12 @@ export async function fetchDatasets(params?: {
     }
     if (params?.search) {
       queryParams.append('search', params.search);
+    }
+    if (params?.sort_by) {
+      queryParams.append('sort_by', params.sort_by);
+    }
+    if (params?.sort_order) {
+      queryParams.append('sort_order', params.sort_order);
     }
     if (typeof params?.limit === 'number') {
       queryParams.append('limit', String(params.limit));

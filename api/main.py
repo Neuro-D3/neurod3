@@ -135,6 +135,8 @@ async def get_datasets(
     source: Optional[str] = Query(None, description="Filter by source (DANDI, Kaggle, OpenNeuro, PhysioNet)"),
     modality: Optional[str] = Query(None, description="Filter by modality (comma-separated for AND)"),
     search: Optional[str] = Query(None, description="Search in title and description"),
+    sort_by: str = Query("published", description="Sort column (published, papers, title, id, source, modality)"),
+    sort_order: str = Query("desc", description="Sort order (asc, desc)"),
     limit: int = Query(25, ge=1, le=200, description="Max number of datasets to return"),
     offset: int = Query(0, ge=0, description="Number of datasets to skip"),
 ):
@@ -193,7 +195,7 @@ async def get_datasets(
                         dataset_id as id,
                         title,
                         modality,
-                        citations,
+                        papers,
                         url,
                         description,
                         created_at,
@@ -223,8 +225,28 @@ async def get_datasets(
                     params.extend([search_pattern, search_pattern])
 
                 filter_sql = f" AND {' AND '.join(filters)}" if filters else ""
-                # Default ordering: newest first (published date), then citations
-                query = f"{base_select}{filter_sql} ORDER BY created_at DESC NULLS LAST, citations DESC, title ASC LIMIT %s OFFSET %s"
+
+                # Server-side ordering (applies before pagination).
+                sort_by_norm = (sort_by or "published").strip().lower()
+                sort_order_norm = (sort_order or "desc").strip().lower()
+                if sort_order_norm not in {"asc", "desc"}:
+                    raise HTTPException(status_code=400, detail=f"Invalid sort_order: {sort_order}")
+
+                sort_column_by_key = {
+                    "published": "created_at",
+                    "papers": "papers",
+                    "title": "title",
+                    "id": "dataset_id",
+                    "source": "source",
+                    "modality": "modality",
+                }
+                sort_col = sort_column_by_key.get(sort_by_norm)
+                if not sort_col:
+                    raise HTTPException(status_code=400, detail=f"Invalid sort_by: {sort_by}")
+
+                # Keep ordering deterministic with tie-breakers.
+                order_sql = f"{sort_col} {sort_order_norm.upper()} NULLS LAST, title ASC, dataset_id ASC"
+                query = f"{base_select}{filter_sql} ORDER BY {order_sql} LIMIT %s OFFSET %s"
                 count_query = f"{base_count}{filter_sql}"
 
                 cursor.execute(count_query, params)
@@ -235,6 +257,63 @@ async def get_datasets(
 
                 # Convert to list of dicts
                 result = [dict(row) for row in datasets]
+
+                # Attach paper titles/DOIs (best-effort).
+                # This keeps the main dataset query simple and adds at most one extra query per source per request.
+                for r in result:
+                    r["paper_dois"] = None
+                    r["paper_titles"] = None
+
+                dandi_ids = [r["id"] for r in result if r.get("source") == "DANDI" and r.get("id")]
+                openneuro_ids = [r["id"] for r in result if r.get("source") == "OpenNeuro" and r.get("id")]
+
+                if dandi_ids:
+                    try:
+                        cursor.execute(
+                            """
+                            SELECT dandi_id, paper_dois, paper_titles
+                            FROM dandi_dataset_papers
+                            WHERE dandi_id = ANY(%s);
+                            """,
+                            (dandi_ids,),
+                        )
+                        rows = cursor.fetchall()
+                        papers_by_id = {
+                            row["dandi_id"]: {"paper_dois": row["paper_dois"], "paper_titles": row["paper_titles"]}
+                            for row in rows
+                        }
+                        for r in result:
+                            if r.get("source") == "DANDI":
+                                entry = papers_by_id.get(r.get("id"), {})
+                                r["paper_dois"] = entry.get("paper_dois")
+                                r["paper_titles"] = entry.get("paper_titles")
+                    except Exception as e:
+                        # View may not exist yet; fail soft.
+                        logger.warning("Could not attach paper_titles from dandi_dataset_papers: %s", e)
+
+                if openneuro_ids:
+                    try:
+                        cursor.execute(
+                            """
+                            SELECT openneuro_id, paper_dois, paper_titles
+                            FROM openneuro_dataset_papers
+                            WHERE openneuro_id = ANY(%s);
+                            """,
+                            (openneuro_ids,),
+                        )
+                        rows = cursor.fetchall()
+                        papers_by_id = {
+                            row["openneuro_id"]: {"paper_dois": row["paper_dois"], "paper_titles": row["paper_titles"]}
+                            for row in rows
+                        }
+                        for r in result:
+                            if r.get("source") == "OpenNeuro":
+                                entry = papers_by_id.get(r.get("id"), {})
+                                r["paper_dois"] = entry.get("paper_dois")
+                                r["paper_titles"] = entry.get("paper_titles")
+                    except Exception as e:
+                        # View may not exist yet; fail soft.
+                        logger.warning("Could not attach paper_titles from openneuro_dataset_papers: %s", e)
 
                 return {
                     "datasets": result,

@@ -5,7 +5,6 @@ This DAG fetches datasets from the DANDI API and stores them in PostgreSQL.
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import logging
-import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -95,13 +94,17 @@ def parse_dandiset(dandiset: Dict[str, Any]) -> Dict[str, Any]:
     description: Optional[str] = None
     modality: Optional[str] = None
 
-    citations = random.randint(1, 1000)
+    # Legacy field (no longer maintained). Keep nullable.
+    citations = None
+    # Number of associated papers. Populated by `dandi_paper_mapping` over time.
+    papers = None
 
     return {
         "dataset_id": dataset_id,
         "title": title,
         "modality": modality,
         "citations": citations,
+        "papers": papers,
         "url": url,
         "description": description,
         "created_at": created_at,
@@ -119,7 +122,10 @@ def create_dandi_table(**context):
         dataset_id VARCHAR(255) NOT NULL UNIQUE,
         title TEXT,
         modality TEXT,
-        citations INTEGER DEFAULT 0,
+        -- Legacy field (no longer maintained). Keep nullable for backward compatibility.
+        citations INTEGER,
+        -- Number of associated papers (nullable by default; populated later).
+        papers INTEGER,
         url TEXT,
         description TEXT,
         created_at TIMESTAMP,
@@ -129,13 +135,15 @@ def create_dandi_table(**context):
 
     CREATE INDEX IF NOT EXISTS idx_dandi_dataset_id ON dandi_dataset(dataset_id);
     CREATE INDEX IF NOT EXISTS idx_dandi_modality ON dandi_dataset(modality);
-    CREATE INDEX IF NOT EXISTS idx_dandi_citations ON dandi_dataset(citations DESC);
+    CREATE INDEX IF NOT EXISTS idx_dandi_papers ON dandi_dataset(papers DESC);
     CREATE INDEX IF NOT EXISTS idx_dandi_version ON dandi_dataset(version);
     """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(create_table_sql)
+                # Allow schema evolution without forcing drop/recreate.
+                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;")
                 conn.commit()
         logger.info("Successfully created dandi_dataset table (or it already exists)")
     except Exception as e:
@@ -465,13 +473,14 @@ def insert_dandi_datasets(**context):
         return
 
     insert_sql = """
-    INSERT INTO dandi_dataset (dataset_id, title, modality, citations, url, description, created_at, updated_at, version)
-    VALUES (%(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(url)s, %(description)s, %(created_at)s, %(updated_at)s, %(version)s)
+    INSERT INTO dandi_dataset (dataset_id, title, modality, citations, papers, url, description, created_at, updated_at, version)
+    VALUES (%(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(papers)s, %(url)s, %(description)s, %(created_at)s, %(updated_at)s, %(version)s)
     ON CONFLICT (dataset_id)
     DO UPDATE SET
         title = EXCLUDED.title,
         modality = EXCLUDED.modality,
         citations = EXCLUDED.citations,
+        papers = COALESCE(EXCLUDED.papers, dandi_dataset.papers),
         url = EXCLUDED.url,
         description = EXCLUDED.description,
         created_at = EXCLUDED.created_at,

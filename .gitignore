@@ -4,6 +4,7 @@ logs/
 *.pyc
 __pycache__/
 .pytest_cache/
+dags/output/
 
 # Environment
 .env.local
