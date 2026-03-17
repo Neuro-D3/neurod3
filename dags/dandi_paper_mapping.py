@@ -162,7 +162,7 @@ def is_test_or_dummy_dataset(title: Optional[str], description: Optional[str]) -
     if not hay:
         return False, None
     for kw in _TEST_DUMMY_KEYWORDS:
-        if re.search(rf"\\b{re.escape(kw)}\\b", hay):
+        if re.search(rf"\b{re.escape(kw)}\b", hay):
             return True, f"keyword:{kw}"
     return False, None
 
