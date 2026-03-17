@@ -79,6 +79,18 @@ def extract_dois_from_text(text: Optional[str]) -> list[str]:
     return out
 
 
+def publication_year_from_date(publication_date: Optional[str]) -> Optional[int]:
+    if not isinstance(publication_date, str) or not publication_date.strip():
+        return None
+    m = re.match(r"^(\d{4})", publication_date.strip())
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
 _ZENODO_DOI_RE = re.compile(r"^10\.5281/zenodo\.(\d+)$", flags=re.IGNORECASE)
 
 
@@ -497,11 +509,16 @@ def resolve_crossref_metadata(
     Fetch Crossref once and return both title + authors.
 
     Returns:
-      { "title": Optional[str], "authors": Optional[List[str]] }
+      {
+        "title": Optional[str],
+        "authors": Optional[List[str]],
+        "publication_date": Optional[str],
+        "publication_year": Optional[int],
+      }
     """
     doi_norm = normalize_doi(doi)
     if not doi_norm:
-        return {"title": None, "authors": None}
+        return {"title": None, "authors": None, "publication_date": None, "publication_year": None}
     url = f"https://api.crossref.org/works/{quote(doi_norm)}"
     data = http_get_json(
         session,
@@ -513,7 +530,7 @@ def resolve_crossref_metadata(
         telemetry=telemetry,
     )
     if not data:
-        return {"title": None, "authors": None}
+        return {"title": None, "authors": None, "publication_date": None, "publication_year": None}
     msg = data.get("message") or {}
 
     # Title
@@ -555,7 +572,34 @@ def resolve_crossref_metadata(
                 deduped.append(n)
         authors_out = deduped or None
 
-    return {"title": title_out, "authors": authors_out}
+    publication_date_out: Optional[str] = None
+    for date_field in ("published-print", "published-online", "published", "created"):
+        date_info = msg.get(date_field)
+        if not isinstance(date_info, dict):
+            continue
+        date_parts = date_info.get("date-parts")
+        if not (isinstance(date_parts, list) and date_parts and isinstance(date_parts[0], list) and date_parts[0]):
+            continue
+        try:
+            parts = [int(x) for x in date_parts[0][:3]]
+        except Exception:
+            continue
+        if not parts:
+            continue
+        if len(parts) >= 3:
+            publication_date_out = f"{parts[0]:04d}-{parts[1]:02d}-{parts[2]:02d}"
+        elif len(parts) == 2:
+            publication_date_out = f"{parts[0]:04d}-{parts[1]:02d}"
+        else:
+            publication_date_out = f"{parts[0]:04d}"
+        break
+
+    return {
+        "title": title_out,
+        "authors": authors_out,
+        "publication_date": publication_date_out,
+        "publication_year": publication_year_from_date(publication_date_out),
+    }
 
 
 def resolve_openalex_work(
@@ -571,11 +615,23 @@ def resolve_openalex_work(
     Fetch OpenAlex once and return id + title + authors.
 
     Returns:
-      { "openalex_id": Optional[str], "title": Optional[str], "authors": Optional[List[str]] }
+      {
+        "openalex_id": Optional[str],
+        "title": Optional[str],
+        "authors": Optional[List[str]],
+        "publication_date": Optional[str],
+        "publication_year": Optional[int],
+      }
     """
     doi_norm = normalize_doi(doi)
     if not doi_norm:
-        return {"openalex_id": None, "title": None, "authors": None}
+        return {
+            "openalex_id": None,
+            "title": None,
+            "authors": None,
+            "publication_date": None,
+            "publication_year": None,
+        }
     url = f"https://api.openalex.org/works/doi:{doi_norm}"
     data = http_get_json(
         session,
@@ -587,7 +643,13 @@ def resolve_openalex_work(
         telemetry=telemetry,
     )
     if not data:
-        return {"openalex_id": None, "title": None, "authors": None}
+        return {
+            "openalex_id": None,
+            "title": None,
+            "authors": None,
+            "publication_date": None,
+            "publication_year": None,
+        }
 
     title = data.get("title")
     title_out = title.strip() if isinstance(title, str) and title.strip() else None
@@ -613,5 +675,14 @@ def resolve_openalex_work(
                 deduped.append(n)
         authors_out = deduped or None
 
-    return {"openalex_id": openalex_id_out, "title": title_out, "authors": authors_out}
+    publication_date = data.get("publication_date")
+    publication_date_out = publication_date.strip() if isinstance(publication_date, str) and publication_date.strip() else None
+
+    return {
+        "openalex_id": openalex_id_out,
+        "title": title_out,
+        "authors": authors_out,
+        "publication_date": publication_date_out,
+        "publication_year": publication_year_from_date(publication_date_out),
+    }
 

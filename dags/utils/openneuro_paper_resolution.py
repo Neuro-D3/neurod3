@@ -434,6 +434,10 @@ def resolve_papers_for_openneuro_dataset(
         if cr.get("authors"):
             paper["authors"] = cr.get("authors")
             paper["paper_metadata_source"] = paper.get("paper_metadata_source") or "crossref"
+        if cr.get("publication_date"):
+            paper["publication_date"] = cr.get("publication_date")
+        if cr.get("publication_year"):
+            paper["publication_year"] = cr.get("publication_year")
 
         if not paper.get("title") or not paper.get("authors") or not paper.get("openalex_id"):
             oa = resolve_openalex_work(
@@ -450,6 +454,10 @@ def resolve_papers_for_openneuro_dataset(
                 paper["openalex_id"] = oa.get("openalex_id")
             if not paper.get("authors") and oa.get("authors"):
                 paper["authors"] = oa.get("authors")
+            if not paper.get("publication_date") and oa.get("publication_date"):
+                paper["publication_date"] = oa.get("publication_date")
+            if not paper.get("publication_year") and oa.get("publication_year"):
+                paper["publication_year"] = oa.get("publication_year")
             if (oa.get("title") or oa.get("openalex_id") or oa.get("authors")) and not paper.get("paper_metadata_source"):
                 paper["paper_metadata_source"] = "openalex"
 
