@@ -115,7 +115,7 @@ def keyword_filter_dataset(
     if not hay:
         return False, None
     for kw in keywords:
-        if re.search(rf"\\b{re.escape(kw)}\\b", hay):
+        if re.search(rf"\b{re.escape(kw)}\b", hay):
             return True, f"keyword:{kw}"
     return False, None
 
