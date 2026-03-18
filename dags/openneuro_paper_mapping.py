@@ -956,6 +956,8 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                                 primary_doi,
                             ),
                         )
+                        # Release the row lock before this worker moves on to other papers.
+                        conn.commit()
 
                 primary_versions: List[tuple[str, str]] = []
                 if isinstance(openalex_id, str) and openalex_id.strip():
@@ -1028,6 +1030,8 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                         metrics["already_cached"] += int(cache_metrics.get("already_cached", 0))
                         metrics["fulltext_fetched"] += int(cache_metrics.get("fulltext_fetched", 0))
                         metrics["fulltext_unavailable"] += int(cache_metrics.get("fulltext_unavailable", 0))
+                        # Commit each paper upsert so parallel mapped batches do not deadlock on shared DOIs.
+                        conn.commit()
 
                         cursor.execute(
                             citation_upsert,
@@ -1043,6 +1047,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                             ),
                         )
                         metrics["citation_edges_upserted"] += 1
+                        conn.commit()
         conn.commit()
 
     metrics["datasets_with_primary_papers"] = len(seen_datasets)
