@@ -128,13 +128,23 @@ jobs:
     needs: validate-pr
     if: needs.validate-pr.outputs.should_deploy == 'true'
     steps:
+      - name: Stop PR preview containers (release workspace bind mounts)
+        run: |
+          # docker-compose.pr.yml bind-mounts ./dags, ./config, ./plugins, ./logs. Containers
+          # still running from a prior run keep those paths busy / root-owned and checkout fails
+          # with "Permission denied" when git tries to recreate the same files.
+          for c in $(docker ps --format '{{.Names}}' | grep -E '^pr-[0-9]+-' || true); do
+            echo "Stopping $c"
+            docker stop "$c" || true
+          done
+
       - name: Pre-checkout normalize workspace permissions
         run: |
           # Self-hosted runners can accumulate root/other-owned files from previous Docker runs.
           # Fix ownership/permissions *before* actions/checkout tries to clean/reset the repo.
           if [ -d "$GITHUB_WORKSPACE" ]; then
-            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
-            sudo chmod -R u+rwX "$GITHUB_WORKSPACE" || true
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE"
+            sudo chmod -R u+rwX "$GITHUB_WORKSPACE"
           fi
 
       - name: Checkout code
@@ -262,14 +272,21 @@ jobs:
     environment:
       name: pr-preview
     steps:
+      - name: Stop PR preview containers (release workspace bind mounts)
+        run: |
+          for c in $(docker ps --format '{{.Names}}' | grep -E '^pr-[0-9]+-' || true); do
+            echo "Stopping $c"
+            docker stop "$c" || true
+          done
+
       - name: Pre-checkout clean workspace and fix permissions
         run: |
           # Ensure actions/checkout can clean/reset by removing any root/other-owned files from prior runs.
           if [ -d "$GITHUB_WORKSPACE" ]; then
-            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE" || true
-            sudo chmod -R u+rwX "$GITHUB_WORKSPACE" || true
+            sudo chown -R "$USER:$USER" "$GITHUB_WORKSPACE"
+            sudo chmod -R u+rwX "$GITHUB_WORKSPACE"
             # Remove all contents (including .git) so checkout starts fresh.
-            sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+            sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           fi
 
       - name: Checkout code
