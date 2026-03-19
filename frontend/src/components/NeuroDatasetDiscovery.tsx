@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { fetchDatasets, fetchDatasetStats } from '../services/api';
+import type { Dataset } from '../services/api';
 
 // Lightweight icon stand-ins (avoid external deps in preview)
 const IconWrapper: React.FC<{ className?: string; children: React.ReactNode }> = ({
@@ -51,20 +52,6 @@ const ChevronUp: React.FC<{ size?: number; className?: string }> = ({ className 
 const ChevronDown: React.FC<{ size?: number; className?: string }> = ({ className }) => (
   <IconWrapper className={className}>▾</IconWrapper>
 );
-
-// Simple dataset type
-type Dataset = {
-  source: 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet';
-  id: string;
-  title: string;
-  modality: string | null;
-  tags?: string | null;
-  papers: number | null;
-  paper_dois?: string[] | null;
-  paper_titles?: string[] | null;
-  url: string;
-  created_at?: string | null;
-};
 
 const SOURCE_OPTIONS = ['DANDI', 'Kaggle', 'OpenNeuro', 'PhysioNet'] as const;
 const SOURCE_CANONICAL_BY_PARAM = SOURCE_OPTIONS.reduce<Record<string, Dataset['source']>>((acc, s) => {
@@ -247,6 +234,11 @@ export default function NeuroDatasetDiscovery() {
       const uniq = parts.filter((m) => (seen.has(m) ? false : (seen.add(m), true)));
       if (uniq.length) setSelectedModalities(uniq);
     }
+
+    const searchParam = params.get('search')?.trim();
+    if (searchParam) {
+      setSearchQuery(searchParam);
+    }
   }, []);
 
   useEffect(() => {
@@ -258,7 +250,7 @@ export default function NeuroDatasetDiscovery() {
 
   useEffect(() => {
     setPage(1);
-  }, [sourceFilter, selectedModalities]);
+  }, [sourceFilter, selectedModalities, searchQuery]);
 
   // Keep URL in sync with active filters (shareable links).
   useEffect(() => {
@@ -273,9 +265,12 @@ export default function NeuroDatasetDiscovery() {
     if (selectedModalities.length === 0) params.delete('modality');
     else params.set('modality', selectedModalities.join(','));
 
+    if (!searchQuery.trim()) params.delete('search');
+    else params.set('search', searchQuery.trim());
+
     // Avoid pushing a new history entry for each change.
     window.history.replaceState(null, '', `${url.pathname}${params.toString() ? `?${params.toString()}` : ''}${url.hash}`);
-  }, [sourceFilter, selectedModalities]);
+  }, [sourceFilter, selectedModalities, searchQuery]);
 
   // Close modality dropdown on outside click.
   useEffect(() => {
@@ -304,6 +299,7 @@ export default function NeuroDatasetDiscovery() {
       const response = await fetchDatasets({
         source: sourceParam,
         modalities: modalitiesParam,
+        search: searchQuery.trim() || undefined,
         sort_by: sortBy,
         sort_order: sortOrder,
         limit: pageSize,
@@ -331,7 +327,7 @@ export default function NeuroDatasetDiscovery() {
       setTotalCount(0);
       setLoading(false);
     }
-  }, [page, pageSize, sourceFilter, selectedModalities, sortBy, sortOrder]);
+  }, [page, pageSize, sourceFilter, selectedModalities, searchQuery, sortBy, sortOrder]);
 
   useEffect(() => {
     fetchAllDatasets();
@@ -342,7 +338,11 @@ export default function NeuroDatasetDiscovery() {
       const sourceParam = sourceFilter !== 'all' ? sourceFilter : undefined;
       const modalitiesParam = selectedModalities.length ? selectedModalities : undefined;
 
-      const response = await fetchDatasetStats({ source: sourceParam, modalities: modalitiesParam });
+      const response = await fetchDatasetStats({
+        source: sourceParam,
+        modalities: modalitiesParam,
+        search: searchQuery.trim() || undefined,
+      });
 
       // Faceted options
       const bySource = response.by_source || {};
@@ -364,7 +364,7 @@ export default function NeuroDatasetDiscovery() {
     } catch (err) {
       console.error('Error fetching dataset stats from API:', err);
     }
-  }, [sourceFilter, selectedModalities]);
+  }, [sourceFilter, selectedModalities, searchQuery]);
 
   useEffect(() => {
     fetchStats();
@@ -408,7 +408,21 @@ export default function NeuroDatasetDiscovery() {
       }
     }
 
-    // NOTE: searchQuery is not yet wired to filtering on purpose
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      const title = (ds.title || '').toLowerCase();
+      const description =
+        (typeof ds === 'object' &&
+        ds !== null &&
+        'description' in ds &&
+        typeof ds.description === 'string'
+          ? ds.description
+          : ''
+        ).toLowerCase();
+      const id = (ds.id || '').toLowerCase();
+      if (!title.includes(q) && !description.includes(q) && !id.includes(q)) return false;
+    }
+
     return true;
   });
 

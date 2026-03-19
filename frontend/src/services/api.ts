@@ -51,6 +51,108 @@ export interface ApiHealthResponse {
   database: string;
 }
 
+export interface PaperMappingSourceSummary {
+  source: 'DANDI' | 'OpenNeuro';
+  datasets_with_mapped_papers: number;
+  distinct_mapped_primary_papers: number;
+  citation_edges: number;
+  citations_with_contexts: number;
+  classified_edges: number;
+}
+
+export interface PaperMappingSummary {
+  summary: {
+    datasets_with_mapped_papers: number;
+    distinct_mapped_primary_papers: number;
+    citation_edges: number;
+    citations_with_contexts: number;
+    citation_context_count: number;
+    classified_edges: number;
+    placeholder_classification_edges: number;
+  };
+  by_source: PaperMappingSourceSummary[];
+  by_classification: Record<string, number>;
+}
+
+export interface PaperMappingDatasetRow {
+  source: 'DANDI' | 'OpenNeuro';
+  dataset_id: string;
+  dataset_title: string | null;
+  dataset_description?: string | null;
+  modality?: string | null;
+  papers_count?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  url?: string | null;
+  mapped_papers_count: number;
+  citation_edges_count: number;
+  citations_with_contexts_count: number;
+  contexts_extracted_count: number;
+  latest_primary_publication_date?: string | null;
+  latest_citing_publication_date?: string | null;
+  classified_edges_count: number;
+  placeholder_classification_edges_count: number;
+}
+
+export interface PaperMappingDatasetsResponse {
+  datasets: PaperMappingDatasetRow[];
+  count: number;
+}
+
+export interface PaperMappingPrimaryPaper {
+  paper_doi: string;
+  doi_source?: string | null;
+  relation_type?: string | null;
+  resolved_at?: string | null;
+  run_id?: string | null;
+  paper_title?: string | null;
+  authors?: string[] | null;
+  openalex_id?: string | null;
+  publication_date?: string | null;
+  publication_year?: number | null;
+  citing_papers_count: number;
+  citations_with_contexts_count: number;
+  classified_edges_count: number;
+  placeholder_classification_edges_count: number;
+}
+
+export interface PaperMappingCitation {
+  source?: 'DANDI' | 'OpenNeuro';
+  dataset_id?: string;
+  primary_paper_doi: string;
+  primary_paper_title?: string | null;
+  citing_paper_doi: string;
+  citing_paper_title?: string | null;
+  citing_authors?: string[] | null;
+  citing_publication_date?: string | null;
+  citing_publication_date_from_papers?: string | null;
+  citing_publication_year?: number | null;
+  citation_source?: string | null;
+  matched_primary_paper_doi?: string | null;
+  matched_primary_openalex_id?: string | null;
+  citation_contexts?: Array<{ context?: string; method?: string; [key: string]: any }> | null;
+  contexts_extracted_at?: string | null;
+  classification_status?: string | null;
+  classification?: string | null;
+  same_lab?: boolean | null;
+  confidence?: number | null;
+  status?: string | null;
+  reasoning?: string | null;
+  classification_model?: string | null;
+  classified_at?: string | null;
+}
+
+export interface PaperMappingDatasetDetail {
+  dataset: PaperMappingDatasetRow;
+  primary_papers: PaperMappingPrimaryPaper[];
+  citations: PaperMappingCitation[];
+}
+
+export interface PaperMappingCitationsResponse {
+  citations: PaperMappingCitation[];
+  count: number;
+}
+
 /**
  * Fetch datasets from the backend API with optional filters.
  */
@@ -105,11 +207,12 @@ export async function fetchDatasets(params?: {
 /**
  * Fetch dataset statistics from the backend API.
  */
-export async function fetchDatasetStats(params?: { source?: string; modalities?: string[] }): Promise<DatasetStats> {
+export async function fetchDatasetStats(params?: { source?: string; modalities?: string[]; search?: string }): Promise<DatasetStats> {
   try {
     const queryParams = new URLSearchParams();
     if (params?.source) queryParams.append('source', params.source);
     if (params?.modalities?.length) queryParams.append('modality', params.modalities.join(','));
+    if (params?.search) queryParams.append('search', params.search);
 
     const url = `${API_BASE_URL}/api/datasets/stats${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
 
@@ -141,5 +244,96 @@ export async function checkApiHealth(): Promise<ApiHealthResponse> {
     return response.json();
   } catch (error: any) {
     throw new Error(`Network error while checking API health: ${error?.message || error}`);
+  }
+}
+
+export async function fetchPaperMappingSummary(params?: {
+  source?: 'DANDI' | 'OpenNeuro';
+}): Promise<PaperMappingSummary> {
+  try {
+    const queryParams = new URLSearchParams();
+    if (params?.source) queryParams.append('source', params.source);
+    const url = `${API_BASE_URL}/api/paper-mapping/summary${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch paper mapping summary: ${response.statusText}`);
+    }
+    return response.json();
+  } catch (error: any) {
+    throw new Error(`Network error while fetching paper mapping summary: ${error?.message || error}`);
+  }
+}
+
+export async function fetchPaperMappingDatasets(params?: {
+  source?: 'DANDI' | 'OpenNeuro';
+  search?: string;
+  sort_by?:
+    | 'mapped_papers'
+    | 'citation_edges'
+    | 'contexts_extracted'
+    | 'latest_primary_publication_date'
+    | 'latest_citing_publication_date'
+    | 'title'
+    | 'id'
+    | 'source';
+  sort_order?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+}): Promise<PaperMappingDatasetsResponse> {
+  try {
+    const queryParams = new URLSearchParams();
+    if (params?.source) queryParams.append('source', params.source);
+    if (params?.search) queryParams.append('search', params.search);
+    if (params?.sort_by) queryParams.append('sort_by', params.sort_by);
+    if (params?.sort_order) queryParams.append('sort_order', params.sort_order);
+    if (typeof params?.limit === 'number') queryParams.append('limit', String(params.limit));
+    if (typeof params?.offset === 'number') queryParams.append('offset', String(params.offset));
+    const url = `${API_BASE_URL}/api/paper-mapping/datasets${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch paper mapping datasets: ${response.statusText}`);
+    }
+    return response.json();
+  } catch (error: any) {
+    throw new Error(`Network error while fetching paper mapping datasets: ${error?.message || error}`);
+  }
+}
+
+export async function fetchPaperMappingDatasetDetail(
+  source: 'DANDI' | 'OpenNeuro',
+  datasetId: string
+): Promise<PaperMappingDatasetDetail> {
+  try {
+    const url = `${API_BASE_URL}/api/paper-mapping/datasets/${encodeURIComponent(source)}/${encodeURIComponent(datasetId)}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch paper mapping dataset detail: ${response.statusText}`);
+    }
+    return response.json();
+  } catch (error: any) {
+    throw new Error(`Network error while fetching paper mapping dataset detail: ${error?.message || error}`);
+  }
+}
+
+export async function fetchPaperMappingCitations(params?: {
+  source?: 'DANDI' | 'OpenNeuro';
+  dataset_id?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<PaperMappingCitationsResponse> {
+  try {
+    const queryParams = new URLSearchParams();
+    if (params?.source) queryParams.append('source', params.source);
+    if (params?.dataset_id) queryParams.append('dataset_id', params.dataset_id);
+    if (typeof params?.limit === 'number') queryParams.append('limit', String(params.limit));
+    if (typeof params?.offset === 'number') queryParams.append('offset', String(params.offset));
+    const url = `${API_BASE_URL}/api/paper-mapping/citations${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch paper mapping citations: ${response.statusText}`);
+    }
+    return response.json();
+  } catch (error: any) {
+    throw new Error(`Network error while fetching paper mapping citations: ${error?.message || error}`);
   }
 }
