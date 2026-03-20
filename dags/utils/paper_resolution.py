@@ -287,8 +287,12 @@ def resolve_papers_for_dandiset(
             if z.get("authors"):
                 p["authors"] = z.get("authors")
                 p["paper_metadata_source"] = p.get("paper_metadata_source") or "zenodo"
-            if z.get("record_id") and not p.get("publication_year"):
-                p["publication_year"] = None
+            if z.get("publication_date"):
+                p["publication_date"] = z.get("publication_date")
+                p["paper_metadata_source"] = p.get("paper_metadata_source") or "zenodo"
+            if z.get("publication_year") is not None:
+                p["publication_year"] = z.get("publication_year")
+                p["paper_metadata_source"] = p.get("paper_metadata_source") or "zenodo"
             if z.get("url") and (not p.get("url") or "doi.org/" in str(p.get("url"))):
                 p["url"] = z.get("url")
 

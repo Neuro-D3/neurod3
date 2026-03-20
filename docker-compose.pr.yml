@@ -82,6 +82,7 @@ services:
 
   airflow-scheduler:
     <<: *airflow-common
+    hostname: airflow-scheduler
     command: scheduler
     networks:
       - pr-network
@@ -104,6 +105,7 @@ services:
 
   airflow-triggerer:
     <<: *airflow-common
+    hostname: airflow-triggerer
     command: triggerer
     networks:
       - pr-network

@@ -122,10 +122,19 @@ def resolve_zenodo_metadata(
     - authors: list[dict] | None  (format: {"name": "...", ...})
     - url: str | None
     - record_id: int | None
+    - publication_date: str | None  (ISO date, first day if Zenodo sends a range)
+    - publication_year: int | None
     """
     record_id = _zenodo_record_id_from_doi(doi)
     if record_id is None:
-        return {"title": None, "authors": None, "url": None, "record_id": None}
+        return {
+            "title": None,
+            "authors": None,
+            "url": None,
+            "record_id": None,
+            "publication_date": None,
+            "publication_year": None,
+        }
 
     url = f"https://zenodo.org/api/records/{record_id}"
     data = http_get_json(
@@ -166,7 +175,24 @@ def resolve_zenodo_metadata(
     html_url = links.get("html") if isinstance(links.get("html"), str) else None
     resolved_url = html_url or f"https://zenodo.org/records/{record_id}"
 
-    return {"title": title, "authors": authors, "url": resolved_url, "record_id": record_id}
+    publication_date_out: Optional[str] = None
+    pub_raw = md.get("publication_date")
+    if isinstance(pub_raw, str) and pub_raw.strip():
+        # Zenodo may use a single date or "YYYY-MM-DD/YYYY-MM-DD" for ranges.
+        publication_date_out = pub_raw.strip().split("/")[0].strip()
+
+    publication_year_out: Optional[int] = None
+    if publication_date_out:
+        publication_year_out = publication_year_from_date(publication_date_out)
+
+    return {
+        "title": title,
+        "authors": authors,
+        "url": resolved_url,
+        "record_id": record_id,
+        "publication_date": publication_date_out,
+        "publication_year": publication_year_out,
+    }
 
 
 @dataclass

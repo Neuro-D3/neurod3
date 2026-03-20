@@ -419,6 +419,12 @@ def resolve_papers_for_openneuro_dataset(
             if z.get("authors"):
                 paper["authors"] = z.get("authors")
                 paper["paper_metadata_source"] = paper.get("paper_metadata_source") or "zenodo"
+            if z.get("publication_date"):
+                paper["publication_date"] = z.get("publication_date")
+                paper["paper_metadata_source"] = paper.get("paper_metadata_source") or "zenodo"
+            if z.get("publication_year") is not None:
+                paper["publication_year"] = z.get("publication_year")
+                paper["paper_metadata_source"] = paper.get("paper_metadata_source") or "zenodo"
 
         cr = resolve_crossref_metadata(
             session,

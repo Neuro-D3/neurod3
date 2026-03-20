@@ -19,23 +19,16 @@ from urllib.parse import quote
 
 import requests
 
-from utils.find_reuse_core import Telemetry, http_get_json, normalize_doi
+from utils.find_reuse_core import (
+    Telemetry,
+    http_get_json,
+    normalize_doi,
+    publication_year_from_date,
+)
 
 logger = logging.getLogger(__name__)
 
 _PAPER_METADATA_TIMEOUT = 30
-
-
-def publication_year_from_date(publication_date: Optional[str]) -> Optional[int]:
-    if not isinstance(publication_date, str) or not publication_date.strip():
-        return None
-    m = re.match(r"^(\d{4})", publication_date.strip())
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except Exception:
-        return None
 
 
 def normalize_openalex_id(openalex_id: Optional[str]) -> Optional[str]:
@@ -156,6 +149,16 @@ def _lookup_published_version(
     return None
 
 
+def _sanitize_openalex_title_search_term(title: str) -> str:
+    """
+    Remove characters that break OpenAlex `title.search:"..."` filter syntax
+    (notably embedded double quotes and commas that delimit filter clauses).
+    """
+    t = title.strip().replace('"', " ").replace(",", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
 def _lookup_preprint_version(
     session: requests.Session,
     published_doi: str,
@@ -181,7 +184,11 @@ def _lookup_preprint_version(
     if not isinstance(title, str) or len(title.strip()) < 10:
         return None
 
-    filter_value = f'title.search:"{title.strip()}",type:preprint'
+    safe_title = _sanitize_openalex_title_search_term(title)
+    if len(safe_title) < 10:
+        return None
+
+    filter_value = f'title.search:"{safe_title}",type:preprint'
     url = (
         "https://api.openalex.org/works"
         f"?filter={quote(filter_value)}&select=doi,title,id,publication_date&per_page=5"

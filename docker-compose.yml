@@ -81,6 +81,9 @@ services:
 
   airflow-scheduler:
     <<: *airflow-common
+    # Default Docker hostname is the container ID; the api-server cannot resolve it for log
+    # streaming (port 8793). Use a stable name that matches the Compose service DNS label.
+    hostname: airflow-scheduler
     command: scheduler
     restart: always
     depends_on:
@@ -92,6 +95,7 @@ services:
 
   airflow-triggerer:
     <<: *airflow-common
+    hostname: airflow-triggerer
     command: triggerer
     restart: always
     depends_on:
