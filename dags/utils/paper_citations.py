@@ -764,11 +764,12 @@ def find_citation_contexts(
     if ref_number:
         positions = find_numbered_citations(citing_paper_text, ref_number)
         for pos in positions:
-            if pos in seen_positions:
+            pos_bucket = pos // 100
+            if pos_bucket in seen_positions:
                 continue
             if exclude_reference_section and is_in_reference_section(citing_paper_text, pos):
                 continue
-            seen_positions.add(pos)
+            seen_positions.add(pos_bucket)
             ctx = extract_context(citing_paper_text, pos, context_chars)
             ctx["method"] = "numbered_citation"
             ctx["reference_number"] = ref_number

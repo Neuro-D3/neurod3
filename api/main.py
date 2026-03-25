@@ -4,7 +4,7 @@ Provides REST endpoints to fetch neuroscience datasets from PostgreSQL.
 """
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
