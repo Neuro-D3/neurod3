@@ -287,6 +287,12 @@ def resolve_papers_for_dandiset(
             if z.get("authors"):
                 p["authors"] = z.get("authors")
                 p["paper_metadata_source"] = p.get("paper_metadata_source") or "zenodo"
+            if z.get("publication_date"):
+                p["publication_date"] = z.get("publication_date")
+                p["paper_metadata_source"] = p.get("paper_metadata_source") or "zenodo"
+            if z.get("publication_year") is not None:
+                p["publication_year"] = z.get("publication_year")
+                p["paper_metadata_source"] = p.get("paper_metadata_source") or "zenodo"
             if z.get("url") and (not p.get("url") or "doi.org/" in str(p.get("url"))):
                 p["url"] = z.get("url")
 
@@ -305,6 +311,10 @@ def resolve_papers_for_dandiset(
         if cr.get("authors"):
             p["authors"] = cr.get("authors")
             p["paper_metadata_source"] = p.get("paper_metadata_source") or "crossref"
+        if cr.get("publication_date"):
+            p["publication_date"] = cr.get("publication_date")
+        if cr.get("publication_year"):
+            p["publication_year"] = cr.get("publication_year")
 
         # If Crossref didn't populate what we need, fall back to OpenAlex (fetch once).
         if not p.get("title") or not p.get("authors") or not p.get("openalex_id"):
@@ -322,6 +332,10 @@ def resolve_papers_for_dandiset(
                 p["openalex_id"] = oa.get("openalex_id")
             if not p.get("authors") and oa.get("authors"):
                 p["authors"] = oa.get("authors")
+            if not p.get("publication_date") and oa.get("publication_date"):
+                p["publication_date"] = oa.get("publication_date")
+            if not p.get("publication_year") and oa.get("publication_year"):
+                p["publication_year"] = oa.get("publication_year")
             if (oa.get("title") or oa.get("openalex_id") or oa.get("authors")) and not p.get("paper_metadata_source"):
                 p["paper_metadata_source"] = "openalex"
 
