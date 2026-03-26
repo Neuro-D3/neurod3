@@ -153,6 +153,54 @@ export interface PaperMappingCitationsResponse {
   count: number;
 }
 
+export interface DatasetDetailPaper {
+  paper_doi: string;
+  doi_source?: string | null;
+  relation_type?: string | null;
+  paper_title?: string | null;
+  authors?: string[] | null;
+  openalex_id?: string | null;
+  publication_date?: string | null;
+  publication_year?: number | null;
+  citing_papers_count: number;
+}
+
+export interface DatasetDetailCitation {
+  primary_paper_doi: string;
+  primary_paper_title?: string | null;
+  citing_paper_doi: string;
+  citing_paper_title?: string | null;
+  citing_authors?: string[] | null;
+  citing_publication_date?: string | null;
+  citing_publication_year?: number | null;
+}
+
+export interface DatasetContributor {
+  name: string;
+  roles: string[];
+}
+
+export interface DatasetDetailResponse {
+  dataset: {
+    source: string;
+    dataset_id: string;
+    title: string;
+    description?: string | null;
+    full_description?: string | null;
+    authors?: string[] | null;
+    contributors?: DatasetContributor[] | null;
+    license?: string | null;
+    num_subjects?: number | null;
+    modality?: string | null;
+    papers?: number | null;
+    url?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+  };
+  primary_papers: DatasetDetailPaper[];
+  citations: DatasetDetailCitation[];
+}
+
 /**
  * Fetch datasets from the backend API with optional filters.
  */
@@ -312,6 +360,20 @@ export async function fetchPaperMappingDatasetDetail(
     return response.json();
   } catch (error: any) {
     throw new Error(`Network error while fetching paper mapping dataset detail: ${error?.message || error}`);
+  }
+}
+
+export async function fetchDatasetDetail(datasetId: string): Promise<DatasetDetailResponse> {
+  try {
+    const url = `${API_BASE_URL}/api/datasets/${encodeURIComponent(datasetId)}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      if (response.status === 404) throw new Error('Dataset not found');
+      throw new Error(`Failed to fetch dataset detail: ${response.statusText}`);
+    }
+    return response.json();
+  } catch (error: any) {
+    throw new Error(error?.message || 'Network error while fetching dataset detail');
   }
 }
 

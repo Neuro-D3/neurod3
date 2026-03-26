@@ -707,6 +707,128 @@ async def get_dataset_stats(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+@app.get("/api/datasets/{dataset_id}")
+async def get_dataset_detail(dataset_id: str):
+    """
+    Fetch a single dataset by its archive-native ID (e.g. 000003 for DANDI, ds000001
+    for OpenNeuro), including associated primary papers and citing papers when available.
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cursor:
+                # --- resolve dataset from unified_datasets (or fallback) ---
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.views
+                        WHERE table_schema = 'public' AND table_name = 'unified_datasets'
+                    );
+                    """,
+                )
+                view_exists = cursor.fetchone()["exists"]
+                table_name = "unified_datasets" if view_exists else "neuroscience_datasets"
+
+                # Build column list dynamically so missing columns don't break the query
+                base_cols = ["source", "dataset_id", "title", "modality", "papers", "url",
+                             "description", "created_at", "updated_at"]
+                optional_cols = ["full_description", "authors", "contributors", "license", "num_subjects"]
+                cursor.execute(
+                    """SELECT column_name FROM information_schema.columns
+                       WHERE table_schema = 'public' AND table_name = %s;""",
+                    (table_name,),
+                )
+                existing_cols = {row["column_name"] for row in cursor.fetchall()}
+                select_cols = base_cols + [c for c in optional_cols if c in existing_cols]
+
+                cursor.execute(
+                    f"""
+                    SELECT {', '.join(select_cols)}
+                    FROM {table_name}
+                    WHERE dataset_id = %s
+                    LIMIT 1;
+                    """,
+                    (dataset_id,),
+                )
+                dataset = cursor.fetchone()
+                if not dataset:
+                    raise HTTPException(status_code=404, detail="Dataset not found")
+
+                dataset = dict(dataset)
+                source = dataset["source"]
+
+                # --- primary papers (best-effort; paper mapping tables may not exist) ---
+                primary_papers: list[dict] = []
+                citations: list[dict] = []
+                try:
+                    _ensure_paper_mapping_tables(cursor)
+
+                    primary_papers_query = f"""
+                        {_paper_mapping_ctes()}
+                        SELECT
+                            map.paper_doi,
+                            map.doi_source,
+                            map.relation_type,
+                            p.title AS paper_title,
+                            p.authors,
+                            p.openalex_id,
+                            p.publication_date,
+                            p.publication_year,
+                            COUNT(DISTINCT ce.citing_paper_doi)::int AS citing_papers_count
+                        FROM dataset_map map
+                        LEFT JOIN papers p ON p.paper_doi = map.paper_doi
+                        LEFT JOIN citation_edges ce
+                          ON ce.source = map.source
+                         AND ce.dataset_id = map.dataset_id
+                         AND ce.primary_paper_doi = map.paper_doi
+                        WHERE map.source = %s AND map.dataset_id = %s
+                        GROUP BY
+                            map.paper_doi, map.doi_source, map.relation_type,
+                            p.title, p.authors, p.openalex_id,
+                            p.publication_date, p.publication_year
+                        ORDER BY COALESCE(p.publication_date, '') DESC, map.paper_doi ASC;
+                    """
+                    cursor.execute(primary_papers_query, [source, dataset_id])
+                    primary_papers = [dict(r) for r in cursor.fetchall()]
+
+                    citations_query = f"""
+                        {_paper_mapping_ctes()}
+                        SELECT
+                            ce.primary_paper_doi,
+                            p_primary.title AS primary_paper_title,
+                            ce.citing_paper_doi,
+                            p_citing.title AS citing_paper_title,
+                            p_citing.authors AS citing_authors,
+                            p_citing.publication_date AS citing_publication_date,
+                            p_citing.publication_year AS citing_publication_year
+                        FROM citation_edges ce
+                        LEFT JOIN papers p_primary ON p_primary.paper_doi = ce.primary_paper_doi
+                        LEFT JOIN papers p_citing ON p_citing.paper_doi = ce.citing_paper_doi
+                        WHERE ce.source = %s AND ce.dataset_id = %s
+                        ORDER BY COALESCE(p_citing.publication_date, '') DESC,
+                                 ce.citing_paper_doi ASC
+                        LIMIT 100;
+                    """
+                    cursor.execute(citations_query, [source, dataset_id])
+                    citations = [dict(r) for r in cursor.fetchall()]
+
+                except HTTPException:
+                    pass
+
+                return {
+                    "dataset": dataset,
+                    "primary_papers": primary_papers,
+                    "citations": citations,
+                }
+    except HTTPException:
+        raise
+    except psycopg.Error as e:
+        logger.exception("Database query error in /api/datasets/%s", dataset_id)
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+    except Exception as e:
+        logger.exception("Unexpected error in /api/datasets/%s", dataset_id)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
 @app.get("/api/paper-mapping/summary")
 async def get_paper_mapping_summary(
     source: Optional[str] = Query(None, description="Filter by source (DANDI, OpenNeuro)"),

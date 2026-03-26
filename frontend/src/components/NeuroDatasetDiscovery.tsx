@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { Link } from 'react-router-dom';
 import { fetchDatasets, fetchDatasetStats } from '../services/api';
 import type { Dataset } from '../services/api';
 
@@ -239,6 +240,12 @@ export default function NeuroDatasetDiscovery() {
     if (searchParam) {
       setSearchQuery(searchParam);
     }
+
+    const pageParam = params.get('page');
+    if (pageParam) {
+      const p = parseInt(pageParam, 10);
+      if (p > 0) setPage(p);
+    }
   }, []);
 
   useEffect(() => {
@@ -268,9 +275,12 @@ export default function NeuroDatasetDiscovery() {
     if (!searchQuery.trim()) params.delete('search');
     else params.set('search', searchQuery.trim());
 
+    if (page <= 1) params.delete('page');
+    else params.set('page', String(page));
+
     // Avoid pushing a new history entry for each change.
     window.history.replaceState(null, '', `${url.pathname}${params.toString() ? `?${params.toString()}` : ''}${url.hash}`);
-  }, [sourceFilter, selectedModalities, searchQuery]);
+  }, [sourceFilter, selectedModalities, searchQuery, page]);
 
   // Close modality dropdown on outside click.
   useEffect(() => {
@@ -512,7 +522,7 @@ export default function NeuroDatasetDiscovery() {
       className={`min-h-screen py-12 px-4 transition-colors duration-200 ${
         darkMode
           ? 'bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900'
-          : 'bg-gradient-to-br from-blue-50 via-white to-purple-50'
+          : 'bg-gradient-to-br from-blue-100/80 via-slate-50 to-purple-100/80'
       }`}
     >
       <div className="max-w-7xl mx-auto">
@@ -733,6 +743,29 @@ export default function NeuroDatasetDiscovery() {
                 )}
               </div>
 
+              <div className="flex items-center gap-2">
+                <ArrowUpDown size={16} className={darkMode ? 'text-gray-300' : 'text-gray-600'} />
+                <select
+                  value={`${sortBy}-${sortOrder}`}
+                  onChange={(e) => {
+                    const [col, ord] = e.target.value.split('-') as [typeof sortBy, 'asc' | 'desc'];
+                    setSortBy(col);
+                    setSortOrder(ord);
+                    setPage(1);
+                  }}
+                  className={`border rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 backdrop-blur-xl transition-all ${
+                    darkMode ? 'bg-white/10 border-white/20 text-white' : 'bg-white/80 border-gray-200 text-gray-900'
+                  }`}
+                >
+                  <option value="published-desc">Newest first</option>
+                  <option value="published-asc">Oldest first</option>
+                  <option value="papers-desc">Most papers</option>
+                  <option value="papers-asc">Fewest papers</option>
+                  <option value="title-asc">Title A–Z</option>
+                  <option value="title-desc">Title Z–A</option>
+                </select>
+              </div>
+
               <div className={darkMode ? 'text-sm text-gray-300 text-center' : 'text-sm text-gray-600 text-center'}>
                 Showing{' '}
                 <span className={darkMode ? 'font-semibold text-white' : 'font-semibold text-gray-900'}>
@@ -816,203 +849,147 @@ export default function NeuroDatasetDiscovery() {
             </p>
           </div>
         ) : (
-          <div
-            className={
-              darkMode
-                ? 'rounded-2xl shadow-2xl overflow-hidden backdrop-blur-xl bg-white/5 border border-white/10'
-                : 'rounded-2xl shadow-2xl overflow-hidden backdrop-blur-xl bg-white/70 border border-white/20'
-            }
-          >
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className={darkMode ? 'backdrop-blur-xl bg-white/5' : 'backdrop-blur-xl bg-white/50'}>
-                  <tr>
-                    <th
-                      className={
-                        darkMode
-                          ? 'px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-300'
-                          : 'px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-700'
-                      }
-                    >
-                      #
-                    </th>
-                    <SortableHeader column="source">Source</SortableHeader>
-                    <SortableHeader column="title" className="w-[34rem]">Dataset Title</SortableHeader>
-                    <SortableHeader column="id">ID</SortableHeader>
-                    <SortableHeader column="published">Published</SortableHeader>
-                    <SortableHeader column="modality">Modality</SortableHeader>
-                    <SortableHeader column="papers">Papers</SortableHeader>
-                    <th
-                      className={
-                        darkMode
-                          ? 'px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-300'
-                          : 'px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-700'
-                      }
-                    >
-                      Links
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className={darkMode ? 'divide-y divide-gray-800' : 'divide-y divide-gray-200'}>
-                  {sortedDatasets.map((ds, index) => (
-                    <tr key={`${ds.source}-${ds.id}-${index}`} className={darkMode ? 'hover:bg-white/5' : 'hover:bg-gray-50'}>
-                      <td className="px-4 py-3 text-sm text-center text-gray-800">{pageOffset + index + 1}</td>
-                      <td className="px-4 py-3 text-sm text-center">
+          <>
+            {/* Dataset feed */}
+            <div className="space-y-3">
+              {sortedDatasets.map((ds, index) => {
+                const desc = (ds.description || '').trim();
+                const shortDesc = desc.length > 200 ? desc.slice(0, 200).replace(/\s+\S*$/, '') + '...' : desc;
+                const parts = (ds.modality || '').split(/[;,]/).map((p) => p.trim()).filter(Boolean);
+                const paperCount = ds.papers ?? 0;
+
+                return (
+                  <div
+                    key={`${ds.source}-${ds.id}-${index}`}
+                    className={`rounded-2xl backdrop-blur-xl border transition-all hover:shadow-lg ${
+                      darkMode
+                        ? 'bg-white/5 border-white/10 hover:bg-white/[0.08]'
+                        : 'bg-white/70 border-white/20 hover:bg-white/90'
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row gap-4 p-5">
+                      {/* Left: main content */}
+                      <div className="flex-1 min-w-0">
+                        <Link
+                          to={`/datasets/${encodeURIComponent(ds.id)}`}
+                          className={`text-base font-semibold leading-snug hover:underline transition-colors ${
+                            darkMode ? 'text-white hover:text-blue-300' : 'text-gray-900 hover:text-blue-600'
+                          }`}
+                        >
+                          {ds.title}
+                        </Link>
+
+                        {shortDesc && (
+                          <p className={`mt-1.5 text-sm leading-relaxed line-clamp-2 ${
+                            darkMode ? 'text-gray-400' : 'text-gray-500'
+                          }`}>
+                            {shortDesc}
+                          </p>
+                        )}
+
+                        {/* Bottom meta row */}
+                        <div className="mt-3 flex flex-wrap items-center gap-2.5 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => setSourceFilter((prev) => (prev === ds.source ? 'all' : ds.source))}
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full font-medium transition-all ${
+                              sourceFilter !== 'all' && sourceFilter === ds.source ? 'ring-1 ring-blue-500/40 shadow-sm' : ''
+                            } ${getSourceBadgeColor(ds.source)}`}
+                            title="Click to toggle filter"
+                          >
+                            {ds.source}
+                          </button>
+
+                          <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>·</span>
+
+                          <span className={`tabular-nums ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                            {ds.created_at ? new Date(ds.created_at).toLocaleDateString() : '—'}
+                          </span>
+
+                          {parts.length > 0 && (
+                            <>
+                              <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>·</span>
+                              <div className="flex flex-wrap items-center gap-1">
+                                {parts.slice(0, 3).map((m) => (
+                                  <button
+                                    type="button"
+                                    key={m}
+                                    onClick={() => toggleSelectedModality(m)}
+                                    className={`px-2 py-0.5 rounded-full font-medium transition-all cursor-pointer ${
+                                      isSelectedModality(m)
+                                        ? 'text-sky-200 bg-gradient-to-r from-slate-950/80 via-blue-950/70 to-blue-900/60 shadow-md shadow-blue-900/40 ring-1 ring-blue-400/25'
+                                        : darkMode
+                                          ? 'bg-white/10 text-gray-300'
+                                          : 'bg-gray-100 text-gray-600'
+                                    }`}
+                                    title="Click to toggle filter"
+                                  >
+                                    {formatModalityToken(m)}
+                                  </button>
+                                ))}
+                                {parts.length > 3 && (
+                                  <span className={`px-1.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                                    +{parts.length - 3}
+                                  </span>
+                                )}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Right: metadata column */}
+                      <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-start gap-2 sm:gap-3 flex-shrink-0 sm:w-36 sm:pt-0.5">
+                        {ds.updated_at && (
+                          <span className={`text-xs tabular-nums ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                            Updated {new Date(ds.updated_at).toLocaleDateString()}
+                          </span>
+                        )}
+
                         <button
                           type="button"
-                          onClick={() => setSourceFilter((prev) => (prev === ds.source ? 'all' : ds.source))}
-                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium transition-all ${
-                            sourceFilter !== 'all' && sourceFilter === ds.source ? 'ring-1 ring-blue-500/40 shadow-sm' : ''
-                          } ${getSourceBadgeColor(ds.source)}`}
-                          title="Click to toggle filter"
+                          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition-all ${
+                            paperCount > 0
+                              ? darkMode
+                                ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/20'
+                                : 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
+                              : darkMode
+                                ? 'bg-white/5 text-gray-500 border border-white/10'
+                                : 'bg-gray-50 text-gray-400 border border-gray-200'
+                          } ${
+                            ds.source === 'DANDI' || ds.source === 'OpenNeuro' ? 'cursor-pointer' : 'cursor-default'
+                          }`}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            openPapersTooltip(ds, e.currentTarget);
+                          }}
+                          disabled={ds.source !== 'DANDI' && ds.source !== 'OpenNeuro'}
+                          aria-label={`${paperCount} associated papers`}
                         >
-                          {ds.source}
+                          {paperCount} paper{paperCount !== 1 ? 's' : ''}
                         </button>
-                          </td>
-                          <td
-                            className="px-4 py-3 text-sm font-medium text-center"
-                            style={{ color: darkMode ? '#F9FAFB' : '#111827' }}
-                          >
-                            {ds.title}
-                          </td>
-                          <td
-                            className="px-4 py-3 text-sm text-center"
-                            style={{ color: darkMode ? '#E5E7EB' : '#111827' }}
-                          >
-                            {ds.id}
-                          </td>
-                          <td
-                            className="px-4 py-3 text-sm text-center"
-                            style={{ color: darkMode ? '#E5E7EB' : '#111827' }}
-                          >
-                            <div className="flex justify-center">
-                              <span className="whitespace-nowrap tabular-nums">
-                                {ds.created_at ? new Date(ds.created_at).toLocaleDateString() : '—'}
-                              </span>
-                            </div>
-                          </td>
-                          <td
-                            className="px-4 py-3 text-sm text-center"
-                            style={{ color: darkMode ? '#E5E7EB' : '#111827' }}
-                          >
-                            {(() => {
-                              const rowKey = `${ds.source}:${ds.id}`;
-                              const parts = (ds.modality || '')
-                                .split(/[;,]/)
-                                .map((p) => p.trim())
-                                .filter(Boolean);
-                              if (parts.length === 0) return '—';
-                              const isExpanded = expandedModalityRows.has(rowKey);
-                              const previewCount = 3;
-                              const visible = isExpanded ? parts : parts.slice(0, previewCount);
-                              const remaining = parts.length - visible.length;
-                              return (
-                                <div className="flex flex-wrap items-center justify-center gap-1">
-                                  {visible.map((m) => (
-                                    <button
-                                      type="button"
-                                      onClick={() => toggleSelectedModality(m)}
-                                      key={m}
-                                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-all cursor-pointer ${
-                                        isSelectedModality(m)
-                                          ? 'text-sky-200 bg-gradient-to-r from-slate-950/80 via-blue-950/70 to-blue-900/60 shadow-md shadow-blue-900/40 ring-1 ring-blue-400/25'
-                                          : darkMode
-                                            ? 'bg-white/10 text-gray-200'
-                                            : 'bg-gray-100 text-gray-700'
-                                      }`}
-                                      title="Click to toggle filter"
-                                    >
-                                      {formatModalityToken(m)}
-                                    </button>
-                                  ))}
 
-                                  {parts.length > previewCount && (
-                                    <button
-                                      type="button"
-                                      onClick={() => toggleRowModalities(rowKey)}
-                                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold transition-all ${
-                                        darkMode
-                                          ? 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
-                                          : 'bg-white/70 text-gray-800 hover:bg-white border border-gray-200'
-                                      }`}
-                                      title={isExpanded ? 'Collapse modalities' : 'Expand modalities'}
-                                    >
-                                      {isExpanded ? <ChevronUp /> : <ChevronDown />}
-                                      {!isExpanded && remaining > 0 ? `+${remaining}` : 'Less'}
-                                    </button>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </td>
-                          <td
-                            className="px-4 py-3 text-sm font-semibold text-center"
-                            style={{ color: darkMode ? '#F9FAFB' : '#111827' }}
-                          >
-                            {(() => {
-                              const popoverId = `papers-popover-${ds.source}-${ds.id}`;
-                              const isExpanded =
-                                !!papersTooltip &&
-                                !papersTooltip.closing &&
-                                papersTooltip.dataset.source === ds.source &&
-                                papersTooltip.dataset.id === ds.id;
-
-                              return (
-                                <button
-                                  type="button"
-                                  className={`relative inline-flex items-center justify-center tabular-nums bg-transparent border-0 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 rounded ${
-                                    ds.source === 'DANDI' || ds.source === 'OpenNeuro' ? 'cursor-pointer' : 'cursor-default'
-                                  } disabled:opacity-60 disabled:cursor-not-allowed ${
-                                    typeof ds.papers === 'number' && ds.papers > 0
-                                      ? darkMode
-                                        ? 'text-emerald-300'
-                                        : 'text-emerald-700'
-                                      : ''
-                                  }`}
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    openPapersTooltip(ds, e.currentTarget);
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' || e.key === ' ') {
-                                      e.preventDefault();
-                                      openPapersTooltip(ds, e.currentTarget);
-                                    }
-                                  }}
-                                  disabled={ds.source !== 'DANDI' && ds.source !== 'OpenNeuro'}
-                                  aria-label={
-                                    ds.source === 'DANDI' || ds.source === 'OpenNeuro'
-                                      ? `Show associated papers for dataset ${ds.id}`
-                                      : 'Papers popover available for DANDI/OpenNeuro only'
-                                  }
-                                  aria-haspopup="dialog"
-                                  aria-expanded={isExpanded}
-                                  aria-controls={isExpanded ? popoverId : undefined}
-                                >
-                                  {ds.papers?.toLocaleString?.() ?? '—'}
-                                </button>
-                              );
-                            })()}
-                          </td>
-                          <td className="px-4 py-3 text-sm text-center">
-                            <a
-                              href={ds.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center justify-center gap-1 text-blue-600 hover:text-blue-500"
-                            >
-                              Open
-                              <ExternalLink size={14} />
-                            </a>
-                          </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        <a
+                          href={ds.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={`inline-flex items-center gap-1 text-xs font-medium transition-colors ${
+                            darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-500'
+                          }`}
+                        >
+                          Open <ExternalLink size={12} />
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
+
+            {/* Pagination */}
             <div
-              className={`flex items-center justify-between px-4 py-3 border-t ${
-                darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-600'
+              className={`flex items-center justify-between mt-6 rounded-2xl backdrop-blur-xl p-4 ${
+                darkMode ? 'bg-white/5 border border-white/10 text-gray-300' : 'bg-white/70 border border-white/20 text-gray-600'
               }`}
             >
               <div className="text-sm">
@@ -1050,7 +1027,7 @@ export default function NeuroDatasetDiscovery() {
                 </button>
               </div>
             </div>
-          </div>
+          </>
         )}
 
         {/* Footer */}
