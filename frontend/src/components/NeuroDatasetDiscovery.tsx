@@ -522,7 +522,7 @@ export default function NeuroDatasetDiscovery() {
       className={`min-h-screen py-12 px-4 transition-colors duration-200 ${
         darkMode
           ? 'bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900'
-          : 'bg-gradient-to-br from-blue-100/80 via-slate-50 to-purple-100/80'
+          : 'bg-slate-100'
       }`}
     >
       <div className="max-w-7xl mx-auto">

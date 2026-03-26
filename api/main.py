@@ -707,7 +707,7 @@ async def get_dataset_stats(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@app.get("/api/datasets/{dataset_id}")
+@app.get("/api/datasets/{dataset_id:path}")
 async def get_dataset_detail(dataset_id: str):
     """
     Fetch a single dataset by its archive-native ID (e.g. 000003 for DANDI, ds000001
@@ -740,15 +740,11 @@ async def get_dataset_detail(dataset_id: str):
                 existing_cols = {row["column_name"] for row in cursor.fetchall()}
                 select_cols = base_cols + [c for c in optional_cols if c in existing_cols]
 
-                cursor.execute(
-                    f"""
-                    SELECT {', '.join(select_cols)}
-                    FROM {table_name}
-                    WHERE dataset_id = %s
-                    LIMIT 1;
-                    """,
-                    (dataset_id,),
-                )
+                cols_sql = sql.SQL(", ").join(sql.Identifier(c) for c in select_cols)
+                detail_query = sql.SQL(
+                    "SELECT {cols} FROM {table} WHERE dataset_id = %s LIMIT 1;"
+                ).format(cols=cols_sql, table=sql.Identifier(table_name))
+                cursor.execute(detail_query, (dataset_id,))
                 dataset = cursor.fetchone()
                 if not dataset:
                     raise HTTPException(status_code=404, detail="Dataset not found")

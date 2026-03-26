@@ -159,7 +159,7 @@ export default function PaperMappingDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-100/80 via-slate-50 to-purple-100/80 text-slate-900">
+    <div className="min-h-screen bg-slate-100 text-slate-900">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <div className="mb-6">
           <h1 className="text-3xl font-semibold tracking-tight">Internal Paper Mapping Dashboard</h1>

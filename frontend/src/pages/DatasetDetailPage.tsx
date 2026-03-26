@@ -156,7 +156,7 @@ export default function DatasetDetailPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-100/80 via-slate-50 to-purple-100/80 flex items-center justify-center">
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center">
         <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
       </div>
     );
@@ -164,7 +164,7 @@ export default function DatasetDetailPage() {
 
   if (error || !data) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-100/80 via-slate-50 to-purple-100/80 flex items-center justify-center px-4">
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center px-4">
         <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl p-10 text-center max-w-md">
           <div className="text-5xl mb-4">😔</div>
           <h2 className="text-lg font-semibold text-slate-800 mb-2">
@@ -190,7 +190,7 @@ export default function DatasetDetailPage() {
     .filter(Boolean);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-100/80 via-slate-50 to-purple-100/80 py-10 px-4">
+    <div className="min-h-screen bg-slate-100 py-10 px-4">
       <div className="mx-auto max-w-7xl">
         {/* Back navigation */}
         <button
