@@ -66,7 +66,7 @@ function PaperCard({
           )}
           {paper.openalex_id && (
             <a
-              href={`https://openalex.org/${paper.openalex_id}`}
+              href={paper.openalex_id.startsWith('http') ? paper.openalex_id : `https://openalex.org/${paper.openalex_id}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-blue-500 hover:underline"
