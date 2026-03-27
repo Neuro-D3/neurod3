@@ -279,7 +279,7 @@ export default function NeuroDatasetDiscovery() {
     else params.set('page', String(page));
 
     // Avoid pushing a new history entry for each change.
-    window.history.replaceState(null, '', `${url.pathname}${params.toString() ? `?${params.toString()}` : ''}${url.hash}`);
+    window.history.replaceState(null, '', `${url.pathname}${params.toString() ? `?${params.toString()}` : ''}`);
   }, [sourceFilter, selectedModalities, searchQuery, page]);
 
   // Close modality dropdown on outside click.
