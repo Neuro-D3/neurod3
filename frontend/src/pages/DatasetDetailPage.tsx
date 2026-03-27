@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
 import { fetchDatasetDetail } from '../services/api';
 import type { DatasetDetailResponse, DatasetDetailPaper, DatasetDetailCitation, DatasetContributor } from '../services/api';
 
@@ -290,8 +291,8 @@ export default function DatasetDetailPage() {
             {(ds.full_description || ds.description) && (
               <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl p-6 mb-6">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Description</h2>
-                <div className="text-sm text-slate-700 leading-relaxed whitespace-pre-line">
-                  {ds.full_description || ds.description}
+                <div className="prose prose-sm prose-slate max-w-none">
+                  <ReactMarkdown>{ds.full_description || ds.description || ''}</ReactMarkdown>
                 </div>
               </div>
             )}

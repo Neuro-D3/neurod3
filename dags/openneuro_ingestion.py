@@ -992,9 +992,9 @@ def _get_snapshot_description_and_paths(
     # Extract description/license: prefer README (256 chars), fall back to dataset_description.json
     readme_raw = snap.get("readme")
     if isinstance(readme_raw, str):
-        collapsed = re.sub(r"\s+", " ", readme_raw).strip()
-        if collapsed:
-            full_readme = collapsed
+        stripped = readme_raw.strip()
+        if stripped:
+            full_readme = stripped
         desc_text_256 = _readme_to_description(readme_raw, max_len=256) or desc_text_256
 
     desc = snap.get("description")
@@ -1693,9 +1693,9 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
         # Prefer dataset-level readme when present; snapshot-level README is fetched later if needed.
         if isinstance(dataset_data.get("readme"), str):
             readme_raw = dataset_data["readme"]
-            collapsed = re.sub(r"\s+", " ", readme_raw).strip()
-            if collapsed and not enriched_ds.get("full_description"):
-                enriched_ds["full_description"] = collapsed
+            stripped = readme_raw.strip()
+            if stripped and not enriched_ds.get("full_description"):
+                enriched_ds["full_description"] = stripped
             if not enriched_ds.get("description"):
                 desc = _readme_to_description(readme_raw, max_len=256)
                 if desc:
@@ -1907,9 +1907,9 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
             try:
                 readme = _get_readme_from_latest_snapshot(dataset_id=dataset_id, tag=tag)
                 if readme and isinstance(readme, str):
-                    collapsed = re.sub(r"\s+", " ", readme).strip()
-                    if collapsed and not enriched_ds.get("full_description"):
-                        enriched_ds["full_description"] = collapsed
+                    stripped = readme.strip()
+                    if stripped and not enriched_ds.get("full_description"):
+                        enriched_ds["full_description"] = stripped
                 desc = _readme_to_description(readme, max_len=256) if readme else None
                 if desc:
                     enriched_ds["description"] = desc
