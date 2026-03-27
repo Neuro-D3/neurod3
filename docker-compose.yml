@@ -250,6 +250,8 @@ services:
       - REACT_APP_API_URL=http://localhost:8000
     volumes:
       - ./frontend:/app
+      # Anonymous volume hides image node_modules; stale after package.json changes.
+      # Fix: docker compose up -d --force-recreate --renew-anon-volumes frontend
       - /app/node_modules
     depends_on:
       - postgres
