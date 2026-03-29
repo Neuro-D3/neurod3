@@ -1603,19 +1603,41 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
                     "description {\n          " + "\n          ".join(available) + "\n        }"
                 )
 
-    # --- summary object (preferred source for detailed scan-type tags) ---
+    # --- summary object (preferred source for detailed scan-type tags + subjects) ---
+    # `summary` lives on the Draft/Snapshot type, NOT directly on Dataset.
+    # We access it via `draft { summary { ... } }` which is reliable.
+    _summ_fields: List[str] = []
     if "summary" in dataset_fields and not _is_scalar_or_list_of_scalar(dataset_field_specs.get("summary", {})):
         summ_type = _unwrap_named_type(dataset_field_specs.get("summary", {}) or {})
         if summ_type:
             summ_specs = _get_type_field_specs(summ_type)
-            # `summary.modalities` is the "scan types" array from OpenNeuro (e.g. T1w, bold)
-            summ_fields = []
             if "modalities" in summ_specs:
-                summ_fields.append("modalities")
+                _summ_fields.append("modalities")
             if "subjects" in summ_specs:
-                summ_fields.append("subjects")
-            if summ_fields:
-                selectable.append("summary {\n          " + "\n          ".join(summ_fields) + "\n        }")
+                _summ_fields.append("subjects")
+            if _summ_fields:
+                selectable.append("summary {\n          " + "\n          ".join(_summ_fields) + "\n        }")
+
+    # Fallback: fetch summary via draft.summary (summary is usually on Draft, not Dataset)
+    if not _summ_fields and "draft" in dataset_fields and not _is_scalar_or_list_of_scalar(dataset_field_specs.get("draft", {})):
+        draft_type = _unwrap_named_type(dataset_field_specs.get("draft", {}) or {})
+        if draft_type:
+            draft_specs = _get_type_field_specs(draft_type)
+            if "summary" in draft_specs and not _is_scalar_or_list_of_scalar(draft_specs.get("summary", {})):
+                draft_summ_type = _unwrap_named_type(draft_specs.get("summary", {}) or {})
+                if draft_summ_type:
+                    draft_summ_specs = _get_type_field_specs(draft_summ_type)
+                    draft_summ_fields = []
+                    if "modalities" in draft_summ_specs:
+                        draft_summ_fields.append("modalities")
+                    if "subjects" in draft_summ_specs:
+                        draft_summ_fields.append("subjects")
+                    if draft_summ_fields:
+                        selectable.append(
+                            "draft {\n          summary {\n            "
+                            + "\n            ".join(draft_summ_fields)
+                            + "\n          }\n        }"
+                        )
 
     # NOTE: Avoid selecting `latestSnapshot` here. It has been observed to intermittently
     # fail server-side (resolver ECONNREFUSED). We fetch snapshot tags separately when needed.
@@ -1743,7 +1765,12 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
         mod = _normalize_openneuro_modalities(raw_mods)
 
         # Extract subjects count and scan types from summary
+        # summary may be at dataset.summary (unlikely) or dataset.draft.summary
         summ_obj = dataset_data.get("summary") if isinstance(dataset_data.get("summary"), dict) else None
+        if summ_obj is None:
+            draft_obj = dataset_data.get("draft") if isinstance(dataset_data.get("draft"), dict) else None
+            if isinstance(draft_obj, dict):
+                summ_obj = draft_obj.get("summary") if isinstance(draft_obj.get("summary"), dict) else None
         if isinstance(summ_obj, dict):
             subj_list = summ_obj.get("subjects")
             if isinstance(subj_list, list) and subj_list:

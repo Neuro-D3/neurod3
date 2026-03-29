@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { fetchDatasets, fetchDatasetStats } from '../services/api';
 import type { Dataset } from '../services/api';
+import { PopulationIcon } from './PopulationIcon';
 
 // Lightweight icon stand-ins (avoid external deps in preview)
 const IconWrapper: React.FC<{ className?: string; children: React.ReactNode }> = ({
@@ -73,6 +74,13 @@ function formatModalityToken(token: string): string {
 
 function normalizeModalityForCompare(token: string): string {
   return token.trim().toLowerCase();
+}
+
+const INSTITUTION_KEYWORDS = /\b(university|institute|research|laboratory|lab|corporation|inc\.|foundation|centre|center|hospital|medical|school|college|department|dept|national|council|agency|ministry|consortium|group|team|project|program|initiative|society|association|academy|press|pharma|gmbh|ltd|llc)\b/i;
+
+function looksLikeInstitution(authors: string[]): boolean {
+  if (authors.length !== 1) return false;
+  return INSTITUTION_KEYWORDS.test(authors[0]);
 }
 
 export default function NeuroDatasetDiscovery() {
@@ -903,8 +911,19 @@ export default function NeuroDatasetDiscovery() {
                           <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>·</span>
 
                           <span className={`tabular-nums ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                            {ds.created_at ? new Date(ds.created_at).toLocaleDateString() : '—'}
+                            Published {ds.created_at ? new Date(ds.created_at).toLocaleDateString() : '—'}
                           </span>
+
+                          {ds.authors && ds.authors.length > 0 && (
+                            <>
+                              <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>·</span>
+                              <span className={darkMode ? 'text-gray-400' : 'text-gray-500'}>
+                                {looksLikeInstitution(ds.authors)
+                                  ? ds.authors[0]
+                                  : `${ds.authors.length} author${ds.authors.length !== 1 ? 's' : ''}`}
+                              </span>
+                            </>
+                          )}
 
                           {parts.length > 0 && (
                             <>
@@ -946,6 +965,17 @@ export default function NeuroDatasetDiscovery() {
                           </span>
                         )}
 
+                        {ds.num_subjects != null && ds.num_subjects > 0 && (
+                          <span
+                            className={`inline-flex items-center gap-1 text-xs tabular-nums ${
+                              darkMode ? 'text-gray-400' : 'text-gray-500'
+                            }`}
+                          >
+                            <PopulationIcon size={13} className={darkMode ? 'opacity-90' : 'opacity-80'} />
+                            {ds.num_subjects.toLocaleString()} participants
+                          </span>
+                        )}
+
                         <button
                           type="button"
                           className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition-all ${
@@ -968,17 +998,6 @@ export default function NeuroDatasetDiscovery() {
                         >
                           {paperCount} paper{paperCount !== 1 ? 's' : ''}
                         </button>
-
-                        <a
-                          href={ds.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`inline-flex items-center gap-1 text-xs font-medium transition-colors ${
-                            darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-500'
-                          }`}
-                        >
-                          Open <ExternalLink size={12} />
-                        </a>
                       </div>
                     </div>
                   </div>

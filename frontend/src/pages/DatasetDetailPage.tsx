@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import { fetchDatasetDetail } from '../services/api';
 import type { DatasetDetailResponse, DatasetDetailPaper, DatasetDetailCitation, DatasetContributor } from '../services/api';
+import { PopulationIcon } from '../components/PopulationIcon';
 
 const SOURCE_COLORS: Record<string, string> = {
   DANDI: 'bg-purple-100 text-purple-800',
@@ -10,6 +11,14 @@ const SOURCE_COLORS: Record<string, string> = {
   Kaggle: 'bg-blue-100 text-blue-800',
   PhysioNet: 'bg-orange-100 text-orange-800',
 };
+
+const AUTHOR_COLORS: [string, string][] = [
+  ['#818cf8', '#6366f1'], ['#38bdf8', '#0ea5e9'], ['#34d399', '#10b981'],
+  ['#fbbf24', '#f59e0b'], ['#f87171', '#ef4444'], ['#a78bfa', '#8b5cf6'],
+  ['#2dd4bf', '#14b8a6'], ['#fb923c', '#f97316'], ['#f472b6', '#ec4899'],
+  ['#22d3ee', '#06b6d4'], ['#c084fc', '#a855f7'], ['#a3e635', '#84cc16'],
+  ['#fb7185', '#e11d48'], ['#67e8f9', '#0891b2'], ['#e879f9', '#d946ef'],
+];
 
 function ModalityChip({ label }: { label: string }) {
   const isAcronym = /[A-Z]{2,}/.test(label);
@@ -22,6 +31,21 @@ function ModalityChip({ label }: { label: string }) {
 
 function doiUrl(doi: string) {
   return `https://doi.org/${encodeURIComponent(doi).replace(/%2F/gi, '/')}`;
+}
+
+const COUNTRY_NAMES: Record<string, string> = {
+  US: 'United States', GB: 'United Kingdom', DE: 'Germany', FR: 'France',
+  CA: 'Canada', AU: 'Australia', JP: 'Japan', CN: 'China', NL: 'Netherlands',
+  CH: 'Switzerland', SE: 'Sweden', IT: 'Italy', ES: 'Spain', KR: 'South Korea',
+  BR: 'Brazil', IN: 'India', IL: 'Israel', AT: 'Austria', BE: 'Belgium',
+  DK: 'Denmark', NO: 'Norway', FI: 'Finland', SG: 'Singapore', NZ: 'New Zealand',
+  IE: 'Ireland', PT: 'Portugal', PL: 'Poland', CZ: 'Czech Republic', HU: 'Hungary',
+  TW: 'Taiwan', HK: 'Hong Kong', MX: 'Mexico', AR: 'Argentina', CL: 'Chile',
+  ZA: 'South Africa', RU: 'Russia', TR: 'Turkey', GR: 'Greece', RO: 'Romania',
+};
+function countryLabel(code: string | null | undefined): string | null {
+  if (!code) return null;
+  return COUNTRY_NAMES[code.toUpperCase()] || code.toUpperCase();
 }
 
 function formatAuthors(authors: string[] | null | undefined, max = 5): string {
@@ -53,12 +77,18 @@ function PaperCard({
           {paper.paper_title || paper.paper_doi}
         </a>
         <p className="mt-0.5 text-[11px] text-slate-500 line-clamp-1">{formatAuthors(paper.authors)}</p>
+        {paper.journal && (
+          <p className="mt-0.5 text-[11px] italic text-slate-400 line-clamp-1">{paper.journal}</p>
+        )}
         <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
           {paper.publication_date && (
             <span>{new Date(paper.publication_date).toLocaleDateString()}</span>
           )}
           {paper.publication_year && !paper.publication_date && (
             <span>{paper.publication_year}</span>
+          )}
+          {countryLabel(paper.senior_author_country) && (
+            <span>{countryLabel(paper.senior_author_country)}</span>
           )}
           {paper.doi_source && (
             <span className="rounded bg-slate-100/70 px-1 py-px text-[10px] font-medium text-slate-500 border border-slate-200/60">
@@ -102,8 +132,12 @@ function PaperCard({
                 </a>
                 <p className="mt-0.5 text-slate-500">
                   {formatAuthors(c.citing_authors, 3)}
+                  {c.citing_journal && <> &middot; <em>{c.citing_journal}</em></>}
                   {c.citing_publication_date && (
                     <> &middot; {new Date(c.citing_publication_date).toLocaleDateString()}</>
+                  )}
+                  {countryLabel(c.citing_senior_author_country) && (
+                    <> &middot; {countryLabel(c.citing_senior_author_country)}</>
                   )}
                 </p>
               </div>
@@ -226,7 +260,10 @@ export default function DatasetDetailPage() {
                   <span>Updated {new Date(ds.updated_at).toLocaleDateString()}</span>
                 )}
                 {ds.num_subjects != null && ds.num_subjects > 0 && (
-                  <span>{ds.num_subjects.toLocaleString()} {ds.source === 'OpenNeuro' ? 'participants' : 'subjects'}</span>
+                  <span className="inline-flex items-center gap-1">
+                    <PopulationIcon size={15} className="text-slate-400" />
+                    {ds.num_subjects.toLocaleString()} {ds.source === 'OpenNeuro' ? 'participants' : 'subjects'}
+                  </span>
                 )}
                 {ds.license && (
                   <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700 border border-amber-200 shadow-sm">
@@ -259,9 +296,22 @@ export default function DatasetDetailPage() {
             {ds.authors && ds.authors.length > 0 && (
               <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl p-6 mb-6">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Authors</h2>
-                <p className="text-sm text-slate-700 leading-relaxed">
-                  {ds.authors.join(', ')}
-                </p>
+                <div className="flex flex-wrap gap-2">
+                  {ds.authors.map((name, i) => (
+                    <span
+                      key={`author-${i}`}
+                      className="inline-flex items-center gap-2 rounded-full bg-white/80 border border-slate-200 px-3 py-1 text-xs shadow-sm"
+                    >
+                      <span
+                        className="w-4 h-4 rounded-full shrink-0 opacity-75"
+                        style={{
+                          background: `linear-gradient(135deg, ${AUTHOR_COLORS[i % AUTHOR_COLORS.length][0]}, ${AUTHOR_COLORS[i % AUTHOR_COLORS.length][1]})`,
+                        }}
+                      />
+                      <span className="font-medium text-slate-700">{name}</span>
+                    </span>
+                  ))}
+                </div>
               </div>
             )}
 
