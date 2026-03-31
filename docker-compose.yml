@@ -20,6 +20,8 @@ x-airflow-common:
     AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:-}
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-}
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    # OpenRouter API key for LLM-based paper reuse classification DAG.
+    OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs

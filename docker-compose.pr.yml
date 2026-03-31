@@ -36,6 +36,8 @@ x-airflow-common:
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: 'airflow-admin:admin'
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: '/opt/airflow/config/simple_auth_manager_passwords.json'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    # OpenRouter API key for LLM-based paper reuse classification DAG.
+    OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
