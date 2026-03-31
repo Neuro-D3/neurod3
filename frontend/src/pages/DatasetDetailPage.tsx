@@ -149,8 +149,18 @@ function PaperCard({
   );
 }
 
+function decodedDatasetIdParam(raw: string | undefined): string {
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export default function DatasetDetailPage() {
-  const { datasetId } = useParams<{ datasetId: string }>();
+  const { datasetId: datasetIdParam } = useParams<{ datasetId: string }>();
+  const datasetId = decodedDatasetIdParam(datasetIdParam);
   const navigate = useNavigate();
   const [data, setData] = useState<DatasetDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -209,9 +219,10 @@ export default function DatasetDetailPage() {
           <button
             type="button"
             onClick={() => navigate(-1)}
-            className="inline-flex items-center gap-1 rounded-full bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all"
+            aria-label="Back"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 text-lg font-medium text-white hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all"
           >
-            ← Back to datasets
+            <span aria-hidden="true">←</span>
           </button>
         </div>
       </div>
@@ -223,73 +234,83 @@ export default function DatasetDetailPage() {
     .split(/[;,]/)
     .map((m) => m.trim())
     .filter(Boolean);
+  const routeIdDiffersFromApi = Boolean(datasetId && datasetId !== ds.dataset_id);
 
   return (
     <div className="min-h-screen bg-slate-100 py-10 px-4">
       <div className="mx-auto max-w-7xl">
-        {/* Back navigation */}
-        <button
-          type="button"
-          onClick={() => navigate(-1)}
-          className="mb-6 inline-flex items-center gap-1.5 rounded-full bg-white/70 backdrop-blur-xl border border-white/40 shadow-sm px-4 py-2 text-sm text-slate-600 hover:text-blue-600 hover:shadow-md transition-all"
-        >
-          <span className="text-base leading-none">←</span> Back to datasets
-        </button>
-
         <div className="flex flex-col lg:flex-row gap-6 items-start">
           {/* ─── Left column: dataset content ─── */}
           <div className="flex-1 min-w-0">
-            {/* Header card */}
+            {/* Header card: toolbar row + dataset tile */}
             <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl p-6 sm:p-8 mb-6">
-              <div className="flex flex-wrap items-center gap-3 mb-1">
-                <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold shadow-sm ${SOURCE_COLORS[ds.source] || 'bg-slate-100 text-slate-700'}`}>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-4">
+                <button
+                  type="button"
+                  onClick={() => navigate(-1)}
+                  aria-label="Back"
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-50/90 border border-slate-200/80 shadow-sm text-base text-slate-600 hover:text-blue-600 hover:border-slate-300 hover:shadow transition-all"
+                >
+                  <span aria-hidden="true">←</span>
+                </button>
+                <span
+                  className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold shadow-sm ${SOURCE_COLORS[ds.source] || 'bg-slate-100 text-slate-700'}`}
+                >
                   {ds.source}
                 </span>
-                <span className="text-sm font-mono text-slate-400">{ds.dataset_id}</span>
-              </div>
-              <h1 className="text-2xl font-bold text-slate-900 leading-tight mb-4">
-                {ds.title}
-              </h1>
-
-              {/* Metadata bar */}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-500">
-                {ds.created_at && (
-                  <span>Published {new Date(ds.created_at).toLocaleDateString()}</span>
-                )}
-                {ds.updated_at && (
-                  <span>Updated {new Date(ds.updated_at).toLocaleDateString()}</span>
-                )}
-                {ds.num_subjects != null && ds.num_subjects > 0 && (
-                  <span className="inline-flex items-center gap-1">
-                    <PopulationIcon size={15} className="text-slate-400" />
-                    {ds.num_subjects.toLocaleString()} {ds.source === 'OpenNeuro' ? 'participants' : 'subjects'}
+                <span className="text-sm font-mono text-slate-600 tabular-nums">{ds.dataset_id}</span>
+                {routeIdDiffersFromApi && (
+                  <span className="text-sm font-mono text-slate-400" title="URL id">
+                    {datasetId}
                   </span>
-                )}
-                {ds.license && (
-                  <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700 border border-amber-200 shadow-sm">
-                    License: {ds.license.replace(/^spdx:/i, '')}
-                  </span>
-                )}
-                {ds.url && (
-                  <a
-                    href={ds.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-500 font-medium"
-                  >
-                    View on {ds.source} ↗
-                  </a>
                 )}
               </div>
 
-              {/* Modality chips */}
-              {modalities.length > 0 && (
-                <div className="mt-4 flex flex-wrap gap-1.5">
-                  {modalities.map((m) => (
-                    <ModalityChip key={m} label={m} />
-                  ))}
+              <div className="rounded-xl border border-slate-200/70 bg-white/55 p-5 sm:p-6 shadow-sm">
+                <h1 className="text-2xl font-bold text-slate-900 leading-tight mb-4">
+                  {ds.title}
+                </h1>
+
+                {/* Metadata bar */}
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-500">
+                  {ds.created_at && (
+                    <span>Published {new Date(ds.created_at).toLocaleDateString()}</span>
+                  )}
+                  {ds.updated_at && (
+                    <span>Updated {new Date(ds.updated_at).toLocaleDateString()}</span>
+                  )}
+                  {ds.num_subjects != null && ds.num_subjects > 0 && (
+                    <span className="inline-flex items-center gap-1">
+                      <PopulationIcon size={15} className="text-slate-400" />
+                      {ds.num_subjects.toLocaleString()} {ds.source === 'OpenNeuro' ? 'participants' : 'subjects'}
+                    </span>
+                  )}
+                  {ds.license && (
+                    <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700 border border-amber-200 shadow-sm">
+                      License: {ds.license.replace(/^spdx:/i, '')}
+                    </span>
+                  )}
+                  {ds.url && (
+                    <a
+                      href={ds.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-500 font-medium"
+                    >
+                      View on {ds.source} ↗
+                    </a>
+                  )}
                 </div>
-              )}
+
+                {/* Modality chips */}
+                {modalities.length > 0 && (
+                  <div className="mt-4 flex flex-wrap gap-1.5">
+                    {modalities.map((m) => (
+                      <ModalityChip key={m} label={m} />
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Authors */}

@@ -2,6 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+html {
+  /* Avoid the browser adjusting scroll when layout above the viewport changes (e.g. after SPA async load). */
+  overflow-anchor: none;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',

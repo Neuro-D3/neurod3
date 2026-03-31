@@ -1,9 +1,33 @@
-import React from 'react';
+import React, { useLayoutEffect } from 'react';
 import { BrowserRouter, Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import './App.css';
 import NeuroDatasetDiscovery from './components/NeuroDatasetDiscovery';
 import PaperMappingDashboard from './pages/PaperMappingDashboard';
 import DatasetDetailPage from './pages/DatasetDetailPage';
+
+function scrollWindowToTop() {
+  window.scrollTo(0, 0);
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+}
+
+/** Only `/datasets/:id` — scroll the feed when returning home is left unchanged. */
+function isDatasetDetailPath(pathname: string): boolean {
+  return /^\/datasets\/[^/]+$/.test(pathname);
+}
+
+function ScrollToTop() {
+  const { pathname } = useLocation();
+  useLayoutEffect(() => {
+    if (!isDatasetDetailPath(pathname)) return;
+    scrollWindowToTop();
+    const id = window.requestAnimationFrame(() => {
+      scrollWindowToTop();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [pathname]);
+  return null;
+}
 
 function AppLayout() {
   const location = useLocation();
@@ -15,7 +39,8 @@ function AppLayout() {
 
   return (
     <div className="App">
-      <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur">
+      <ScrollToTop />
+      <div className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
           <button
             type="button"
@@ -62,7 +87,7 @@ function AppLayout() {
 
 function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter unstable_useTransitions={false}>
       <AppLayout />
     </BrowserRouter>
   );

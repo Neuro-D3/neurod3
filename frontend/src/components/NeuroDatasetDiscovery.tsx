@@ -652,7 +652,7 @@ export default function NeuroDatasetDiscovery() {
 
         {/* Controls */}
         <div
-          className={`relative z-30 rounded-2xl shadow-xl mb-6 p-4 backdrop-blur-xl ${
+          className={`relative z-10 rounded-2xl shadow-xl mb-6 p-4 backdrop-blur-xl ${
             darkMode ? 'bg-white/5 border border-white/10' : 'bg-white/70 border border-white/20'
           }`}
         >
