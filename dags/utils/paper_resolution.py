@@ -338,6 +338,10 @@ def resolve_papers_for_dandiset(
                 p["publication_year"] = oa.get("publication_year")
             if (oa.get("title") or oa.get("openalex_id") or oa.get("authors")) and not p.get("paper_metadata_source"):
                 p["paper_metadata_source"] = "openalex"
+            if not p.get("journal") and oa.get("journal"):
+                p["journal"] = oa["journal"]
+            if not p.get("senior_author_country") and oa.get("senior_author_country"):
+                p["senior_author_country"] = oa["senior_author_country"]
 
         # Keep a normalized DOI for storage safety
         p["doi"] = normalize_doi(doi)

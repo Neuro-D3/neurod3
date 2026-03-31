@@ -241,6 +241,8 @@ def create_paper_mapping_tables(**context) -> None:
     ALTER TABLE papers ADD COLUMN IF NOT EXISTS fulltext_source TEXT;
     ALTER TABLE papers ADD COLUMN IF NOT EXISTS fulltext_available BOOLEAN;
     ALTER TABLE papers ADD COLUMN IF NOT EXISTS fulltext_reason TEXT;
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS journal TEXT;
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS senior_author_country TEXT;
 
     CREATE TABLE IF NOT EXISTS dandi_paper_map (
         id SERIAL PRIMARY KEY,
@@ -287,6 +289,8 @@ def create_paper_mapping_tables(**context) -> None:
     ALTER TABLE dandi_paper_citations ADD COLUMN IF NOT EXISTS citing_publication_date TEXT;
     ALTER TABLE dandi_paper_citations ADD COLUMN IF NOT EXISTS citation_contexts JSONB;
     ALTER TABLE dandi_paper_citations ADD COLUMN IF NOT EXISTS contexts_extracted_at TIMESTAMPTZ;
+    ALTER TABLE dandi_paper_citations ADD COLUMN IF NOT EXISTS citing_journal TEXT;
+    ALTER TABLE dandi_paper_citations ADD COLUMN IF NOT EXISTS citing_senior_author_country TEXT;
 
     CREATE INDEX IF NOT EXISTS idx_dandi_paper_citations_dandi_id ON dandi_paper_citations(dandi_id);
     CREATE INDEX IF NOT EXISTS idx_dandi_paper_citations_primary_doi ON dandi_paper_citations(primary_paper_doi);
@@ -678,6 +682,8 @@ def resolve_papers_for_dandi(**context) -> Dict[str, Any]:
                             # source of paper metadata resolution (crossref vs openalex)
                             "paper_metadata_source": p.get("paper_metadata_source"),
                             "relation_type": p.get("relation_type"),
+                            "journal": p.get("journal"),
+                            "senior_author_country": p.get("senior_author_country"),
                             "resolved_at": _utc_now_iso(),
                             "run_id": run_id,
                         }
@@ -758,9 +764,9 @@ def persist_paper_mappings(**context) -> Dict[str, Any]:
     INSERT INTO papers (
         paper_doi, openalex_id, title, authors, publication_date, publication_year,
         fulltext_cache_key, fulltext_cached_at, fulltext_source, fulltext_available, fulltext_reason,
-        source, fetched_at
+        source, journal, senior_author_country, fetched_at
     )
-    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
     ON CONFLICT (paper_doi) DO UPDATE SET
         openalex_id = COALESCE(EXCLUDED.openalex_id, papers.openalex_id),
         title = COALESCE(EXCLUDED.title, papers.title),
@@ -773,6 +779,8 @@ def persist_paper_mappings(**context) -> Dict[str, Any]:
         fulltext_available = COALESCE(EXCLUDED.fulltext_available, papers.fulltext_available),
         fulltext_reason = COALESCE(EXCLUDED.fulltext_reason, papers.fulltext_reason),
         source = COALESCE(EXCLUDED.source, papers.source),
+        journal = COALESCE(EXCLUDED.journal, papers.journal),
+        senior_author_country = COALESCE(EXCLUDED.senior_author_country, papers.senior_author_country),
         fetched_at = NOW();
     """
 
@@ -908,6 +916,8 @@ def persist_paper_mappings(**context) -> Dict[str, Any]:
                             fulltext_available,
                             fulltext_reason,
                             rec.get("paper_metadata_source"),
+                            rec.get("journal"),
+                            rec.get("senior_author_country"),
                         ),
                     )
                     inserted_papers += 1
@@ -1040,9 +1050,9 @@ def _persist_resolved_records(
     INSERT INTO papers (
         paper_doi, openalex_id, title, authors, publication_date, publication_year,
         fulltext_cache_key, fulltext_cached_at, fulltext_source, fulltext_available, fulltext_reason,
-        source, fetched_at
+        source, journal, senior_author_country, fetched_at
     )
-    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
     ON CONFLICT (paper_doi) DO UPDATE SET
         openalex_id = COALESCE(EXCLUDED.openalex_id, papers.openalex_id),
         title = COALESCE(EXCLUDED.title, papers.title),
@@ -1055,6 +1065,8 @@ def _persist_resolved_records(
         fulltext_available = COALESCE(EXCLUDED.fulltext_available, papers.fulltext_available),
         fulltext_reason = COALESCE(EXCLUDED.fulltext_reason, papers.fulltext_reason),
         source = COALESCE(EXCLUDED.source, papers.source),
+        journal = COALESCE(EXCLUDED.journal, papers.journal),
+        senior_author_country = COALESCE(EXCLUDED.senior_author_country, papers.senior_author_country),
         fetched_at = NOW();
     """
 
@@ -1183,6 +1195,8 @@ def _persist_resolved_records(
                             fulltext_available,
                             fulltext_reason,
                             rec.get("paper_metadata_source"),
+                            rec.get("journal"),
+                            rec.get("senior_author_country"),
                         ),
                     )
                     inserted_papers += 1
@@ -1284,9 +1298,9 @@ def _ensure_citing_paper_record(
     INSERT INTO papers (
         paper_doi, openalex_id, title, authors, publication_date, publication_year,
         fulltext_cache_key, fulltext_cached_at, fulltext_source, fulltext_available, fulltext_reason,
-        source, fetched_at
+        source, journal, senior_author_country, fetched_at
     )
-    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
     ON CONFLICT (paper_doi) DO UPDATE SET
         openalex_id = COALESCE(EXCLUDED.openalex_id, papers.openalex_id),
         title = COALESCE(EXCLUDED.title, papers.title),
@@ -1299,6 +1313,8 @@ def _ensure_citing_paper_record(
         fulltext_available = COALESCE(EXCLUDED.fulltext_available, papers.fulltext_available),
         fulltext_reason = COALESCE(EXCLUDED.fulltext_reason, papers.fulltext_reason),
         source = COALESCE(EXCLUDED.source, papers.source),
+        journal = COALESCE(EXCLUDED.journal, papers.journal),
+        senior_author_country = COALESCE(EXCLUDED.senior_author_country, papers.senior_author_country),
         fetched_at = NOW();
     """
 
@@ -1390,6 +1406,8 @@ def _ensure_citing_paper_record(
             fulltext_available,
             fulltext_reason,
             paper.get("source"),
+            paper.get("journal"),
+            paper.get("senior_author_country"),
         ),
     )
     return {
@@ -1474,14 +1492,17 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
     INSERT INTO dandi_paper_citations (
         dandi_id, primary_paper_doi, citing_paper_doi,
         matched_primary_paper_doi, matched_primary_openalex_id, citation_source,
-        citing_publication_date, resolved_at, run_id
+        citing_publication_date, citing_journal, citing_senior_author_country,
+        resolved_at, run_id
     )
-    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
     ON CONFLICT (dandi_id, primary_paper_doi, citing_paper_doi) DO UPDATE SET
         matched_primary_paper_doi = COALESCE(EXCLUDED.matched_primary_paper_doi, dandi_paper_citations.matched_primary_paper_doi),
         matched_primary_openalex_id = COALESCE(EXCLUDED.matched_primary_openalex_id, dandi_paper_citations.matched_primary_openalex_id),
         citation_source = COALESCE(EXCLUDED.citation_source, dandi_paper_citations.citation_source),
         citing_publication_date = COALESCE(EXCLUDED.citing_publication_date, dandi_paper_citations.citing_publication_date),
+        citing_journal = COALESCE(EXCLUDED.citing_journal, dandi_paper_citations.citing_journal),
+        citing_senior_author_country = COALESCE(EXCLUDED.citing_senior_author_country, dandi_paper_citations.citing_senior_author_country),
         resolved_at = NOW(),
         run_id = EXCLUDED.run_id;
     """
@@ -1640,6 +1661,8 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                                 matched_primary_openalex_id,
                                 citing.get("citation_source"),
                                 citing.get("publication_date"),
+                                citing.get("journal"),
+                                citing.get("senior_author_country"),
                                 run_id,
                             ),
                         )
@@ -1867,6 +1890,8 @@ def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_i
                             "doi_source": p.get("source"),
                             "paper_metadata_source": p.get("paper_metadata_source"),
                             "relation_type": p.get("relation_type"),
+                            "journal": p.get("journal"),
+                            "senior_author_country": p.get("senior_author_country"),
                             "resolved_at": _utc_now_iso(),
                             "run_id": run_id,
                         }

@@ -466,6 +466,10 @@ def resolve_papers_for_openneuro_dataset(
                 paper["publication_year"] = oa.get("publication_year")
             if (oa.get("title") or oa.get("openalex_id") or oa.get("authors")) and not paper.get("paper_metadata_source"):
                 paper["paper_metadata_source"] = "openalex"
+            if not paper.get("journal") and oa.get("journal"):
+                paper["journal"] = oa["journal"]
+            if not paper.get("senior_author_country") and oa.get("senior_author_country"):
+                paper["senior_author_country"] = oa["senior_author_country"]
 
         out.append(paper)
 

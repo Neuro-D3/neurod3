@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   fetchPaperMappingCitations,
   fetchPaperMappingDatasetDetail,
@@ -158,7 +159,7 @@ export default function PaperMappingDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="min-h-screen bg-slate-100 text-slate-900">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <div className="mb-6">
           <h1 className="text-3xl font-semibold tracking-tight">Internal Paper Mapping Dashboard</h1>
@@ -258,7 +259,13 @@ export default function PaperMappingDashboard() {
                         </td>
                         <td className="px-4 py-3 align-top font-mono text-xs text-slate-700">{dataset.dataset_id}</td>
                         <td className="px-4 py-3 align-top">
-                          <div className="font-medium text-slate-900">{truncate(dataset.dataset_title, 80) || 'Untitled dataset'}</div>
+                          <Link
+                            to={`/datasets/${encodeURIComponent(dataset.dataset_id)}`}
+                            className="font-medium text-slate-900 hover:text-blue-600 hover:underline transition-colors"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {truncate(dataset.dataset_title, 80) || 'Untitled dataset'}
+                          </Link>
                           <div className="mt-1 text-xs text-slate-500">{truncate(dataset.dataset_description, 110) || 'No description'}</div>
                         </td>
                         <td className="px-4 py-3 align-top">{formatNumber(dataset.mapped_papers_count)}</td>
@@ -361,7 +368,14 @@ export default function PaperMappingDashboard() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">{datasetDetail.dataset.source}</div>
-                      <h3 className="mt-1 text-lg font-semibold">{datasetDetail.dataset.dataset_title || datasetDetail.dataset.dataset_id}</h3>
+                      <h3 className="mt-1 text-lg font-semibold">
+                        <Link
+                          to={`/datasets/${encodeURIComponent(datasetDetail.dataset.dataset_id)}`}
+                          className="hover:text-blue-600 hover:underline transition-colors"
+                        >
+                          {datasetDetail.dataset.dataset_title || datasetDetail.dataset.dataset_id}
+                        </Link>
+                      </h3>
                       <p className="mt-2 max-w-3xl text-sm text-slate-600">
                         {datasetDetail.dataset.dataset_description || 'No description available.'}
                       </p>

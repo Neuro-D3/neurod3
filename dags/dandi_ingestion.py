@@ -4,6 +4,7 @@ This DAG fetches datasets from the DANDI API and stores them in PostgreSQL.
 """
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -107,9 +108,14 @@ def parse_dandiset(dandiset: Dict[str, Any]) -> Dict[str, Any]:
         "papers": papers,
         "url": url,
         "description": description,
+        "full_description": None,
+        "authors": None,
+        "contributors": None,
+        "license": None,
+        "num_subjects": None,
         "created_at": created_at,
         "updated_at": updated_at,
-        "version": version_id,  # <-- now tracked explicitly
+        "version": version_id,
     }
 
 
@@ -128,6 +134,11 @@ def create_dandi_table(**context):
         papers INTEGER,
         url TEXT,
         description TEXT,
+        full_description TEXT,
+        authors JSONB,
+        contributors JSONB,
+        license TEXT,
+        num_subjects INTEGER,
         created_at TIMESTAMP,
         updated_at TIMESTAMP,
         version VARCHAR(64)
@@ -144,6 +155,11 @@ def create_dandi_table(**context):
                 cursor.execute(create_table_sql)
                 # Allow schema evolution without forcing drop/recreate.
                 cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;")
+                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS full_description TEXT;")
+                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS authors JSONB;")
+                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS contributors JSONB;")
+                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS license TEXT;")
+                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;")
                 conn.commit()
         logger.info("Successfully created dandi_dataset table (or it already exists)")
     except Exception as e:
@@ -280,14 +296,52 @@ def _enrich_single_dataset(ds: Dict[str, Any], api_base: str) -> tuple:
 
     if description and isinstance(description, str):
         enriched_ds["description"] = description
+        enriched_ds["full_description"] = description
         stats["enriched_desc"] = 1
     else:
         stats["skipped_no_description"] = 1
 
+    # --- contributors / authors / license ---
+    # contributor can live under metadata or at the top level depending on API version
+    raw_contributors = meta.get("contributor") or v_json.get("contributor") or []
+
+    contributor_records = []
+    authors = []
+    contact = None
+    for c in raw_contributors:
+        if not isinstance(c, dict) or not c.get("name"):
+            continue
+        roles = c.get("roleName") or []
+        contributor_records.append({"name": c["name"], "roles": roles})
+        if "dcite:Author" in roles:
+            authors.append(c["name"])
+        if contact is None and "dcite:ContactPerson" in roles:
+            contact = c["name"]
+
+    if not authors:
+        authors = [cr["name"] for cr in contributor_records]
+
+    if authors:
+        enriched_ds["authors"] = authors
+    if contributor_records:
+        enriched_ds["contributors"] = contributor_records
+
+    # --- license ---
+    license_val = v_json.get("license") or meta.get("license")
+    if isinstance(license_val, list):
+        license_val = ", ".join(str(l) for l in license_val)
+    if license_val:
+        enriched_ds["license"] = str(license_val)
+
+    # --- num_subjects: from assetsSummary.numberOfSubjects ---
+    assets_summary = v_json.get("assetsSummary")
+    if isinstance(assets_summary, dict):
+        n_sub = assets_summary.get("numberOfSubjects")
+        if isinstance(n_sub, int) and n_sub > 0:
+            enriched_ds["num_subjects"] = n_sub
+
     # --- modality: use TOP-LEVEL assetsSummary, not metadata.assetsSummary ---
     modality_str: Optional[str] = None
-
-    assets_summary = v_json.get("assetsSummary")
     if isinstance(assets_summary, dict):
         # Modality-like info is usually here
         candidate_keys = [
@@ -473,8 +527,8 @@ def insert_dandi_datasets(**context):
         return
 
     insert_sql = """
-    INSERT INTO dandi_dataset (dataset_id, title, modality, citations, papers, url, description, created_at, updated_at, version)
-    VALUES (%(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(papers)s, %(url)s, %(description)s, %(created_at)s, %(updated_at)s, %(version)s)
+    INSERT INTO dandi_dataset (dataset_id, title, modality, citations, papers, url, description, full_description, authors, contributors, license, num_subjects, created_at, updated_at, version)
+    VALUES (%(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(papers)s, %(url)s, %(description)s, %(full_description)s, %(authors)s, %(contributors)s, %(license)s, %(num_subjects)s, %(created_at)s, %(updated_at)s, %(version)s)
     ON CONFLICT (dataset_id)
     DO UPDATE SET
         title = EXCLUDED.title,
@@ -483,6 +537,11 @@ def insert_dandi_datasets(**context):
         papers = COALESCE(EXCLUDED.papers, dandi_dataset.papers),
         url = EXCLUDED.url,
         description = EXCLUDED.description,
+        full_description = COALESCE(EXCLUDED.full_description, dandi_dataset.full_description),
+        authors = COALESCE(EXCLUDED.authors, dandi_dataset.authors),
+        contributors = COALESCE(EXCLUDED.contributors, dandi_dataset.contributors),
+        license = COALESCE(EXCLUDED.license, dandi_dataset.license),
+        num_subjects = COALESCE(EXCLUDED.num_subjects, dandi_dataset.num_subjects),
         created_at = EXCLUDED.created_at,
         updated_at = EXCLUDED.updated_at,
         version = EXCLUDED.version
@@ -496,6 +555,10 @@ def insert_dandi_datasets(**context):
                 updated_count = 0
 
                 for dataset in datasets:
+                    authors_val = dataset.get("authors")
+                    dataset["authors"] = json.dumps(authors_val) if authors_val is not None else None
+                    contributors_val = dataset.get("contributors")
+                    dataset["contributors"] = json.dumps(contributors_val) if contributors_val is not None else None
 
                     cursor.execute(insert_sql, dataset)
                     # Use RETURNING inserted flag to distinguish insert vs update without a pre-check

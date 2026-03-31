@@ -275,54 +275,76 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             "neuro_table_exists": False,
         }
     
+    # Check which optional columns have been added (they may not exist yet if only
+    # one ingestion DAG has run since the schema upgrade).
+    def _has_column(table: str, column: str) -> bool:
+        cursor.execute(
+            """SELECT EXISTS (
+                SELECT FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = %s AND column_name = %s
+            );""",
+            (table, column),
+        )
+        return cursor.fetchone()[0]
+
+    def _col_or_null(table: str, column: str, pg_type: str) -> str:
+        if _has_column(table, column):
+            return column
+        return f"NULL::{pg_type} AS {column}"
+
     # Build view SQL based on which tables exist
     selects: List[str] = []
 
     if dandi_table_exists:
-        selects.append("""
+        fd = _col_or_null("dandi_dataset", "full_description", "text")
+        au = _col_or_null("dandi_dataset", "authors", "jsonb")
+        co = _col_or_null("dandi_dataset", "contributors", "jsonb")
+        li = _col_or_null("dandi_dataset", "license", "text")
+        ns = _col_or_null("dandi_dataset", "num_subjects", "integer")
+        selects.append(f"""
         SELECT
             'DANDI'::text AS source,
-            dataset_id,
-            title,
-            modality,
-            papers,
-            url,
-            description,
-            created_at,
-            updated_at
+            dataset_id, title, modality, papers, url, description,
+            {fd},
+            {au},
+            {co},
+            {li},
+            {ns},
+            created_at, updated_at
         FROM dandi_dataset
         """.strip())
 
     if openneuro_table_exists:
-        selects.append("""
+        fd = _col_or_null("openneuro_dataset", "full_description", "text")
+        au = _col_or_null("openneuro_dataset", "authors", "jsonb")
+        co = _col_or_null("openneuro_dataset", "contributors", "jsonb")
+        li = _col_or_null("openneuro_dataset", "license", "text")
+        ns = _col_or_null("openneuro_dataset", "num_subjects", "integer")
+        selects.append(f"""
         SELECT
             'OpenNeuro'::text AS source,
-            dataset_id,
-            title,
-            modality,
-            papers,
-            url,
-            description,
-            created_at,
-            updated_at
+            dataset_id, title, modality, papers, url, description,
+            {fd},
+            {au},
+            {co},
+            {li},
+            {ns},
+            created_at, updated_at
         FROM openneuro_dataset
         """.strip())
 
     if neuro_table_exists:
-        # Legacy table for multi-source ingestion. If OpenNeuro now has its own table,
-        # exclude OpenNeuro rows here to avoid duplicates.
         where_clause = "WHERE source NOT IN ('DANDI', 'OpenNeuro')" if openneuro_table_exists else "WHERE source != 'DANDI'"
         selects.append(f"""
         SELECT
             source::text,
-            dataset_id,
-            title,
-            modality,
-            papers,
-            url,
-            description,
-            created_at,
-            updated_at
+            dataset_id, title, modality, papers, url, description,
+            NULL::text AS full_description,
+            NULL::jsonb AS authors,
+            NULL::jsonb AS contributors,
+            NULL::text AS license,
+            NULL::integer AS num_subjects,
+            created_at, updated_at
         FROM neuroscience_datasets
         {where_clause}
         """.strip())

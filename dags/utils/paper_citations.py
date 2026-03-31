@@ -40,6 +40,40 @@ def normalize_openalex_id(openalex_id: Optional[str]) -> Optional[str]:
     return value or None
 
 
+def extract_journal_and_country(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    """Extract journal name and senior (last) author's country from an OpenAlex work payload."""
+    journal: Optional[str] = None
+    senior_author_country: Optional[str] = None
+
+    primary_location = data.get("primary_location")
+    if isinstance(primary_location, dict):
+        source = primary_location.get("source")
+        if isinstance(source, dict):
+            name = source.get("display_name")
+            if isinstance(name, str) and name.strip():
+                journal = name.strip()
+
+    authorships = data.get("authorships")
+    if isinstance(authorships, list) and authorships:
+        last_author = authorships[-1]
+        if isinstance(last_author, dict):
+            institutions = last_author.get("institutions")
+            if isinstance(institutions, list) and institutions:
+                inst = institutions[0]
+                if isinstance(inst, dict):
+                    cc = inst.get("country_code")
+                    if isinstance(cc, str) and cc.strip():
+                        senior_author_country = cc.strip().upper()
+            if not senior_author_country:
+                countries = last_author.get("countries")
+                if isinstance(countries, list) and countries:
+                    cc = countries[0]
+                    if isinstance(cc, str) and cc.strip():
+                        senior_author_country = cc.strip().upper()
+
+    return {"journal": journal, "senior_author_country": senior_author_country}
+
+
 def get_openalex_paper_data(
     session: requests.Session,
     doi: str,
@@ -50,15 +84,18 @@ def get_openalex_paper_data(
     backoff_seconds: float = 2.0,
 ) -> Dict[str, Any]:
     doi_norm = normalize_doi(doi)
+    empty = {
+        "publication_date": None,
+        "publication_year": None,
+        "cited_by_count": None,
+        "openalex_id": None,
+        "title": None,
+        "authors": None,
+        "journal": None,
+        "senior_author_country": None,
+    }
     if not doi_norm:
-        return {
-            "publication_date": None,
-            "publication_year": None,
-            "cited_by_count": None,
-            "openalex_id": None,
-            "title": None,
-            "authors": None,
-        }
+        return empty
 
     url = f"https://api.openalex.org/works/doi:{quote(doi_norm)}"
     data = http_get_json(
@@ -71,14 +108,7 @@ def get_openalex_paper_data(
         telemetry=telemetry,
     )
     if not data:
-        return {
-            "publication_date": None,
-            "publication_year": None,
-            "cited_by_count": None,
-            "openalex_id": None,
-            "title": None,
-            "authors": None,
-        }
+        return empty
 
     authorships = data.get("authorships")
     authors_out: Optional[List[str]] = None
@@ -99,6 +129,8 @@ def get_openalex_paper_data(
                     deduped.append(name)
             authors_out = deduped or None
 
+    jc = extract_journal_and_country(data)
+
     publication_date = data.get("publication_date")
     publication_date_out = publication_date.strip() if isinstance(publication_date, str) and publication_date.strip() else None
     return {
@@ -108,6 +140,8 @@ def get_openalex_paper_data(
         "openalex_id": data.get("id") if isinstance(data.get("id"), str) else None,
         "title": data.get("title") if isinstance(data.get("title"), str) else None,
         "authors": authors_out,
+        "journal": jc["journal"],
+        "senior_author_country": jc["senior_author_country"],
     }
 
 
@@ -325,6 +359,8 @@ def get_citing_papers(
                             deduped.append(name)
                     authors_out = deduped or None
 
+            jc = extract_journal_and_country(work)
+
             publication_date = work.get("publication_date")
             publication_date_out = publication_date.strip() if isinstance(publication_date, str) and publication_date.strip() else None
             out.append(
@@ -336,6 +372,8 @@ def get_citing_papers(
                     "publication_year": publication_year_from_date(publication_date_out),
                     "authors": authors_out,
                     "citation_source": "openalex",
+                    "journal": jc["journal"],
+                    "senior_author_country": jc["senior_author_country"],
                 }
             )
             if len(out) >= max_results:

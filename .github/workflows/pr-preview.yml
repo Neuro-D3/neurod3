@@ -354,7 +354,7 @@ jobs:
           echo "Building and deploying PR #$PR_NUMBER..."
           echo "Using UID=$UID, GID=$GID for containers"
           export REACT_APP_API_URL="http://${PUBLIC_IP}/pr-${PR_NUMBER}/api"
-          docker compose -p "$PROJECT_NAME" -f docker-compose.pr.yml up -d --build
+          docker compose -p "$PROJECT_NAME" -f docker-compose.pr.yml up -d --build --force-recreate --renew-anon-volumes
           
           echo "Waiting for services to start..."
           sleep 10

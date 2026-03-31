@@ -650,14 +650,17 @@ def resolve_openalex_work(
       }
     """
     doi_norm = normalize_doi(doi)
+    empty = {
+        "openalex_id": None,
+        "title": None,
+        "authors": None,
+        "publication_date": None,
+        "publication_year": None,
+        "journal": None,
+        "senior_author_country": None,
+    }
     if not doi_norm:
-        return {
-            "openalex_id": None,
-            "title": None,
-            "authors": None,
-            "publication_date": None,
-            "publication_year": None,
-        }
+        return empty
     url = f"https://api.openalex.org/works/doi:{doi_norm}"
     data = http_get_json(
         session,
@@ -669,13 +672,7 @@ def resolve_openalex_work(
         telemetry=telemetry,
     )
     if not data:
-        return {
-            "openalex_id": None,
-            "title": None,
-            "authors": None,
-            "publication_date": None,
-            "publication_year": None,
-        }
+        return empty
 
     title = data.get("title")
     title_out = title.strip() if isinstance(title, str) and title.strip() else None
@@ -701,6 +698,35 @@ def resolve_openalex_work(
                 deduped.append(n)
         authors_out = deduped or None
 
+    # Journal / venue
+    journal_out: Optional[str] = None
+    primary_location = data.get("primary_location")
+    if isinstance(primary_location, dict):
+        source = primary_location.get("source")
+        if isinstance(source, dict):
+            jname = source.get("display_name")
+            if isinstance(jname, str) and jname.strip():
+                journal_out = jname.strip()
+
+    # Senior (last) author country
+    senior_country_out: Optional[str] = None
+    if isinstance(authorships, list) and authorships:
+        last_author = authorships[-1]
+        if isinstance(last_author, dict):
+            institutions = last_author.get("institutions")
+            if isinstance(institutions, list) and institutions:
+                inst = institutions[0]
+                if isinstance(inst, dict):
+                    cc = inst.get("country_code")
+                    if isinstance(cc, str) and cc.strip():
+                        senior_country_out = cc.strip().upper()
+            if not senior_country_out:
+                countries = last_author.get("countries")
+                if isinstance(countries, list) and countries:
+                    cc = countries[0]
+                    if isinstance(cc, str) and cc.strip():
+                        senior_country_out = cc.strip().upper()
+
     publication_date = data.get("publication_date")
     publication_date_out = publication_date.strip() if isinstance(publication_date, str) and publication_date.strip() else None
 
@@ -710,5 +736,7 @@ def resolve_openalex_work(
         "authors": authors_out,
         "publication_date": publication_date_out,
         "publication_year": publication_year_from_date(publication_date_out),
+        "journal": journal_out,
+        "senior_author_country": senior_country_out,
     }
 

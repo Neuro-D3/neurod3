@@ -49,6 +49,7 @@ Additional notes
 """
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+import json
 import logging
 import os
 import re
@@ -808,13 +809,15 @@ def _get_snapshot_description_and_paths(
     dataset_id: str,
     tag: str,
     include_files: bool = False,
-) -> tuple[Optional[str], Optional[str], List[str]]:
+) -> tuple[Optional[str], Optional[str], List[str], Optional[str], Optional[List[str]]]:
     """
     Fetch snapshot-level description + files for a dataset snapshot.
 
-    Returns: (description_text_256, license_text, paths[])
+    Returns: (description_text_256, license_text, paths[], full_readme, authors)
     - description_text is derived from snapshot.description.Description (preferred) or snapshot.description.Name.
     - license_text is derived from snapshot.description.License when present.
+    - full_readme is the untruncated README text (whitespace collapsed).
+    - authors is a list of author name strings from description.Authors.
     """
     snapshot_specs = _get_type_field_specs("Snapshot")
     snapshot_fields = set(snapshot_specs.keys())
@@ -907,6 +910,8 @@ def _get_snapshot_description_and_paths(
     # --- description (from dataset_description.json) ---
     desc_text_256: Optional[str] = None
     license_text: Optional[str] = None
+    full_readme: Optional[str] = None
+    snap_authors: Optional[List[str]] = None
 
     # --- readme (preferred for UI description) ---
     if "readme" in snapshot_fields and _is_scalar_or_list_of_scalar(snapshot_specs.get("readme", {})):
@@ -921,7 +926,7 @@ def _get_snapshot_description_and_paths(
         elif desc_type:
             desc_specs = _get_type_field_specs(desc_type)
             # OpenNeuro tends to use these keys in dataset_description.json-derived types
-            wanted = ["Name", "Description", "License", "DatasetDOI", "HowToAcknowledge", "name", "description", "license"]
+            wanted = ["Name", "Description", "License", "DatasetDOI", "HowToAcknowledge", "Authors", "name", "description", "license", "authors"]
             available = [w for w in wanted if w in desc_specs]
             if available:
                 selection_parts.append(
@@ -929,7 +934,7 @@ def _get_snapshot_description_and_paths(
                 )
 
     if not selection_parts:
-        return None, None, []
+        return None, None, [], None, None
 
     selection = "\n        ".join(selection_parts)
     query = f"""
@@ -987,6 +992,9 @@ def _get_snapshot_description_and_paths(
     # Extract description/license: prefer README (256 chars), fall back to dataset_description.json
     readme_raw = snap.get("readme")
     if isinstance(readme_raw, str):
+        stripped = readme_raw.strip()
+        if stripped:
+            full_readme = stripped
         desc_text_256 = _readme_to_description(readme_raw, max_len=256) or desc_text_256
 
     desc = snap.get("description")
@@ -1000,11 +1008,15 @@ def _get_snapshot_description_and_paths(
             license_text = lic
         elif lic is not None:
             license_text = str(lic)
+        # Authors from BIDS dataset_description.json
+        authors_raw = desc.get("Authors") or desc.get("authors")
+        if isinstance(authors_raw, list) and authors_raw:
+            snap_authors = [str(a) for a in authors_raw if a]
     elif isinstance(desc, str):
         if not desc_text_256:
             desc_text_256 = _readme_to_description(desc, max_len=256)
 
-    return desc_text_256, license_text, paths
+    return desc_text_256, license_text, paths, full_readme, snap_authors
 
 
 def _get_snapshot_description_name(dataset_id: str, tag: str) -> Optional[str]:
@@ -1367,7 +1379,11 @@ def create_openneuro_table(**context):
         papers INTEGER,
         url TEXT,
         description TEXT,
+        full_description TEXT,
+        authors JSONB,
+        contributors JSONB,
         license TEXT,
+        num_subjects INTEGER,
         created_at TIMESTAMP,
         updated_at TIMESTAMP,
         public BOOLEAN DEFAULT true,
@@ -1382,6 +1398,10 @@ def create_openneuro_table(**context):
                 # Allow schema evolution without forcing a full drop/recreate.
                 cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS license TEXT;")
                 cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;")
+                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS full_description TEXT;")
+                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS authors JSONB;")
+                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS contributors JSONB;")
+                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;")
                 # Indexes (create after columns exist, otherwise upgrades can fail)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_dataset_id ON openneuro_dataset(dataset_id);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_modality ON openneuro_dataset(modality);")
@@ -1576,21 +1596,48 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
         desc_type = _unwrap_named_type(dataset_field_specs.get("description", {}) or {})
         if desc_type:
             desc_specs = _get_type_field_specs(desc_type)
-            wanted = ["Name", "Description", "License", "DatasetDOI", "DatasetType", "Modality"]
+            wanted = ["Name", "Description", "License", "DatasetDOI", "DatasetType", "Modality", "Authors"]
             available = [w for w in wanted if w in desc_specs]
             if available:
                 selectable.append(
                     "description {\n          " + "\n          ".join(available) + "\n        }"
                 )
 
-    # --- summary object (preferred source for detailed scan-type tags) ---
+    # --- summary object (preferred source for detailed scan-type tags + subjects) ---
+    # `summary` lives on the Draft/Snapshot type, NOT directly on Dataset.
+    # We access it via `draft { summary { ... } }` which is reliable.
+    _summ_fields: List[str] = []
     if "summary" in dataset_fields and not _is_scalar_or_list_of_scalar(dataset_field_specs.get("summary", {})):
         summ_type = _unwrap_named_type(dataset_field_specs.get("summary", {}) or {})
         if summ_type:
             summ_specs = _get_type_field_specs(summ_type)
-            # `summary.modalities` is the "scan types" array from OpenNeuro (e.g. T1w, bold)
             if "modalities" in summ_specs:
-                selectable.append("summary {\n          modalities\n        }")
+                _summ_fields.append("modalities")
+            if "subjects" in summ_specs:
+                _summ_fields.append("subjects")
+            if _summ_fields:
+                selectable.append("summary {\n          " + "\n          ".join(_summ_fields) + "\n        }")
+
+    # Fallback: fetch summary via draft.summary (summary is usually on Draft, not Dataset)
+    if not _summ_fields and "draft" in dataset_fields and not _is_scalar_or_list_of_scalar(dataset_field_specs.get("draft", {})):
+        draft_type = _unwrap_named_type(dataset_field_specs.get("draft", {}) or {})
+        if draft_type:
+            draft_specs = _get_type_field_specs(draft_type)
+            if "summary" in draft_specs and not _is_scalar_or_list_of_scalar(draft_specs.get("summary", {})):
+                draft_summ_type = _unwrap_named_type(draft_specs.get("summary", {}) or {})
+                if draft_summ_type:
+                    draft_summ_specs = _get_type_field_specs(draft_summ_type)
+                    draft_summ_fields = []
+                    if "modalities" in draft_summ_specs:
+                        draft_summ_fields.append("modalities")
+                    if "subjects" in draft_summ_specs:
+                        draft_summ_fields.append("subjects")
+                    if draft_summ_fields:
+                        selectable.append(
+                            "draft {\n          summary {\n            "
+                            + "\n            ".join(draft_summ_fields)
+                            + "\n          }\n        }"
+                        )
 
     # NOTE: Avoid selecting `latestSnapshot` here. It has been observed to intermittently
     # fail server-side (resolver ECONNREFUSED). We fetch snapshot tags separately when needed.
@@ -1664,19 +1711,30 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
                 lic = str(lic)
             enriched_ds["license"] = lic
 
-        # Description: store README truncated to 256 chars.
+        # Description: store README truncated to 256 chars + full_description untruncated.
         # Prefer dataset-level readme when present; snapshot-level README is fetched later if needed.
-        if not enriched_ds.get("description") and isinstance(dataset_data.get("readme"), str):
-            desc = _readme_to_description(dataset_data.get("readme"), max_len=256)
-            if desc:
-                enriched_ds["description"] = desc
-                stats["enriched_desc"] = 1
+        if isinstance(dataset_data.get("readme"), str):
+            readme_raw = dataset_data["readme"]
+            stripped = readme_raw.strip()
+            if stripped and not enriched_ds.get("full_description"):
+                enriched_ds["full_description"] = stripped
+            if not enriched_ds.get("description"):
+                desc = _readme_to_description(readme_raw, max_len=256)
+                if desc:
+                    enriched_ds["description"] = desc
+                    stats["enriched_desc"] = 1
         # Fallback description: description.Description
         if not enriched_ds.get("description") and isinstance(desc_obj, dict) and isinstance(desc_obj.get("Description"), str):
             desc = _readme_to_description(desc_obj.get("Description"), max_len=256)
             if desc:
                 enriched_ds["description"] = desc
                 stats["enriched_desc"] = 1
+
+        # Authors from BIDS description object
+        if not enriched_ds.get("authors") and isinstance(desc_obj, dict):
+            authors_raw = desc_obj.get("Authors") or desc_obj.get("authors")
+            if isinstance(authors_raw, list) and authors_raw:
+                enriched_ds["authors"] = [str(a) for a in authors_raw if a]
 
         # Modality mapping - check multiple sources in priority order:
         # 1. dataset.metadata.modalities (primary source on OpenNeuro)
@@ -1706,8 +1764,17 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
         
         mod = _normalize_openneuro_modalities(raw_mods)
 
-        # Extract scan types from summary.modalities for potential modality inference
+        # Extract subjects count and scan types from summary
+        # summary may be at dataset.summary (unlikely) or dataset.draft.summary
         summ_obj = dataset_data.get("summary") if isinstance(dataset_data.get("summary"), dict) else None
+        if summ_obj is None:
+            draft_obj = dataset_data.get("draft") if isinstance(dataset_data.get("draft"), dict) else None
+            if isinstance(draft_obj, dict):
+                summ_obj = draft_obj.get("summary") if isinstance(draft_obj.get("summary"), dict) else None
+        if isinstance(summ_obj, dict):
+            subj_list = summ_obj.get("subjects")
+            if isinstance(subj_list, list) and subj_list:
+                enriched_ds["num_subjects"] = len(subj_list)
         raw_scan_types = None
         if isinstance(summ_obj, dict):
             raw_tags = summ_obj.get("modalities")
@@ -1824,7 +1891,7 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
         if (not enriched_ds.get("description")) or (not enriched_ds.get("license")):
             tag = snap_tag
             try:
-                snap_desc, snap_lic, paths = _get_snapshot_description_and_paths(
+                snap_desc, snap_lic, paths, snap_full, snap_authors = _get_snapshot_description_and_paths(
                     dataset_id=dataset_id,
                     tag=tag,
                     include_files=False,
@@ -1834,7 +1901,7 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
                 if (not snap_desc and not paths) and tag == "draft":
                     latest_tag = _get_latest_snapshot_tag(dataset_id)
                     if latest_tag:
-                        snap_desc, snap_lic, paths = _get_snapshot_description_and_paths(
+                        snap_desc, snap_lic, paths, snap_full, snap_authors = _get_snapshot_description_and_paths(
                             dataset_id=dataset_id,
                             tag=latest_tag,
                             include_files=False,
@@ -1851,6 +1918,10 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
                 if snap_desc and not enriched_ds.get("description"):
                     enriched_ds["description"] = snap_desc
                     stats["enriched_desc"] = 1
+                if snap_full and not enriched_ds.get("full_description"):
+                    enriched_ds["full_description"] = snap_full
+                if snap_authors and not enriched_ds.get("authors"):
+                    enriched_ds["authors"] = snap_authors
                 if snap_lic and not enriched_ds.get("license"):
                     enriched_ds["license"] = snap_lic
             except Exception as e:
@@ -1862,6 +1933,10 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
             tag = snap_tag
             try:
                 readme = _get_readme_from_latest_snapshot(dataset_id=dataset_id, tag=tag)
+                if readme and isinstance(readme, str):
+                    stripped = readme.strip()
+                    if stripped and not enriched_ds.get("full_description"):
+                        enriched_ds["full_description"] = stripped
                 desc = _readme_to_description(readme, max_len=256) if readme else None
                 if desc:
                     enriched_ds["description"] = desc
@@ -1908,6 +1983,7 @@ def _enrich_single_dataset(ds: Dict[str, Any]) -> tuple:
     enriched_ds.setdefault("url", f"https://openneuro.org/datasets/{dataset_id}" if dataset_id else "")
     enriched_ds.setdefault("description", None)
     enriched_ds.setdefault("license", None)
+    enriched_ds.setdefault("num_subjects", None)
     enriched_ds.setdefault("created_at", None)
     enriched_ds.setdefault("updated_at", None)
     enriched_ds.setdefault("public", True)
@@ -1939,11 +2015,11 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
 
     insert_sql = """
     INSERT INTO openneuro_dataset (
-        dataset_id, title, modality, citations, papers, url, description, license,
+        dataset_id, title, modality, citations, papers, url, description, full_description, authors, license, num_subjects,
         created_at, updated_at, public, downloads, views
     )
     VALUES (
-        %(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(papers)s, %(url)s, %(description)s, %(license)s,
+        %(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(papers)s, %(url)s, %(description)s, %(full_description)s, %(authors)s, %(license)s, %(num_subjects)s,
         %(created_at)s, %(updated_at)s, %(public)s, %(downloads)s, %(views)s
     )
     ON CONFLICT (dataset_id)
@@ -1954,7 +2030,10 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
         papers = COALESCE(EXCLUDED.papers, openneuro_dataset.papers),
         url = EXCLUDED.url,
         description = EXCLUDED.description,
+        full_description = COALESCE(EXCLUDED.full_description, openneuro_dataset.full_description),
+        authors = COALESCE(EXCLUDED.authors, openneuro_dataset.authors),
         license = EXCLUDED.license,
+        num_subjects = COALESCE(EXCLUDED.num_subjects, openneuro_dataset.num_subjects),
         created_at = EXCLUDED.created_at,
         updated_at = EXCLUDED.updated_at,
         public = EXCLUDED.public,
@@ -1978,7 +2057,10 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
                 dataset.setdefault("papers", None)
                 dataset.setdefault("url", f"https://openneuro.org/datasets/{dataset.get('dataset_id')}")
                 dataset.setdefault("description", None)
+                dataset.setdefault("full_description", None)
+                dataset.setdefault("authors", None)
                 dataset.setdefault("license", None)
+                dataset.setdefault("num_subjects", None)
                 dataset.setdefault("created_at", None)
                 dataset.setdefault("updated_at", None)
                 dataset.setdefault("public", True)
@@ -1991,8 +2073,11 @@ def _upsert_openneuro_datasets(datasets: List[Dict[str, Any]]) -> None:
                 dataset["modality"] = _sanitize_string(dataset.get("modality"))
                 dataset["url"] = _sanitize_string(dataset.get("url"))
                 dataset["description"] = _sanitize_string(dataset.get("description"))
+                dataset["full_description"] = _sanitize_string(dataset.get("full_description"))
                 dataset["license"] = _sanitize_string(dataset.get("license"))
-                
+                authors_val = dataset.get("authors")
+                dataset["authors"] = json.dumps(authors_val) if authors_val is not None else None
+
                 cursor.execute(insert_sql, dataset)
                 inserted_flag = cursor.fetchone()[0]
                 if inserted_flag:
