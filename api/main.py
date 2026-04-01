@@ -391,6 +391,16 @@ async def get_datasets(
                     logger.warning("unified_datasets view does not exist, falling back to neuroscience_datasets table")
                     table_name = "neuroscience_datasets"
 
+                # Check which optional columns exist on the dataset table/view
+                cursor.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = %s
+                      AND column_name IN ('authors', 'num_subjects')
+                """, (table_name,))
+                ds_opt_cols = {r["column_name"] for r in cursor.fetchall()}
+                authors_expr = "authors," if "authors" in ds_opt_cols else "NULL::jsonb AS authors,"
+                num_subjects_expr = "num_subjects," if "num_subjects" in ds_opt_cols else "NULL::integer AS num_subjects,"
+
                 base_select = f"""
                     SELECT
                         source,
@@ -400,6 +410,8 @@ async def get_datasets(
                         papers,
                         url,
                         description,
+                        {authors_expr}
+                        {num_subjects_expr}
                         created_at,
                         updated_at
                     FROM {table_name}
@@ -758,6 +770,16 @@ async def get_dataset_detail(dataset_id: str):
                 try:
                     _ensure_paper_mapping_tables(cursor)
 
+                    # Check which optional paper columns exist
+                    cursor.execute("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = 'papers'
+                          AND column_name IN ('journal', 'senior_author_country')
+                    """)
+                    paper_opt_cols = {r["column_name"] for r in cursor.fetchall()}
+                    p_journal = "p.journal," if "journal" in paper_opt_cols else "NULL AS journal,"
+                    p_country = "p.senior_author_country," if "senior_author_country" in paper_opt_cols else "NULL AS senior_author_country,"
+
                     primary_papers_query = f"""
                         {_paper_mapping_ctes()}
                         SELECT
@@ -767,6 +789,8 @@ async def get_dataset_detail(dataset_id: str):
                             p.title AS paper_title,
                             p.authors,
                             p.openalex_id,
+                            {p_journal}
+                            {p_country}
                             p.publication_date,
                             p.publication_year,
                             COUNT(DISTINCT ce.citing_paper_doi)::int AS citing_papers_count
@@ -780,11 +804,16 @@ async def get_dataset_detail(dataset_id: str):
                         GROUP BY
                             map.paper_doi, map.doi_source, map.relation_type,
                             p.title, p.authors, p.openalex_id,
+                            {('p.journal,' if 'journal' in paper_opt_cols else '')}
+                            {('p.senior_author_country,' if 'senior_author_country' in paper_opt_cols else '')}
                             p.publication_date, p.publication_year
                         ORDER BY COALESCE(p.publication_date, '') DESC, map.paper_doi ASC;
                     """
                     cursor.execute(primary_papers_query, [source, dataset_id])
                     primary_papers = [dict(r) for r in cursor.fetchall()]
+
+                    c_journal = "p_citing.journal AS citing_journal," if "journal" in paper_opt_cols else "NULL AS citing_journal,"
+                    c_country = "p_citing.senior_author_country AS citing_senior_author_country," if "senior_author_country" in paper_opt_cols else "NULL AS citing_senior_author_country,"
 
                     citations_query = f"""
                         {_paper_mapping_ctes()}
@@ -794,6 +823,8 @@ async def get_dataset_detail(dataset_id: str):
                             ce.citing_paper_doi,
                             p_citing.title AS citing_paper_title,
                             p_citing.authors AS citing_authors,
+                            {c_journal}
+                            {c_country}
                             p_citing.publication_date AS citing_publication_date,
                             p_citing.publication_year AS citing_publication_year
                         FROM citation_edges ce

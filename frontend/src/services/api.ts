@@ -31,6 +31,8 @@ export interface Dataset {
   paper_titles?: string[] | null;
   url: string;
   description?: string;
+  authors?: string[] | null;
+  num_subjects?: number | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -160,6 +162,8 @@ export interface DatasetDetailPaper {
   paper_title?: string | null;
   authors?: string[] | null;
   openalex_id?: string | null;
+  journal?: string | null;
+  senior_author_country?: string | null;
   publication_date?: string | null;
   publication_year?: number | null;
   citing_papers_count: number;
@@ -171,6 +175,8 @@ export interface DatasetDetailCitation {
   citing_paper_doi: string;
   citing_paper_title?: string | null;
   citing_authors?: string[] | null;
+  citing_journal?: string | null;
+  citing_senior_author_country?: string | null;
   citing_publication_date?: string | null;
   citing_publication_year?: number | null;
 }
