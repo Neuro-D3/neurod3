@@ -864,7 +864,9 @@ export default function NeuroDatasetDiscovery() {
                 const desc = (ds.description || '').trim();
                 const shortDesc = desc.length > 200 ? desc.slice(0, 200).replace(/\s+\S*$/, '') + '...' : desc;
                 const parts = (ds.modality || '').split(/[;,]/).map((p) => p.trim()).filter(Boolean);
-                const paperCount = ds.papers ?? 0;
+                const primaryPapers = ds.papers ?? 0;
+                const reusePapers = ds.secondary_reuse_count ?? 0;
+                const paperCount = primaryPapers + reusePapers;
 
                 return (
                   <div

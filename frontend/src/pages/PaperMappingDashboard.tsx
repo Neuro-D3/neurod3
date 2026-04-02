@@ -42,10 +42,21 @@ function truncate(text?: string | null, max = 160): string {
 
 function statusBadgeClass(status?: string | null): string {
   const normalized = (status || '').toLowerCase();
+  if (normalized === 'secondary') return 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30';
+  if (normalized === 'primary') return 'bg-blue-500/15 text-blue-700 ring-blue-500/30';
+  if (normalized === 'neither') return 'bg-slate-500/10 text-slate-600 ring-slate-400/30';
+  if (normalized === 'unknown') return 'bg-amber-500/15 text-amber-700 ring-amber-500/30';
   if (normalized.includes('reuse')) return 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30';
   if (normalized.includes('mention')) return 'bg-sky-500/15 text-sky-700 ring-sky-500/30';
   if (normalized.includes('placeholder')) return 'bg-amber-500/15 text-amber-700 ring-amber-500/30';
   return 'bg-slate-500/10 text-slate-700 ring-slate-400/30';
+}
+
+function confidenceLabel(value?: number | null): { text: string; color: string } {
+  if (value === 3) return { text: 'High', color: 'text-emerald-600' };
+  if (value === 2) return { text: 'Medium', color: 'text-amber-600' };
+  if (value === 1) return { text: 'Low', color: 'text-red-500' };
+  return { text: '—', color: 'text-slate-400' };
 }
 
 const PAGE_SIZE = 20;
@@ -53,6 +64,7 @@ const PAGE_SIZE = 20;
 export default function PaperMappingDashboard() {
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [search, setSearch] = useState('');
+  const [classificationBucketFilter, setClassificationBucketFilter] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortKey>('mapped_papers');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [page, setPage] = useState(1);
@@ -73,7 +85,11 @@ export default function PaperMappingDashboard() {
 
   useEffect(() => {
     setPage(1);
-  }, [sourceFilter, search]);
+  }, [sourceFilter, search, classificationBucketFilter]);
+
+  useEffect(() => {
+    setSelectedDataset(null);
+  }, [classificationBucketFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,6 +102,7 @@ export default function PaperMappingDashboard() {
           fetchPaperMappingDatasets({
             source: sourceParam,
             search: search || undefined,
+            classification_bucket: classificationBucketFilter || undefined,
             sort_by: sortBy,
             sort_order: sortOrder,
             limit: PAGE_SIZE,
@@ -107,7 +124,7 @@ export default function PaperMappingDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [page, search, sortBy, sortOrder, sourceParam]);
+  }, [page, search, sortBy, sortOrder, sourceParam, classificationBucketFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -212,7 +229,25 @@ export default function PaperMappingDashboard() {
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <div>
                 <h2 className="text-base font-semibold">Mapped Datasets</h2>
-                <p className="text-sm text-slate-500">{formatNumber(datasetCount)} datasets in current view</p>
+                <p className="text-sm text-slate-500">
+                  {formatNumber(datasetCount)} datasets in current view
+                  {classificationBucketFilter ? (
+                    <>
+                      {' '}
+                      <span className="text-slate-700">
+                        · filtered by classification:{' '}
+                        <span className="font-medium">{classificationBucketFilter.replace(/_/g, ' ')}</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setClassificationBucketFilter(null)}
+                        className="ml-2 text-blue-600 hover:underline"
+                      >
+                        Clear
+                      </button>
+                    </>
+                  ) : null}
+                </p>
               </div>
               {loading ? <span className="text-sm text-slate-500">Loading…</span> : null}
             </div>
@@ -313,14 +348,31 @@ export default function PaperMappingDashboard() {
           <aside className="space-y-6">
             <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-base font-semibold">Classification Snapshot</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Click a row to show only datasets that have at least one edge in that bucket. Click again to clear.
+              </p>
               <div className="mt-3 space-y-2 text-sm">
                 {classificationBreakdown.length ? (
-                  classificationBreakdown.map(([bucket, count]) => (
-                    <div key={bucket} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
-                      <span className="capitalize text-slate-700">{bucket.replace(/_/g, ' ')}</span>
-                      <span className="font-medium text-slate-900">{formatNumber(count)}</span>
-                    </div>
-                  ))
+                  classificationBreakdown.map(([bucket, count]) => {
+                    const active = classificationBucketFilter === bucket;
+                    return (
+                      <button
+                        key={bucket}
+                        type="button"
+                        onClick={() =>
+                          setClassificationBucketFilter((prev) => (prev === bucket ? null : bucket))
+                        }
+                        className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition ${
+                          active
+                            ? 'bg-blue-100 ring-2 ring-blue-300'
+                            : 'bg-slate-50 hover:bg-slate-100'
+                        }`}
+                      >
+                        <span className="capitalize text-slate-700">{bucket.replace(/_/g, ' ')}</span>
+                        <span className="font-medium text-slate-900">{formatNumber(count)}</span>
+                      </button>
+                    );
+                  })
                 ) : (
                   <p className="text-slate-500">No classification rows yet. Placeholder schema is ready for the future LLM DAG.</p>
                 )}
@@ -435,6 +487,7 @@ export default function PaperMappingDashboard() {
                     <div className="space-y-3">
                       {citationsPreview.map((citation) => {
                         const firstContext = citation.citation_contexts?.[0]?.context;
+                        const conf = confidenceLabel(citation.confidence);
                         return (
                           <div key={`${citation.primary_paper_doi}:${citation.citing_paper_doi}`} className="rounded-xl border border-slate-200 p-4">
                             <div className="flex flex-wrap items-start justify-between gap-2">
@@ -442,9 +495,16 @@ export default function PaperMappingDashboard() {
                                 <div className="font-medium text-slate-900">{citation.citing_paper_title || citation.citing_paper_doi}</div>
                                 <div className="mt-1 font-mono text-xs text-slate-500">{citation.citing_paper_doi}</div>
                               </div>
-                              <span className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${statusBadgeClass(citation.classification_status)}`}>
-                                {citation.classification_status || 'unclassified'}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${statusBadgeClass(citation.classification_status)}`}>
+                                  {citation.classification_status || 'unclassified'}
+                                </span>
+                                {citation.confidence != null && (
+                                  <span className={`text-xs font-medium ${conf.color}`}>
+                                    {conf.text}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                             <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-slate-600">
                               <span>Primary paper</span>
@@ -454,6 +514,11 @@ export default function PaperMappingDashboard() {
                               <span>Contexts found</span>
                               <span className="text-right">{formatNumber(citation.citation_contexts?.length || 0)}</span>
                             </div>
+                            {citation.reasoning && (
+                              <div className="mt-2 text-xs text-slate-500 italic">
+                                {truncate(citation.reasoning, 200)}
+                              </div>
+                            )}
                             <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
                               {firstContext ? truncate(firstContext, 280) : 'No extracted citation context stored yet.'}
                             </div>

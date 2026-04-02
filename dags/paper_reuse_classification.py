@@ -336,6 +336,7 @@ def classify_and_persist_batch(*, batch_edges: List[Dict[str, Any]], batch_index
 
     stats = {"classified": 0, "errors": 0, "skipped": 0}
     results_by_category: Dict[str, int] = {}
+    usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -399,6 +400,9 @@ def classify_and_persist_batch(*, batch_edges: List[Dict[str, Any]], batch_index
                         temperature=temperature,
                     )
                     status = "error" if result.get("parse_error") else "classified"
+                    usage_totals["prompt_tokens"] += int(result.get("prompt_tokens") or 0)
+                    usage_totals["completion_tokens"] += int(result.get("completion_tokens") or 0)
+                    usage_totals["total_tokens"] += int(result.get("total_tokens") or 0)
                 except Exception as exc:
                     logger.error(
                         "API error for %s/%s->%s: %s",
@@ -439,15 +443,20 @@ def classify_and_persist_batch(*, batch_edges: List[Dict[str, Any]], batch_index
         conn.commit()
 
     logger.info(
-        "Batch %d done: %d classified, %d errors, %d skipped. Breakdown: %s",
+        "Batch %d done: %d classified, %d errors, %d skipped. Breakdown: %s. "
+        "Tokens: prompt=%d completion=%d total=%d",
         batch_index, stats["classified"], stats["errors"], stats["skipped"],
         json.dumps(results_by_category),
+        usage_totals["prompt_tokens"],
+        usage_totals["completion_tokens"],
+        usage_totals["total_tokens"],
     )
 
     return {
         "batch_index": batch_index,
         "stats": stats,
         "by_category": results_by_category,
+        "usage": usage_totals,
     }
 
 
@@ -531,6 +540,9 @@ def summarize_classification_run(**context):
     total_errors = 0
     total_skipped = 0
     category_totals: Dict[str, int] = {}
+    sum_prompt = 0
+    sum_completion = 0
+    sum_total = 0
 
     for br in batch_results:
         if not isinstance(br, dict):
@@ -541,16 +553,24 @@ def summarize_classification_run(**context):
         total_skipped += s.get("skipped", 0)
         for cat, count in br.get("by_category", {}).items():
             category_totals[cat] = category_totals.get(cat, 0) + count
+        u = br.get("usage") or {}
+        sum_prompt += int(u.get("prompt_tokens") or 0)
+        sum_completion += int(u.get("completion_tokens") or 0)
+        sum_total += int(u.get("total_tokens") or 0)
 
     model = normalize_openrouter_model(str(context["params"].get("model", DEFAULT_MODEL)))
     logger.info(
         "=== Classification Run Summary ===\n"
-        "  Model:        %s\n"
-        "  Classified:   %d\n"
-        "  Errors:       %d\n"
-        "  Skipped:      %d\n"
-        "  By category:  %s",
+        "  Model:              %s\n"
+        "  Classified:         %d\n"
+        "  Errors:             %d\n"
+        "  Skipped:            %d\n"
+        "  Prompt tokens:      %d\n"
+        "  Completion tokens:  %d\n"
+        "  Total tokens:       %d\n"
+        "  By category:        %s",
         model, total_classified, total_errors, total_skipped,
+        sum_prompt, sum_completion, sum_total,
         json.dumps(category_totals, indent=2),
     )
 

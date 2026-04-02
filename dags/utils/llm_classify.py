@@ -173,6 +173,15 @@ def build_primary_relationship_prompt(
 # OpenRouter API caller
 # ---------------------------------------------------------------------------
 
+def _attach_usage(result: Dict[str, Any], raw_response: Optional[dict]) -> Dict[str, Any]:
+    """Add OpenAI-style token counts from the API response (OpenRouter-compatible)."""
+    u = (raw_response or {}).get("usage") or {}
+    result["prompt_tokens"] = int(u.get("prompt_tokens") or 0)
+    result["completion_tokens"] = int(u.get("completion_tokens") or 0)
+    result["total_tokens"] = int(u.get("total_tokens") or 0)
+    return result
+
+
 def call_openrouter(
     prompt: str,
     api_key: str,
@@ -185,8 +194,9 @@ def call_openrouter(
     """
     POST to OpenRouter chat completions with retry / backoff.
 
-    Returns a dict with at least ``classification``, ``confidence``, ``reasoning``.
-    On total failure the dict has ``classification='UNKNOWN'`` and ``parse_error=True``.
+    Returns a dict with at least ``classification``, ``confidence``, ``reasoning``,
+    and when an HTTP response was received, ``prompt_tokens``, ``completion_tokens``,
+    ``total_tokens`` (integers; zeros if usage omitted or request failed before a body).
     """
     model = normalize_openrouter_model(model)
     headers = {
@@ -241,24 +251,33 @@ def call_openrouter(
         msg = f"All {max_retries} attempts failed"
         if last_error:
             msg += f": {last_error}"
-        return _unknown_result(msg)
+        return _attach_usage(_unknown_result(msg), None)
 
     if raw_response is None:
-        return _unknown_result(str(last_error) if last_error else "No response")
+        return _attach_usage(
+            _unknown_result(str(last_error) if last_error else "No response"),
+            None,
+        )
 
     choices = raw_response.get("choices", [])
     if not choices:
-        return _unknown_result("No choices in API response")
+        return _attach_usage(_unknown_result("No choices in API response"), raw_response)
 
     finish_reason = choices[0].get("finish_reason", "")
     if finish_reason == "length":
-        return _unknown_result("Response truncated (finish_reason=length)")
+        return _attach_usage(
+            _unknown_result("Response truncated (finish_reason=length)"),
+            raw_response,
+        )
 
     content = choices[0].get("message", {}).get("content", "")
     if not content or len(content.strip()) < 5:
-        return _unknown_result("Empty or very short response")
+        return _attach_usage(
+            _unknown_result("Empty or very short response"),
+            raw_response,
+        )
 
-    return parse_classification_response(content)
+    return _attach_usage(parse_classification_response(content), raw_response)
 
 
 # ---------------------------------------------------------------------------

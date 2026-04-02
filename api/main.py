@@ -401,40 +401,55 @@ async def get_datasets(
                 authors_expr = "authors," if "authors" in ds_opt_cols else "NULL::jsonb AS authors,"
                 num_subjects_expr = "num_subjects," if "num_subjects" in ds_opt_cols else "NULL::integer AS num_subjects,"
 
+                secondary_reuse_subquery = """
+                    COALESCE((
+                        SELECT COUNT(DISTINCT citing_paper_doi)::int
+                        FROM dandi_paper_citation_classifications
+                        WHERE dandi_id = d.dataset_id AND classification = 'SECONDARY'
+                    ), 0)
+                    +
+                    COALESCE((
+                        SELECT COUNT(DISTINCT citing_paper_doi)::int
+                        FROM openneuro_paper_citation_classifications
+                        WHERE openneuro_id = d.dataset_id AND classification = 'SECONDARY'
+                    ), 0)
+                """
+
                 base_select = f"""
                     SELECT
-                        source,
-                        dataset_id as id,
-                        title,
-                        modality,
-                        papers,
-                        url,
-                        description,
-                        {authors_expr}
-                        {num_subjects_expr}
-                        created_at,
-                        updated_at
-                    FROM {table_name}
+                        d.source,
+                        d.dataset_id as id,
+                        d.title,
+                        d.modality,
+                        d.papers,
+                        d.url,
+                        d.description,
+                        {authors_expr.replace('authors', 'd.authors') if 'authors' in ds_opt_cols else authors_expr}
+                        {num_subjects_expr.replace('num_subjects', 'd.num_subjects') if 'num_subjects' in ds_opt_cols else num_subjects_expr}
+                        d.created_at,
+                        d.updated_at,
+                        ({secondary_reuse_subquery}) AS secondary_reuse_count
+                    FROM {table_name} d
                     WHERE 1=1
                 """
-                base_count = f"SELECT COUNT(*) as total FROM {table_name} WHERE 1=1"
+                base_count = f"SELECT COUNT(*) as total FROM {table_name} d WHERE 1=1"
                 filters = []
                 params = []
 
                 if source:
                     if source not in ALLOWED_SOURCES:
                         raise HTTPException(status_code=400, detail=f"Invalid source: {source}")
-                    filters.append("source = %s")
+                    filters.append("d.source = %s")
                     params.append(source)
 
                 if modality:
                     modalities = [m.strip() for m in modality.split(",") if m.strip()]
                     for m in modalities:
-                        filters.append("modality ILIKE %s")
+                        filters.append("d.modality ILIKE %s")
                         params.append(f"%{m}%")
 
                 if search:
-                    filters.append("(title ILIKE %s OR description ILIKE %s)")
+                    filters.append("(d.title ILIKE %s OR d.description ILIKE %s)")
                     search_pattern = f"%{search}%"
                     params.extend([search_pattern, search_pattern])
 
@@ -447,19 +462,19 @@ async def get_datasets(
                     raise HTTPException(status_code=400, detail=f"Invalid sort_order: {sort_order}")
 
                 sort_column_by_key = {
-                    "published": "created_at",
-                    "papers": "papers",
-                    "title": "title",
-                    "id": "dataset_id",
-                    "source": "source",
-                    "modality": "modality",
+                    "published": "d.created_at",
+                    "papers": f"(COALESCE(d.papers, 0) + ({secondary_reuse_subquery}))",
+                    "title": "d.title",
+                    "id": "d.dataset_id",
+                    "source": "d.source",
+                    "modality": "d.modality",
                 }
                 sort_col = sort_column_by_key.get(sort_by_norm)
                 if not sort_col:
                     raise HTTPException(status_code=400, detail=f"Invalid sort_by: {sort_by}")
 
                 # Keep ordering deterministic with tie-breakers.
-                order_sql = f"{sort_col} {sort_order_norm.upper()} NULLS LAST, title ASC, dataset_id ASC"
+                order_sql = f"{sort_col} {sort_order_norm.upper()} NULLS LAST, d.title ASC, d.dataset_id ASC"
                 query = f"{base_select}{filter_sql} ORDER BY {order_sql} LIMIT %s OFFSET %s"
                 count_query = f"{base_count}{filter_sql}"
 
@@ -826,14 +841,23 @@ async def get_dataset_detail(dataset_id: str):
                             {c_journal}
                             {c_country}
                             p_citing.publication_date AS citing_publication_date,
-                            p_citing.publication_year AS citing_publication_year
+                            p_citing.publication_year AS citing_publication_year,
+                            COALESCE(cc.classification, cc.status, 'unclassified') AS classification_status,
+                            cc.classification,
+                            cc.confidence,
+                            cc.reasoning
                         FROM citation_edges ce
                         LEFT JOIN papers p_primary ON p_primary.paper_doi = ce.primary_paper_doi
                         LEFT JOIN papers p_citing ON p_citing.paper_doi = ce.citing_paper_doi
+                        LEFT JOIN citation_classifications cc
+                          ON cc.source = ce.source
+                         AND cc.dataset_id = ce.dataset_id
+                         AND cc.primary_paper_doi = ce.primary_paper_doi
+                         AND cc.citing_paper_doi = ce.citing_paper_doi
                         WHERE ce.source = %s AND ce.dataset_id = %s
                         ORDER BY COALESCE(p_citing.publication_date, '') DESC,
                                  ce.citing_paper_doi ASC
-                        LIMIT 100;
+                        LIMIT 250;
                     """
                     cursor.execute(citations_query, [source, dataset_id])
                     citations = [dict(r) for r in cursor.fetchall()]
@@ -945,6 +969,14 @@ async def get_paper_mapping_summary(
 async def get_paper_mapping_datasets(
     source: Optional[str] = Query(None, description="Filter by source (DANDI, OpenNeuro)"),
     search: Optional[str] = Query(None, description="Search in dataset id, title, and description"),
+    classification_bucket: Optional[str] = Query(
+        None,
+        description=(
+            "Only datasets with at least one citation edge whose bucket matches "
+            "COALESCE(NULLIF(classification,''), status, 'unclassified') — same keys as summary by_classification "
+            "(e.g. SECONDARY, NEITHER, placeholder, classified, error)."
+        ),
+    ),
     sort_by: str = Query(
         "mapped_papers",
         description="Sort by mapped_papers, citation_edges, contexts_extracted, latest_primary_publication_date, latest_citing_publication_date, title, id, source",
@@ -971,6 +1003,19 @@ async def get_paper_mapping_datasets(
     sort_col = sort_column_by_key.get(sort_by_norm)
     if not sort_col:
         raise HTTPException(status_code=400, detail=f"Invalid sort_by: {sort_by}")
+
+    bucket_sql = ""
+    bucket_params: List[Any] = []
+    if classification_bucket and classification_bucket.strip():
+        bucket_sql = """
+            WHERE EXISTS (
+                SELECT 1 FROM citation_classifications cc
+                WHERE cc.source = a.source
+                  AND cc.dataset_id = a.dataset_id
+                  AND COALESCE(NULLIF(cc.classification, ''), cc.status, 'unclassified') = %s
+            )
+        """
+        bucket_params = [classification_bucket.strip()]
 
     try:
         with get_db_connection() as conn:
@@ -1013,18 +1058,18 @@ async def get_paper_mapping_datasets(
                             db.modality, db.papers_count, db.created_at, db.updated_at, db.url
                     )
                 """
-                count_query = f"{aggregated_cte} SELECT COUNT(*)::int AS total FROM aggregated;"
-                cursor.execute(count_query, params)
+                count_query = f"{aggregated_cte} SELECT COUNT(*)::int AS total FROM aggregated a{bucket_sql};"
+                cursor.execute(count_query, params + bucket_params)
                 total = cursor.fetchone()["total"]
 
                 query = f"""
                     {aggregated_cte}
                     SELECT *
-                    FROM aggregated
+                    FROM aggregated a{bucket_sql}
                     ORDER BY {sort_col} {sort_order_norm.upper()} NULLS LAST, dataset_title ASC, dataset_id ASC
                     LIMIT %s OFFSET %s;
                 """
-                cursor.execute(query, params + [limit, offset])
+                cursor.execute(query, params + bucket_params + [limit, offset])
                 rows = [dict(row) for row in cursor.fetchall()]
                 return {"datasets": rows, "count": total}
     except HTTPException:
