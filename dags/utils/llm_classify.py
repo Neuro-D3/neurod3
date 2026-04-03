@@ -54,24 +54,28 @@ CONFIDENCE_MAP = {"high": 3, "medium": 2, "low": 1}
 
 def get_openrouter_api_key() -> str:
     """
-    Read OPENROUTER_API_KEY from, in order:
-      1. OS environment variable (set via .env / docker-compose)
-      2. Airflow Variable ``openrouter_api_key`` (settable from the Airflow UI)
+    Read OPENROUTER_API_KEY from, in priority order:
+      1. Airflow Variable ``openrouter_api_key`` (Admin -> Variables in the UI)
+      2. OS environment variable ``OPENROUTER_API_KEY`` (.env / docker-compose)
+
+    The Airflow Variable takes priority so you can rotate keys from the UI
+    without restarting containers.
 
     Raises ValueError if neither source provides a non-empty key.
     """
-    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    api_key = ""
+    try:
+        from airflow.models import Variable
+        api_key = Variable.get("openrouter_api_key", default_var="").strip()
+    except Exception:
+        pass
     if not api_key:
-        try:
-            from airflow.models import Variable
-            api_key = Variable.get("openrouter_api_key", default_var="").strip()
-        except Exception:
-            pass
+        api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         raise ValueError(
             "OPENROUTER_API_KEY not found. Provide it via one of:\n"
-            "  1. OS env var OPENROUTER_API_KEY (in .env / docker-compose)\n"
-            "  2. Airflow Variable 'openrouter_api_key' (Admin -> Variables in the UI)\n"
+            "  1. Airflow Variable 'openrouter_api_key' (Admin -> Variables in the UI)\n"
+            "  2. OS env var OPENROUTER_API_KEY (in .env / docker-compose)\n"
             "Then re-trigger the DAG."
         )
     return api_key
