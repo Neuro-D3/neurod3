@@ -43,6 +43,7 @@ try:
     from utils.database import get_db_connection
     from utils.llm_classify import (
         get_openrouter_api_key,
+        validate_openrouter_api_key,
         call_openrouter,
         build_classification_prompt,
         build_primary_relationship_prompt,
@@ -55,6 +56,7 @@ except ImportError:
     from dags.utils.database import get_db_connection
     from dags.utils.llm_classify import (
         get_openrouter_api_key,
+        validate_openrouter_api_key,
         call_openrouter,
         build_classification_prompt,
         build_primary_relationship_prompt,
@@ -115,21 +117,12 @@ def _citation_table_sources_for_filter(canonical: str) -> List[Tuple[str, str, s
 # ---------------------------------------------------------------------------
 
 def _preflight_api_key_check(dry_run: bool) -> None:
-    """Fail fast if dry_run is off but the OpenRouter API key is missing/empty."""
+    """Fail fast if dry_run is off and the OpenRouter API key is missing or rejected."""
     if dry_run:
         return
-    import os
-    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    if not key:
-        raise ValueError(
-            "OPENROUTER_API_KEY is not set (or empty) in the container environment, "
-            "but dry_run is OFF.  Fix:\n"
-            "  1. Add/verify OPENROUTER_API_KEY=sk-or-... in your .env file\n"
-            "  2. Recreate Airflow containers:  docker compose up -d --force-recreate\n"
-            "  3. Re-trigger this DAG\n"
-            "Set dry_run=true if you just want to preview prompts without an API key."
-        )
+    key = get_openrouter_api_key()
     logger.info("OPENROUTER_API_KEY present (%d chars, starts with %s…)", len(key), key[:8])
+    validate_openrouter_api_key(key)
 
 
 def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:

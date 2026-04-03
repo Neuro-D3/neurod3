@@ -53,14 +53,68 @@ CONFIDENCE_MAP = {"high": 3, "medium": 2, "low": 1}
 # ---------------------------------------------------------------------------
 
 def get_openrouter_api_key() -> str:
-    """Read OPENROUTER_API_KEY from environment. Raises ValueError if absent."""
+    """
+    Read OPENROUTER_API_KEY from, in order:
+      1. OS environment variable (set via .env / docker-compose)
+      2. Airflow Variable ``openrouter_api_key`` (settable from the Airflow UI)
+
+    Raises ValueError if neither source provides a non-empty key.
+    """
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
+        try:
+            from airflow.models import Variable
+            api_key = Variable.get("openrouter_api_key", default_var="").strip()
+        except Exception:
+            pass
+    if not api_key:
         raise ValueError(
-            "OPENROUTER_API_KEY not set. Add it to your .env / Docker environment "
-            "and restart the Airflow containers."
+            "OPENROUTER_API_KEY not found. Provide it via one of:\n"
+            "  1. OS env var OPENROUTER_API_KEY (in .env / docker-compose)\n"
+            "  2. Airflow Variable 'openrouter_api_key' (Admin -> Variables in the UI)\n"
+            "Then re-trigger the DAG."
         )
     return api_key
+
+
+def validate_openrouter_api_key(api_key: str) -> None:
+    """
+    Make a minimal OpenRouter request to verify the key is accepted.
+
+    Sends a 1-token completion request; raises ValueError on auth failure so
+    the DAG fails at preflight rather than burning through every batch.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://github.com/Neuro-D3/neurod3",
+    }
+    payload = {
+        "model": DEFAULT_MODEL,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "ping"}],
+    }
+    try:
+        resp = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=30)
+        if resp.status_code == 401:
+            body = resp.text[:300]
+            raise ValueError(
+                f"OpenRouter rejected the API key (HTTP 401). "
+                f"Regenerate it at https://openrouter.ai/keys and update the "
+                f"Airflow Variable or environment variable.\n  Response: {body}"
+            )
+        if resp.status_code == 403:
+            body = resp.text[:300]
+            raise ValueError(
+                f"OpenRouter returned 403 Forbidden. The key may lack permissions "
+                f"or the account may be suspended.\n  Response: {body}"
+            )
+        resp.raise_for_status()
+        logger.info("OpenRouter API key validated successfully.")
+    except requests.RequestException as exc:
+        if isinstance(exc, ValueError):
+            raise
+        logger.warning("Could not validate OpenRouter key (network issue): %s", exc)
 
 
 # ---------------------------------------------------------------------------

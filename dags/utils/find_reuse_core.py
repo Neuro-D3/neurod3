@@ -740,3 +740,39 @@ def resolve_openalex_work(
         "senior_author_country": senior_country_out,
     }
 
+
+def search_openalex_by_title(
+    session: requests.Session,
+    title: str,
+    *,
+    telemetry: Telemetry,
+    min_interval_seconds: float = 0.2,
+    max_retries: int = 6,
+    backoff_seconds: float = 2.0,
+    per_page: int = 5,
+) -> List[Dict[str, Any]]:
+    """
+    Search OpenAlex works by title text and return up to *per_page* candidates.
+
+    Each returned dict is a raw OpenAlex work object with keys like ``doi``,
+    ``title``, ``id`` (openalex_id), ``type``, ``authorships``,
+    ``publication_date``, etc.
+    """
+    if not title or not isinstance(title, str) or not title.strip():
+        return []
+    encoded = quote(title.strip())
+    url = f"https://api.openalex.org/works?search={encoded}&per_page={per_page}"
+    data = http_get_json(
+        session,
+        url,
+        timeout=30,
+        min_interval_seconds=min_interval_seconds,
+        max_retries=max_retries,
+        backoff_seconds=backoff_seconds,
+        telemetry=telemetry,
+    )
+    if not data or not isinstance(data, dict):
+        return []
+    results = data.get("results")
+    return results if isinstance(results, list) else []
+

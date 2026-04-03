@@ -11,8 +11,10 @@ Strategy (best-effort):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import difflib
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -25,10 +27,57 @@ from utils.find_reuse_core import (
     resolve_crossref_metadata,
     resolve_zenodo_metadata,
     resolve_openalex_work,
+    search_openalex_by_title,
 )
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Title-based search constants
+# ---------------------------------------------------------------------------
+_OPENALEX_ARTICLE_TYPES = {
+    "article", "journal-article", "preprint", "posted-content",
+    "book-chapter", "proceedings-article", "review",
+}
+MIN_TITLE_LENGTH_FOR_SEARCH = 30
+MIN_TITLE_WORDS_FOR_SEARCH = 5
+DEFAULT_TITLE_SIMILARITY_THRESHOLD = 0.8
+
+
+def _normalize_title_for_comparison(title: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace."""
+    t = title.lower().strip()
+    t = re.sub(r"[^\w\s]", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _title_similarity(a: str, b: str) -> float:
+    """Similarity ratio between two titles after normalization."""
+    na = _normalize_title_for_comparison(a)
+    nb = _normalize_title_for_comparison(b)
+    if not na or not nb:
+        return 0.0
+    return difflib.SequenceMatcher(None, na, nb).ratio()
+
+
+def _is_title_searchable(title: Optional[str]) -> bool:
+    """Return True if a dataset title is specific enough for title-based search."""
+    if not title or not isinstance(title, str):
+        return False
+    t = title.strip()
+    if len(t) < MIN_TITLE_LENGTH_FOR_SEARCH:
+        return False
+    if len(t.split()) < MIN_TITLE_WORDS_FOR_SEARCH:
+        return False
+    # Skip titles that look like technical IDs / abbreviations (no spaces, all alnum+underscore)
+    if re.fullmatch(r"[A-Za-z0-9_\-]+", t):
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# OpenNeuro GraphQL
+# ---------------------------------------------------------------------------
 OPENNEURO_GRAPHQL_URL = "https://openneuro.org/crn/graphql"
 
 _DATASET_FIELD_SPECS_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
@@ -337,6 +386,128 @@ class OpenNeuroPaperResolutionResult:
     error: Optional[str] = None
 
 
+def _try_title_search(
+    session: requests.Session,
+    dataset_title: str,
+    *,
+    telemetry: Telemetry,
+    min_interval_seconds: float,
+    max_retries: int,
+    backoff_seconds: float,
+    similarity_threshold: float,
+) -> List[Dict[str, Any]]:
+    """
+    Search OpenAlex by dataset title and return paper dicts for high-confidence
+    matches.  Only articles/preprints with a DOI above *similarity_threshold*
+    are accepted.
+    """
+    candidates = search_openalex_by_title(
+        session,
+        dataset_title,
+        telemetry=telemetry,
+        min_interval_seconds=min_interval_seconds,
+        max_retries=max_retries,
+        backoff_seconds=backoff_seconds,
+        per_page=5,
+    )
+
+    best_sim = 0.0
+    best_paper: Optional[Dict[str, Any]] = None
+
+    for work in candidates:
+        if not isinstance(work, dict):
+            continue
+        work_title = work.get("title")
+        if not isinstance(work_title, str) or not work_title.strip():
+            continue
+
+        work_type = work.get("type") or ""
+        if isinstance(work_type, str) and work_type not in _OPENALEX_ARTICLE_TYPES:
+            continue
+
+        work_doi_raw = work.get("doi") or ""
+        if not isinstance(work_doi_raw, str) or "doi.org/" not in work_doi_raw:
+            continue
+        doi = normalize_doi(work_doi_raw.split("doi.org/")[-1])
+        if not doi:
+            continue
+
+        sim = _title_similarity(dataset_title, work_title)
+        if sim >= similarity_threshold and sim > best_sim:
+            best_sim = sim
+            authorships = work.get("authorships") or []
+            authors: Optional[List[str]] = None
+            if isinstance(authorships, list) and authorships:
+                names = []
+                for a in authorships:
+                    if isinstance(a, dict):
+                        author = a.get("author")
+                        if isinstance(author, dict):
+                            dn = author.get("display_name")
+                            if isinstance(dn, str) and dn.strip():
+                                names.append(dn.strip())
+                authors = names or None
+
+            journal: Optional[str] = None
+            primary_location = work.get("primary_location")
+            if isinstance(primary_location, dict):
+                source = primary_location.get("source")
+                if isinstance(source, dict):
+                    jname = source.get("display_name")
+                    if isinstance(jname, str) and jname.strip():
+                        journal = jname.strip()
+
+            senior_country: Optional[str] = None
+            if isinstance(authorships, list) and authorships:
+                last = authorships[-1]
+                if isinstance(last, dict):
+                    insts = last.get("institutions")
+                    if isinstance(insts, list) and insts and isinstance(insts[0], dict):
+                        cc = insts[0].get("country_code")
+                        if isinstance(cc, str) and cc.strip():
+                            senior_country = cc.strip().upper()
+
+            pub_date = work.get("publication_date")
+            pub_date_str = pub_date.strip() if isinstance(pub_date, str) and pub_date.strip() else None
+            pub_year: Optional[int] = None
+            if pub_date_str:
+                m = re.match(r"^(\d{4})", pub_date_str)
+                if m:
+                    try:
+                        pub_year = int(m.group(1))
+                    except Exception:
+                        pass
+
+            openalex_id = work.get("id")
+            openalex_id_str = openalex_id.strip() if isinstance(openalex_id, str) and openalex_id.strip() else None
+
+            best_paper = {
+                "doi": doi,
+                "title": work_title.strip(),
+                "openalex_id": openalex_id_str,
+                "authors": authors,
+                "source": "title_search",
+                "relation_type": "title_match",
+                "paper_metadata_source": "openalex",
+                "publication_date": pub_date_str,
+                "publication_year": pub_year,
+                "journal": journal,
+                "senior_author_country": senior_country,
+                "title_similarity": round(best_sim, 3),
+            }
+
+    if best_paper:
+        logger.info(
+            "Title search matched: dataset_title=%r -> paper=%r (sim=%.3f doi=%s)",
+            dataset_title,
+            best_paper.get("title", "")[:120],
+            best_sim,
+            best_paper.get("doi"),
+        )
+        return [best_paper]
+    return []
+
+
 def resolve_papers_for_openneuro_dataset(
     *,
     dataset_id: str,
@@ -345,6 +516,8 @@ def resolve_papers_for_openneuro_dataset(
     min_interval_seconds: float = 0.2,
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
+    enable_title_search: bool = True,
+    title_search_similarity_threshold: float = DEFAULT_TITLE_SIMILARITY_THRESHOLD,
 ) -> OpenNeuroPaperResolutionResult:
     telemetry = Telemetry()
 
@@ -378,7 +551,21 @@ def resolve_papers_for_openneuro_dataset(
             for d in extract_dois_from_text(text):
                 dois.add(d)
 
-    if not dois:
+    # --- Title-based fallback when DOI extraction yields nothing ---
+    session = requests.Session()
+    title_search_papers: List[Dict[str, Any]] = []
+    if not dois and enable_title_search and _is_title_searchable(dataset_title):
+        title_search_papers = _try_title_search(
+            session,
+            dataset_title,  # type: ignore[arg-type]  # guarded by _is_title_searchable
+            telemetry=telemetry,
+            min_interval_seconds=min_interval_seconds,
+            max_retries=max_retries,
+            backoff_seconds=backoff_seconds,
+            similarity_threshold=title_search_similarity_threshold,
+        )
+
+    if not dois and not title_search_papers:
         return OpenNeuroPaperResolutionResult(
             papers=[],
             telemetry=telemetry.to_dict(),
@@ -386,8 +573,17 @@ def resolve_papers_for_openneuro_dataset(
             error=None,
         )
 
+    # Title search papers already have full metadata from the search result;
+    # return them directly without redundant Crossref/OpenAlex lookups.
+    if title_search_papers:
+        return OpenNeuroPaperResolutionResult(
+            papers=title_search_papers,
+            telemetry=telemetry.to_dict(),
+            reason=None,
+            error=None,
+        )
+
     # Resolve titles/authors per DOI (single-fetch helpers)
-    session = requests.Session()
     out: List[Dict[str, Any]] = []
     for doi in sorted(dois):
         doi_norm = normalize_doi(doi)
