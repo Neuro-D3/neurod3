@@ -889,50 +889,84 @@ async def get_paper_mapping_summary(
         with get_db_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cursor:
                 _ensure_paper_mapping_tables(cursor)
-                where_sql, params = _paper_mapping_filter_sql(source=source)
-                query = f"""
-                    {_paper_mapping_ctes()}
+
+                # Pre-aggregate each dimension independently to avoid cartesian
+                # product blowup (datasets × maps × citations × classifications).
+                _src_filter = ""
+                params: List[Any] = []
+                if source:
+                    _src_filter = " WHERE source = %s"
+                    params = [source]
+
+                summary_query = f"""
+                    WITH map_agg AS (
+                        SELECT source, dataset_id, COUNT(DISTINCT paper_doi)::int AS mapped_dois
+                        FROM ({_paper_mapping_ctes()} SELECT * FROM dataset_map) sub
+                        {_src_filter}
+                        GROUP BY source, dataset_id
+                    ),
+                    ce_agg AS (
+                        SELECT source, dataset_id,
+                               COUNT(*)::int AS edge_count,
+                               COUNT(CASE WHEN contexts_extracted_at IS NOT NULL THEN 1 END)::int AS with_contexts,
+                               COALESCE(SUM({_count_contexts_expr('sq')}), 0)::int AS context_count
+                        FROM ({_paper_mapping_ctes()} SELECT source, dataset_id, primary_paper_doi, citing_paper_doi, contexts_extracted_at, citation_contexts FROM citation_edges) sq
+                        {_src_filter.replace('source', 'sq.source') if source else ''}
+                        GROUP BY source, dataset_id
+                    ),
+                    cc_agg AS (
+                        SELECT source, dataset_id,
+                               COUNT(CASE WHEN classification IS NOT NULL THEN 1 END)::int AS classified,
+                               COUNT(CASE WHEN status = 'placeholder' THEN 1 END)::int AS placeholder
+                        FROM ({_paper_mapping_ctes()} SELECT * FROM citation_classifications) sub
+                        {_src_filter}
+                        GROUP BY source, dataset_id
+                    )
                     SELECT
-                        COUNT(DISTINCT CASE WHEN map.paper_doi IS NOT NULL THEN db.source || ':' || db.dataset_id END)::int AS datasets_with_mapped_papers,
-                        COUNT(DISTINCT map.paper_doi)::int AS distinct_mapped_primary_papers,
-                        COUNT(DISTINCT ce.source || ':' || ce.dataset_id || ':' || ce.primary_paper_doi || ':' || ce.citing_paper_doi)::int AS citation_edges,
-                        COUNT(DISTINCT CASE WHEN ce.contexts_extracted_at IS NOT NULL THEN ce.source || ':' || ce.dataset_id || ':' || ce.primary_paper_doi || ':' || ce.citing_paper_doi END)::int AS citations_with_contexts,
-                        COALESCE(SUM({_count_contexts_expr('ce')}), 0)::int AS citation_context_count,
-                        COUNT(DISTINCT CASE WHEN cc.classification IS NOT NULL THEN cc.source || ':' || cc.dataset_id || ':' || cc.primary_paper_doi || ':' || cc.citing_paper_doi END)::int AS classified_edges,
-                        COUNT(DISTINCT CASE WHEN cc.status = 'placeholder' THEN cc.source || ':' || cc.dataset_id || ':' || cc.primary_paper_doi || ':' || cc.citing_paper_doi END)::int AS placeholder_classification_edges
-                    FROM dataset_base db
-                    LEFT JOIN dataset_map map
-                      ON map.source = db.source AND map.dataset_id = db.dataset_id
-                    LEFT JOIN citation_edges ce
-                      ON ce.source = db.source AND ce.dataset_id = db.dataset_id
-                    LEFT JOIN citation_classifications cc
-                      ON cc.source = db.source AND cc.dataset_id = db.dataset_id
-                    {where_sql};
+                        (SELECT COUNT(DISTINCT source || ':' || dataset_id) FROM map_agg)::int AS datasets_with_mapped_papers,
+                        (SELECT COUNT(DISTINCT paper_doi) FROM ({_paper_mapping_ctes()} SELECT paper_doi FROM dataset_map) dm {_src_filter})::int AS distinct_mapped_primary_papers,
+                        COALESCE((SELECT SUM(edge_count) FROM ce_agg), 0)::int AS citation_edges,
+                        COALESCE((SELECT SUM(with_contexts) FROM ce_agg), 0)::int AS citations_with_contexts,
+                        COALESCE((SELECT SUM(context_count) FROM ce_agg), 0)::int AS citation_context_count,
+                        COALESCE((SELECT SUM(classified) FROM cc_agg), 0)::int AS classified_edges,
+                        COALESCE((SELECT SUM(placeholder) FROM cc_agg), 0)::int AS placeholder_classification_edges;
                 """
-                cursor.execute(query, params)
+                cursor.execute(summary_query, params * 4 if source else [])
                 summary = dict(cursor.fetchone() or {})
 
                 source_query = f"""
-                    {_paper_mapping_ctes()}
+                    {_paper_mapping_ctes()},
+                    map_agg AS (
+                        SELECT source, dataset_id, COUNT(DISTINCT paper_doi)::int AS mapped_dois
+                        FROM dataset_map GROUP BY source, dataset_id
+                    ),
+                    ce_agg AS (
+                        SELECT source, dataset_id,
+                               COUNT(*)::int AS edge_count,
+                               COUNT(CASE WHEN contexts_extracted_at IS NOT NULL THEN 1 END)::int AS with_contexts
+                        FROM citation_edges GROUP BY source, dataset_id
+                    ),
+                    cc_agg AS (
+                        SELECT source, dataset_id,
+                               COUNT(CASE WHEN classification IS NOT NULL THEN 1 END)::int AS classified
+                        FROM citation_classifications GROUP BY source, dataset_id
+                    )
                     SELECT
                         db.source,
-                        COUNT(DISTINCT CASE WHEN map.paper_doi IS NOT NULL THEN db.source || ':' || db.dataset_id END)::int AS datasets_with_mapped_papers,
-                        COUNT(DISTINCT map.paper_doi)::int AS distinct_mapped_primary_papers,
-                        COUNT(DISTINCT ce.source || ':' || ce.dataset_id || ':' || ce.primary_paper_doi || ':' || ce.citing_paper_doi)::int AS citation_edges,
-                        COUNT(DISTINCT CASE WHEN ce.contexts_extracted_at IS NOT NULL THEN ce.source || ':' || ce.dataset_id || ':' || ce.primary_paper_doi || ':' || ce.citing_paper_doi END)::int AS citations_with_contexts,
-                        COUNT(DISTINCT CASE WHEN cc.classification IS NOT NULL THEN cc.source || ':' || cc.dataset_id || ':' || cc.primary_paper_doi || ':' || cc.citing_paper_doi END)::int AS classified_edges
+                        COUNT(DISTINCT CASE WHEN ma.mapped_dois > 0 THEN db.dataset_id END)::int AS datasets_with_mapped_papers,
+                        COALESCE(SUM(ma.mapped_dois), 0)::int AS distinct_mapped_primary_papers,
+                        COALESCE(SUM(cea.edge_count), 0)::int AS citation_edges,
+                        COALESCE(SUM(cea.with_contexts), 0)::int AS citations_with_contexts,
+                        COALESCE(SUM(cca.classified), 0)::int AS classified_edges
                     FROM dataset_base db
-                    LEFT JOIN dataset_map map
-                      ON map.source = db.source AND map.dataset_id = db.dataset_id
-                    LEFT JOIN citation_edges ce
-                      ON ce.source = db.source AND ce.dataset_id = db.dataset_id
-                    LEFT JOIN citation_classifications cc
-                      ON cc.source = db.source AND cc.dataset_id = db.dataset_id
-                    {where_sql}
+                    LEFT JOIN map_agg ma ON ma.source = db.source AND ma.dataset_id = db.dataset_id
+                    LEFT JOIN ce_agg cea ON cea.source = db.source AND cea.dataset_id = db.dataset_id
+                    LEFT JOIN cc_agg cca ON cca.source = db.source AND cca.dataset_id = db.dataset_id
+                    {"WHERE db.source = %s" if source else ""}
                     GROUP BY db.source
                     ORDER BY db.source;
                 """
-                cursor.execute(source_query, params)
+                cursor.execute(source_query, [source] if source else [])
                 by_source = [dict(row) for row in cursor.fetchall()]
 
                 classification_query = f"""
@@ -941,13 +975,11 @@ async def get_paper_mapping_summary(
                         COALESCE(NULLIF(cc.classification, ''), cc.status, 'unclassified') AS bucket,
                         COUNT(*)::int AS count
                     FROM citation_classifications cc
-                    JOIN dataset_base db
-                      ON db.source = cc.source AND db.dataset_id = cc.dataset_id
-                    {where_sql.replace('db.', 'cc.')}
+                    {"WHERE cc.source = %s" if source else ""}
                     GROUP BY 1
                     ORDER BY count DESC, bucket ASC;
                 """
-                cursor.execute(classification_query, params)
+                cursor.execute(classification_query, [source] if source else [])
                 by_classification = {row["bucket"]: row["count"] for row in cursor.fetchall()}
 
                 return {
@@ -1022,8 +1054,42 @@ async def get_paper_mapping_datasets(
             with conn.cursor(row_factory=dict_row) as cursor:
                 _ensure_paper_mapping_tables(cursor)
                 where_sql, params = _paper_mapping_filter_sql(source=source, search=search)
+
+                # Pre-aggregate each dimension to one row per (source, dataset_id)
+                # so the final join is 1:1 — avoids the cartesian product between
+                # maps × citations × classifications that blows up at scale.
                 aggregated_cte = f"""
                     {_paper_mapping_ctes()},
+                    map_agg AS (
+                        SELECT source, dataset_id,
+                               COUNT(DISTINCT paper_doi)::int AS mapped_papers_count,
+                               MAX(resolved_at::text) AS latest_resolved_at
+                        FROM dataset_map
+                        GROUP BY source, dataset_id
+                    ),
+                    map_pub AS (
+                        SELECT m.source, m.dataset_id,
+                               MAX(p.publication_date) AS latest_primary_publication_date
+                        FROM dataset_map m
+                        JOIN papers p ON p.paper_doi = m.paper_doi
+                        GROUP BY m.source, m.dataset_id
+                    ),
+                    ce_agg AS (
+                        SELECT source, dataset_id,
+                               COUNT(*)::int AS citation_edges_count,
+                               COUNT(CASE WHEN contexts_extracted_at IS NOT NULL THEN 1 END)::int AS citations_with_contexts_count,
+                               COALESCE(SUM({_count_contexts_expr('citation_edges')}), 0)::int AS contexts_extracted_count,
+                               MAX(citing_publication_date) AS latest_citing_publication_date
+                        FROM citation_edges
+                        GROUP BY source, dataset_id
+                    ),
+                    cc_agg AS (
+                        SELECT source, dataset_id,
+                               COUNT(CASE WHEN classification IS NOT NULL THEN 1 END)::int AS classified_edges_count,
+                               COUNT(CASE WHEN status = 'placeholder' THEN 1 END)::int AS placeholder_classification_edges_count
+                        FROM citation_classifications
+                        GROUP BY source, dataset_id
+                    ),
                     aggregated AS (
                         SELECT
                             db.source,
@@ -1035,27 +1101,20 @@ async def get_paper_mapping_datasets(
                             db.created_at,
                             db.updated_at,
                             db.url,
-                            COUNT(DISTINCT map.paper_doi)::int AS mapped_papers_count,
-                            COUNT(DISTINCT ce.primary_paper_doi || ':' || ce.citing_paper_doi)::int AS citation_edges_count,
-                            COUNT(DISTINCT CASE WHEN ce.contexts_extracted_at IS NOT NULL THEN ce.primary_paper_doi || ':' || ce.citing_paper_doi END)::int AS citations_with_contexts_count,
-                            COALESCE(SUM({_count_contexts_expr('ce')}), 0)::int AS contexts_extracted_count,
-                            MAX(p_primary.publication_date) AS latest_primary_publication_date,
-                            MAX(ce.citing_publication_date) AS latest_citing_publication_date,
-                            COUNT(DISTINCT CASE WHEN cc.classification IS NOT NULL THEN cc.primary_paper_doi || ':' || cc.citing_paper_doi END)::int AS classified_edges_count,
-                            COUNT(DISTINCT CASE WHEN cc.status = 'placeholder' THEN cc.primary_paper_doi || ':' || cc.citing_paper_doi END)::int AS placeholder_classification_edges_count
+                            COALESCE(ma.mapped_papers_count, 0) AS mapped_papers_count,
+                            COALESCE(cea.citation_edges_count, 0) AS citation_edges_count,
+                            COALESCE(cea.citations_with_contexts_count, 0) AS citations_with_contexts_count,
+                            COALESCE(cea.contexts_extracted_count, 0) AS contexts_extracted_count,
+                            mp.latest_primary_publication_date,
+                            cea.latest_citing_publication_date,
+                            COALESCE(cca.classified_edges_count, 0) AS classified_edges_count,
+                            COALESCE(cca.placeholder_classification_edges_count, 0) AS placeholder_classification_edges_count
                         FROM dataset_base db
-                        LEFT JOIN dataset_map map
-                          ON map.source = db.source AND map.dataset_id = db.dataset_id
-                        LEFT JOIN papers p_primary
-                          ON p_primary.paper_doi = map.paper_doi
-                        LEFT JOIN citation_edges ce
-                          ON ce.source = db.source AND ce.dataset_id = db.dataset_id
-                        LEFT JOIN citation_classifications cc
-                          ON cc.source = db.source AND cc.dataset_id = db.dataset_id
+                        LEFT JOIN map_agg ma ON ma.source = db.source AND ma.dataset_id = db.dataset_id
+                        LEFT JOIN map_pub mp ON mp.source = db.source AND mp.dataset_id = db.dataset_id
+                        LEFT JOIN ce_agg cea ON cea.source = db.source AND cea.dataset_id = db.dataset_id
+                        LEFT JOIN cc_agg cca ON cca.source = db.source AND cca.dataset_id = db.dataset_id
                         {where_sql}
-                        GROUP BY
-                            db.source, db.dataset_id, db.dataset_title, db.dataset_description,
-                            db.modality, db.papers_count, db.created_at, db.updated_at, db.url
                     )
                 """
                 count_query = f"{aggregated_cte} SELECT COUNT(*)::int AS total FROM aggregated a{bucket_sql};"
@@ -1102,19 +1161,23 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                         db.created_at,
                         db.updated_at,
                         db.url,
-                        COUNT(DISTINCT map.paper_doi)::int AS mapped_papers_count,
-                        COUNT(DISTINCT ce.primary_paper_doi || ':' || ce.citing_paper_doi)::int AS citation_edges_count,
-                        COUNT(DISTINCT CASE WHEN ce.contexts_extracted_at IS NOT NULL THEN ce.primary_paper_doi || ':' || ce.citing_paper_doi END)::int AS citations_with_contexts_count,
-                        COALESCE(SUM({_count_contexts_expr('ce')}), 0)::int AS contexts_extracted_count
+                        COALESCE(ma.mapped_papers_count, 0) AS mapped_papers_count,
+                        COALESCE(cea.citation_edges_count, 0) AS citation_edges_count,
+                        COALESCE(cea.citations_with_contexts_count, 0) AS citations_with_contexts_count,
+                        COALESCE(cea.contexts_extracted_count, 0) AS contexts_extracted_count
                     FROM dataset_base db
-                    LEFT JOIN dataset_map map
-                      ON map.source = db.source AND map.dataset_id = db.dataset_id
-                    LEFT JOIN citation_edges ce
-                      ON ce.source = db.source AND ce.dataset_id = db.dataset_id
-                    WHERE db.source = %s AND db.dataset_id = %s
-                    GROUP BY
-                        db.source, db.dataset_id, db.dataset_title, db.dataset_description,
-                        db.modality, db.papers_count, db.created_at, db.updated_at, db.url;
+                    LEFT JOIN (
+                        SELECT source, dataset_id, COUNT(DISTINCT paper_doi)::int AS mapped_papers_count
+                        FROM dataset_map GROUP BY source, dataset_id
+                    ) ma ON ma.source = db.source AND ma.dataset_id = db.dataset_id
+                    LEFT JOIN (
+                        SELECT source, dataset_id,
+                               COUNT(*)::int AS citation_edges_count,
+                               COUNT(CASE WHEN contexts_extracted_at IS NOT NULL THEN 1 END)::int AS citations_with_contexts_count,
+                               COALESCE(SUM({_count_contexts_expr('citation_edges')}), 0)::int AS contexts_extracted_count
+                        FROM citation_edges GROUP BY source, dataset_id
+                    ) cea ON cea.source = db.source AND cea.dataset_id = db.dataset_id
+                    WHERE db.source = %s AND db.dataset_id = %s;
                 """
                 cursor.execute(base_query, [source, dataset_id])
                 dataset = cursor.fetchone()
@@ -1122,7 +1185,23 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                     raise HTTPException(status_code=404, detail="Dataset not found in paper mapping tables")
 
                 primary_papers_query = f"""
-                    {_paper_mapping_ctes()}
+                    {_paper_mapping_ctes()},
+                    ce_per_primary AS (
+                        SELECT source, dataset_id, primary_paper_doi,
+                               COUNT(DISTINCT citing_paper_doi)::int AS citing_papers_count,
+                               COUNT(DISTINCT CASE WHEN contexts_extracted_at IS NOT NULL THEN citing_paper_doi END)::int AS citations_with_contexts_count
+                        FROM citation_edges
+                        WHERE source = %s AND dataset_id = %s
+                        GROUP BY source, dataset_id, primary_paper_doi
+                    ),
+                    cc_per_primary AS (
+                        SELECT source, dataset_id, primary_paper_doi,
+                               COUNT(CASE WHEN classification IS NOT NULL THEN 1 END)::int AS classified_edges_count,
+                               COUNT(CASE WHEN status = 'placeholder' THEN 1 END)::int AS placeholder_classification_edges_count
+                        FROM citation_classifications
+                        WHERE source = %s AND dataset_id = %s
+                        GROUP BY source, dataset_id, primary_paper_doi
+                    )
                     SELECT
                         map.paper_doi,
                         map.doi_source,
@@ -1134,24 +1213,21 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                         p.openalex_id,
                         p.publication_date,
                         p.publication_year,
-                        COUNT(DISTINCT ce.citing_paper_doi)::int AS citing_papers_count,
-                        COUNT(DISTINCT CASE WHEN ce.contexts_extracted_at IS NOT NULL THEN ce.citing_paper_doi END)::int AS citations_with_contexts_count,
-                        COUNT(DISTINCT CASE WHEN cc.classification IS NOT NULL THEN cc.citing_paper_doi END)::int AS classified_edges_count,
-                        COUNT(DISTINCT CASE WHEN cc.status = 'placeholder' THEN cc.citing_paper_doi END)::int AS placeholder_classification_edges_count
+                        COALESCE(cepp.citing_papers_count, 0) AS citing_papers_count,
+                        COALESCE(cepp.citations_with_contexts_count, 0) AS citations_with_contexts_count,
+                        COALESCE(ccpp.classified_edges_count, 0) AS classified_edges_count,
+                        COALESCE(ccpp.placeholder_classification_edges_count, 0) AS placeholder_classification_edges_count
                     FROM dataset_map map
                     LEFT JOIN papers p
                       ON p.paper_doi = map.paper_doi
-                    LEFT JOIN citation_edges ce
-                      ON ce.source = map.source AND ce.dataset_id = map.dataset_id AND ce.primary_paper_doi = map.paper_doi
-                    LEFT JOIN citation_classifications cc
-                      ON cc.source = map.source AND cc.dataset_id = map.dataset_id AND cc.primary_paper_doi = map.paper_doi
+                    LEFT JOIN ce_per_primary cepp
+                      ON cepp.source = map.source AND cepp.dataset_id = map.dataset_id AND cepp.primary_paper_doi = map.paper_doi
+                    LEFT JOIN cc_per_primary ccpp
+                      ON ccpp.source = map.source AND ccpp.dataset_id = map.dataset_id AND ccpp.primary_paper_doi = map.paper_doi
                     WHERE map.source = %s AND map.dataset_id = %s
-                    GROUP BY
-                        map.paper_doi, map.doi_source, map.relation_type, map.resolved_at, map.run_id,
-                        p.title, p.authors, p.openalex_id, p.publication_date, p.publication_year
                     ORDER BY COALESCE(p.publication_date, '') DESC, map.paper_doi ASC;
                 """
-                cursor.execute(primary_papers_query, [source, dataset_id])
+                cursor.execute(primary_papers_query, [source, dataset_id, source, dataset_id, source, dataset_id])
                 primary_papers = [dict(row) for row in cursor.fetchall()]
 
                 citations_query = f"""
