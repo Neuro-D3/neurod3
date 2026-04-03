@@ -4,7 +4,7 @@ Provides REST endpoints to fetch neuroscience datasets from PostgreSQL.
 """
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
@@ -890,97 +890,97 @@ async def get_paper_mapping_summary(
             with conn.cursor(row_factory=dict_row) as cursor:
                 _ensure_paper_mapping_tables(cursor)
 
-                # Pre-aggregate each dimension independently to avoid cartesian
-                # product blowup (datasets × maps × citations × classifications).
-                _src_filter = ""
-                params: List[Any] = []
-                if source:
-                    _src_filter = " WHERE source = %s"
-                    params = [source]
+                # Query underlying tables directly — no CTEs, no UNION ALL
+                # overhead.  Each SELECT hits one indexed table.
+                def _per_source_summary(src_label: str, map_tbl: str, id_col: str,
+                                        cit_tbl: str, cls_tbl: str) -> Dict[str, Any]:
+                    cursor.execute(f"""
+                        SELECT
+                            COUNT(DISTINCT {id_col})::int AS datasets_with_mapped_papers,
+                            COUNT(DISTINCT paper_doi)::int AS distinct_mapped_primary_papers
+                        FROM {map_tbl};
+                    """)
+                    map_row = dict(cursor.fetchone() or {})
 
-                summary_query = f"""
-                    WITH map_agg AS (
-                        SELECT source, dataset_id, COUNT(DISTINCT paper_doi)::int AS mapped_dois
-                        FROM ({_paper_mapping_ctes()} SELECT * FROM dataset_map) sub
-                        {_src_filter}
-                        GROUP BY source, dataset_id
-                    ),
-                    ce_agg AS (
-                        SELECT source, dataset_id,
-                               COUNT(*)::int AS edge_count,
-                               COUNT(CASE WHEN contexts_extracted_at IS NOT NULL THEN 1 END)::int AS with_contexts,
-                               COALESCE(SUM({_count_contexts_expr('sq')}), 0)::int AS context_count
-                        FROM ({_paper_mapping_ctes()} SELECT source, dataset_id, primary_paper_doi, citing_paper_doi, contexts_extracted_at, citation_contexts FROM citation_edges) sq
-                        {_src_filter.replace('source', 'sq.source') if source else ''}
-                        GROUP BY source, dataset_id
-                    ),
-                    cc_agg AS (
-                        SELECT source, dataset_id,
-                               COUNT(CASE WHEN classification IS NOT NULL THEN 1 END)::int AS classified,
-                               COUNT(CASE WHEN status = 'placeholder' THEN 1 END)::int AS placeholder
-                        FROM ({_paper_mapping_ctes()} SELECT * FROM citation_classifications) sub
-                        {_src_filter}
-                        GROUP BY source, dataset_id
+                    ctx_expr = (
+                        f"CASE WHEN jsonb_typeof(citation_contexts) = 'array' "
+                        f"THEN jsonb_array_length(citation_contexts) ELSE 0 END"
                     )
-                    SELECT
-                        (SELECT COUNT(DISTINCT source || ':' || dataset_id) FROM map_agg)::int AS datasets_with_mapped_papers,
-                        (SELECT COUNT(DISTINCT paper_doi) FROM ({_paper_mapping_ctes()} SELECT paper_doi FROM dataset_map) dm {_src_filter})::int AS distinct_mapped_primary_papers,
-                        COALESCE((SELECT SUM(edge_count) FROM ce_agg), 0)::int AS citation_edges,
-                        COALESCE((SELECT SUM(with_contexts) FROM ce_agg), 0)::int AS citations_with_contexts,
-                        COALESCE((SELECT SUM(context_count) FROM ce_agg), 0)::int AS citation_context_count,
-                        COALESCE((SELECT SUM(classified) FROM cc_agg), 0)::int AS classified_edges,
-                        COALESCE((SELECT SUM(placeholder) FROM cc_agg), 0)::int AS placeholder_classification_edges;
-                """
-                cursor.execute(summary_query, params * 4 if source else [])
-                summary = dict(cursor.fetchone() or {})
+                    cursor.execute(f"""
+                        SELECT
+                            COUNT(*)::int AS citation_edges,
+                            COUNT(CASE WHEN contexts_extracted_at IS NOT NULL THEN 1 END)::int AS citations_with_contexts,
+                            COALESCE(SUM({ctx_expr}), 0)::int AS citation_context_count
+                        FROM {cit_tbl};
+                    """)
+                    cit_row = dict(cursor.fetchone() or {})
 
-                source_query = f"""
-                    {_paper_mapping_ctes()},
-                    map_agg AS (
-                        SELECT source, dataset_id, COUNT(DISTINCT paper_doi)::int AS mapped_dois
-                        FROM dataset_map GROUP BY source, dataset_id
-                    ),
-                    ce_agg AS (
-                        SELECT source, dataset_id,
-                               COUNT(*)::int AS edge_count,
-                               COUNT(CASE WHEN contexts_extracted_at IS NOT NULL THEN 1 END)::int AS with_contexts
-                        FROM citation_edges GROUP BY source, dataset_id
-                    ),
-                    cc_agg AS (
-                        SELECT source, dataset_id,
-                               COUNT(CASE WHEN classification IS NOT NULL THEN 1 END)::int AS classified
-                        FROM citation_classifications GROUP BY source, dataset_id
-                    )
-                    SELECT
-                        db.source,
-                        COUNT(DISTINCT CASE WHEN ma.mapped_dois > 0 THEN db.dataset_id END)::int AS datasets_with_mapped_papers,
-                        COALESCE(SUM(ma.mapped_dois), 0)::int AS distinct_mapped_primary_papers,
-                        COALESCE(SUM(cea.edge_count), 0)::int AS citation_edges,
-                        COALESCE(SUM(cea.with_contexts), 0)::int AS citations_with_contexts,
-                        COALESCE(SUM(cca.classified), 0)::int AS classified_edges
-                    FROM dataset_base db
-                    LEFT JOIN map_agg ma ON ma.source = db.source AND ma.dataset_id = db.dataset_id
-                    LEFT JOIN ce_agg cea ON cea.source = db.source AND cea.dataset_id = db.dataset_id
-                    LEFT JOIN cc_agg cca ON cca.source = db.source AND cca.dataset_id = db.dataset_id
-                    {"WHERE db.source = %s" if source else ""}
-                    GROUP BY db.source
-                    ORDER BY db.source;
-                """
-                cursor.execute(source_query, [source] if source else [])
-                by_source = [dict(row) for row in cursor.fetchall()]
+                    cursor.execute(f"""
+                        SELECT
+                            COUNT(CASE WHEN classification IS NOT NULL THEN 1 END)::int AS classified_edges,
+                            COUNT(CASE WHEN status = 'placeholder' THEN 1 END)::int AS placeholder_classification_edges
+                        FROM {cls_tbl};
+                    """)
+                    cls_row = dict(cursor.fetchone() or {})
+                    return {
+                        "source": src_label,
+                        **map_row, **cit_row, **cls_row,
+                    }
 
-                classification_query = f"""
-                    {_paper_mapping_ctes()}
-                    SELECT
-                        COALESCE(NULLIF(cc.classification, ''), cc.status, 'unclassified') AS bucket,
-                        COUNT(*)::int AS count
-                    FROM citation_classifications cc
-                    {"WHERE cc.source = %s" if source else ""}
-                    GROUP BY 1
-                    ORDER BY count DESC, bucket ASC;
-                """
-                cursor.execute(classification_query, [source] if source else [])
-                by_classification = {row["bucket"]: row["count"] for row in cursor.fetchall()}
+                source_configs = []
+                if not source or source == "DANDI":
+                    source_configs.append(("DANDI", "dandi_paper_map", "dandi_id",
+                                           "dandi_paper_citations", "dandi_paper_citation_classifications"))
+                if not source or source == "OpenNeuro":
+                    source_configs.append(("OpenNeuro", "openneuro_paper_map", "openneuro_id",
+                                           "openneuro_paper_citations", "openneuro_paper_citation_classifications"))
+
+                by_source = [_per_source_summary(*cfg) for cfg in source_configs]
+
+                # Build overall summary by summing per-source values.
+                # distinct_mapped_primary_papers needs dedup across sources
+                # (a DOI could appear in both maps).
+                all_dois_parts = []
+                if not source or source == "DANDI":
+                    all_dois_parts.append("SELECT DISTINCT paper_doi FROM dandi_paper_map")
+                if not source or source == "OpenNeuro":
+                    all_dois_parts.append("SELECT DISTINCT paper_doi FROM openneuro_paper_map")
+                if all_dois_parts:
+                    cursor.execute(f"SELECT COUNT(DISTINCT paper_doi)::int AS n FROM ({' UNION ALL '.join(all_dois_parts)}) t;")
+                    distinct_papers = (cursor.fetchone() or {}).get("n", 0)
+                else:
+                    distinct_papers = 0
+
+                summary = {
+                    "datasets_with_mapped_papers": sum(r.get("datasets_with_mapped_papers", 0) for r in by_source),
+                    "distinct_mapped_primary_papers": distinct_papers,
+                    "citation_edges": sum(r.get("citation_edges", 0) for r in by_source),
+                    "citations_with_contexts": sum(r.get("citations_with_contexts", 0) for r in by_source),
+                    "citation_context_count": sum(r.get("citation_context_count", 0) for r in by_source),
+                    "classified_edges": sum(r.get("classified_edges", 0) for r in by_source),
+                    "placeholder_classification_edges": sum(r.get("placeholder_classification_edges", 0) for r in by_source),
+                }
+
+                # Classification bucket breakdown
+                cls_parts = []
+                if not source or source == "DANDI":
+                    cls_parts.append("""
+                        SELECT COALESCE(NULLIF(classification, ''), status, 'unclassified') AS bucket
+                        FROM dandi_paper_citation_classifications
+                    """)
+                if not source or source == "OpenNeuro":
+                    cls_parts.append("""
+                        SELECT COALESCE(NULLIF(classification, ''), status, 'unclassified') AS bucket
+                        FROM openneuro_paper_citation_classifications
+                    """)
+                by_classification: Dict[str, int] = {}
+                if cls_parts:
+                    cursor.execute(f"""
+                        SELECT bucket, COUNT(*)::int AS count
+                        FROM ({' UNION ALL '.join(cls_parts)}) t
+                        GROUP BY 1 ORDER BY count DESC, bucket ASC;
+                    """)
+                    by_classification = {row["bucket"]: row["count"] for row in cursor.fetchall()}
 
                 return {
                     "summary": summary,
