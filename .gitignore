@@ -30,3 +30,6 @@ yarn-error.log*
 
 # Local analysis clones
 _tmp_find_reuse_friend/
+
+# LLMs
+.claude/

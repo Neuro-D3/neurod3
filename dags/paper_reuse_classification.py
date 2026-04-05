@@ -160,7 +160,7 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
                 edges.extend(
                     _fetch_citation_edge_candidates(
                         cursor, source_name, cit_table, cls_table, id_col,
-                        remaining, reclassify,
+                        remaining, reclassify, keys_only=True,
                     )
                 )
 
@@ -169,7 +169,7 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
                 edges.extend(
                     _fetch_primary_candidates(
                         cursor, source_name, cit_table, cls_table, id_col,
-                        remaining, reclassify,
+                        remaining, reclassify, keys_only=True,
                     )
                 )
 
@@ -185,9 +185,13 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
 
 def _fetch_citation_edge_candidates(
     cursor, source_name, cit_table, cls_table, id_col,
-    limit, reclassify,
+    limit, reclassify, keys_only=False,
 ) -> List[Dict[str, Any]]:
-    """Fetch citation edges with contexts but missing / placeholder classification."""
+    """Fetch citation edges with contexts but missing / placeholder classification.
+
+    When *keys_only* is True only composite-key columns are returned (no JSONB
+    contexts or paper metadata) so the result is lightweight enough for XCom.
+    """
     if reclassify:
         status_filter = ""
     else:
@@ -195,8 +199,14 @@ def _fetch_citation_edge_candidates(
             f"AND (cls.id IS NULL OR cls.status IN ('placeholder', 'error'))"
         )
 
-    sql = f"""
-        SELECT
+    if keys_only:
+        select_clause = f"""
+            cit.{id_col}           AS dataset_id,
+            cit.primary_paper_doi,
+            cit.citing_paper_doi"""
+        join_papers = ""
+    else:
+        select_clause = f"""
             cit.{id_col}           AS dataset_id,
             cit.primary_paper_doi,
             cit.citing_paper_doi,
@@ -204,14 +214,20 @@ def _fetch_citation_edge_candidates(
             pp.title               AS primary_title,
             pp.authors             AS primary_authors,
             cp.title               AS citing_title,
-            cp.authors             AS citing_authors
+            cp.authors             AS citing_authors"""
+        join_papers = (
+            "LEFT JOIN papers pp ON pp.paper_doi = cit.primary_paper_doi\n"
+            "        LEFT JOIN papers cp ON cp.paper_doi = cit.citing_paper_doi"
+        )
+
+    sql = f"""
+        SELECT {select_clause}
         FROM {cit_table} cit
         LEFT JOIN {cls_table} cls
             ON  cls.{id_col}           = cit.{id_col}
             AND cls.primary_paper_doi  = cit.primary_paper_doi
             AND cls.citing_paper_doi   = cit.citing_paper_doi
-        LEFT JOIN papers pp ON pp.paper_doi = cit.primary_paper_doi
-        LEFT JOIN papers cp ON cp.paper_doi = cit.citing_paper_doi
+        {join_papers}
         WHERE cit.citation_contexts IS NOT NULL
           AND cit.citation_contexts != 'null'::jsonb
           AND cit.citation_contexts != '[]'::jsonb
@@ -226,7 +242,7 @@ def _fetch_citation_edge_candidates(
         d = dict(zip(cols, row))
         d["source"] = source_name
         d["edge_type"] = "citation_edge"
-        if isinstance(d.get("citation_contexts"), str):
+        if not keys_only and isinstance(d.get("citation_contexts"), str):
             try:
                 d["citation_contexts"] = json.loads(d["citation_contexts"])
             except (json.JSONDecodeError, TypeError):
@@ -237,13 +253,15 @@ def _fetch_citation_edge_candidates(
 
 def _fetch_primary_candidates(
     cursor, source_name, cit_table, cls_table, id_col,
-    limit, reclassify,
+    limit, reclassify, keys_only=False,
 ) -> List[Dict[str, Any]]:
     """
     Fetch primary paper -> dataset edges.
 
     For primary classification we look at all citation edges for a given
     (dataset, primary_paper_doi) and aggregate their contexts.
+
+    When *keys_only* is True only the composite key is returned (lightweight).
     """
     if reclassify:
         status_filter = ""
@@ -252,18 +270,28 @@ def _fetch_primary_candidates(
             "AND (cls.id IS NULL OR cls.status IN ('placeholder', 'error'))"
         )
 
-    sql = f"""
-        SELECT DISTINCT ON (cit.{id_col}, cit.primary_paper_doi)
+    if keys_only:
+        select_clause = f"""
+            cit.{id_col}           AS dataset_id,
+            cit.primary_paper_doi"""
+        join_papers = ""
+    else:
+        select_clause = f"""
             cit.{id_col}           AS dataset_id,
             cit.primary_paper_doi,
             pp.title               AS primary_title,
-            pp.authors             AS primary_authors
+            pp.authors             AS primary_authors"""
+        join_papers = "LEFT JOIN papers pp ON pp.paper_doi = cit.primary_paper_doi"
+
+    sql = f"""
+        SELECT DISTINCT ON (cit.{id_col}, cit.primary_paper_doi)
+            {select_clause}
         FROM {cit_table} cit
         LEFT JOIN {cls_table} cls
             ON  cls.{id_col}           = cit.{id_col}
             AND cls.primary_paper_doi  = cit.primary_paper_doi
             AND cls.citing_paper_doi   = cit.primary_paper_doi
-        LEFT JOIN papers pp ON pp.paper_doi = cit.primary_paper_doi
+        {join_papers}
         WHERE 1=1
           {status_filter}
         ORDER BY cit.{id_col}, cit.primary_paper_doi
@@ -277,11 +305,119 @@ def _fetch_primary_candidates(
         d["source"] = source_name
         d["edge_type"] = "primary"
         d["citing_paper_doi"] = d["primary_paper_doi"]
-        d["citing_title"] = d["primary_title"]
-        d["citing_authors"] = d["primary_authors"]
-        d["citation_contexts"] = []
+        if not keys_only:
+            d["citing_title"] = d["primary_title"]
+            d["citing_authors"] = d["primary_authors"]
+            d["citation_contexts"] = []
         rows.append(d)
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Re-fetch full edge data inside mapped tasks (avoids large XCom payloads)
+# ---------------------------------------------------------------------------
+
+def _fetch_full_edge_data(
+    cursor,
+    edge_keys: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Re-fetch full edge data (contexts, paper metadata) for a batch of lightweight keys.
+
+    Groups keys by (source, edge_type) and issues one query per group against
+    the appropriate citation/papers tables.  Returns dicts in the same shape
+    that ``classify_and_persist_batch`` expects.
+    """
+    # Group keys by (source, edge_type)
+    groups: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for key in edge_keys:
+        g = (key["source"], key.get("edge_type", "citation_edge"))
+        groups.setdefault(g, []).append(key)
+
+    results: List[Dict[str, Any]] = []
+
+    for (source, edge_type), keys in groups.items():
+        if source == "dandi":
+            cit_table = "dandi_paper_citations"
+            id_col = "dandi_id"
+        elif source == "openneuro":
+            cit_table = "openneuro_paper_citations"
+            id_col = "openneuro_id"
+        else:
+            logger.warning("_fetch_full_edge_data: unknown source %r, skipping %d keys", source, len(keys))
+            continue
+
+        if edge_type == "citation_edge":
+            tuples = [
+                (k["dataset_id"], k["primary_paper_doi"], k["citing_paper_doi"])
+                for k in keys
+            ]
+            sql = f"""
+                SELECT
+                    cit.{id_col}           AS dataset_id,
+                    cit.primary_paper_doi,
+                    cit.citing_paper_doi,
+                    cit.citation_contexts,
+                    pp.title               AS primary_title,
+                    pp.authors             AS primary_authors,
+                    cp.title               AS citing_title,
+                    cp.authors             AS citing_authors
+                FROM {cit_table} cit
+                LEFT JOIN papers pp ON pp.paper_doi = cit.primary_paper_doi
+                LEFT JOIN papers cp ON cp.paper_doi = cit.citing_paper_doi
+                WHERE ({id_col}, primary_paper_doi, citing_paper_doi) IN %s;
+            """
+            cursor.execute(sql, (tuple(tuples),))
+            cols = [d[0] for d in cursor.description]
+            for row in cursor.fetchall():
+                d = dict(zip(cols, row))
+                d["source"] = source
+                d["edge_type"] = "citation_edge"
+                if isinstance(d.get("citation_contexts"), str):
+                    try:
+                        d["citation_contexts"] = json.loads(d["citation_contexts"])
+                    except (json.JSONDecodeError, TypeError):
+                        d["citation_contexts"] = []
+                results.append(d)
+
+        elif edge_type == "primary":
+            dois = tuple({k["primary_paper_doi"] for k in keys})
+            sql = """
+                SELECT paper_doi AS primary_paper_doi,
+                       title     AS primary_title,
+                       authors   AS primary_authors
+                FROM papers
+                WHERE paper_doi IN %s;
+            """
+            cursor.execute(sql, (dois,))
+            cols = [d[0] for d in cursor.description]
+            paper_lookup = {}
+            for row in cursor.fetchall():
+                d = dict(zip(cols, row))
+                paper_lookup[d["primary_paper_doi"]] = d
+
+            for k in keys:
+                pdoi = k["primary_paper_doi"]
+                pdata = paper_lookup.get(pdoi, {})
+                results.append({
+                    "dataset_id": k["dataset_id"],
+                    "source": source,
+                    "edge_type": "primary",
+                    "primary_paper_doi": pdoi,
+                    "citing_paper_doi": pdoi,
+                    "primary_title": pdata.get("primary_title"),
+                    "primary_authors": pdata.get("primary_authors"),
+                    "citing_title": pdata.get("primary_title"),
+                    "citing_authors": pdata.get("primary_authors"),
+                    "citation_contexts": [],
+                })
+
+    if len(results) < len(edge_keys):
+        logger.warning(
+            "_fetch_full_edge_data: requested %d edges, got %d back (some may have been deleted)",
+            len(edge_keys), len(results),
+        )
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -289,23 +425,23 @@ def _fetch_primary_candidates(
 # ---------------------------------------------------------------------------
 
 def build_classification_batches(**context) -> List[Dict[str, Any]]:
-    """Split edges into batches for dynamic task mapping."""
+    """Split lightweight edge keys into batches for dynamic task mapping."""
     params = context["params"]
     batch_size = int(params.get("batch_size", 10))
 
     ti = context["ti"]
-    edges = ti.xcom_pull(task_ids="fetch_unclassified_edges") or []
+    edge_keys = ti.xcom_pull(task_ids="fetch_unclassified_edges") or []
 
-    if not edges:
+    if not edge_keys:
         logger.info("No edges to classify — nothing to do.")
         return []
 
     batches = []
-    for i in range(0, len(edges), batch_size):
-        chunk = edges[i : i + batch_size]
-        batches.append({"batch_edges": chunk, "batch_index": len(batches)})
+    for i in range(0, len(edge_keys), batch_size):
+        chunk = edge_keys[i : i + batch_size]
+        batches.append({"batch_edge_keys": chunk, "batch_index": len(batches)})
 
-    logger.info("Created %d batches of up to %d edges each (%d total)", len(batches), batch_size, len(edges))
+    logger.info("Created %d batches of up to %d edges each (%d total)", len(batches), batch_size, len(edge_keys))
     return batches
 
 
@@ -313,7 +449,7 @@ def build_classification_batches(**context) -> List[Dict[str, Any]]:
 # Task 3: Classify and persist (mapped)
 # ---------------------------------------------------------------------------
 
-def classify_and_persist_batch(*, batch_edges: List[Dict[str, Any]], batch_index: int, **context):
+def classify_and_persist_batch(*, batch_edge_keys: List[Dict[str, Any]], batch_index: int, **context):
     """Classify a batch of edges and write results to Postgres."""
     params = context["params"]
     model = normalize_openrouter_model(str(params.get("model", DEFAULT_MODEL)))
@@ -333,6 +469,9 @@ def classify_and_persist_batch(*, batch_edges: List[Dict[str, Any]], batch_index
 
     with get_db_connection() as conn:
         cursor = conn.cursor()
+
+        # Re-fetch full edge data (contexts, paper metadata) from DB for this batch.
+        batch_edges = _fetch_full_edge_data(cursor, batch_edge_keys)
 
         for idx, edge in enumerate(batch_edges):
             dataset_id = edge["dataset_id"]
