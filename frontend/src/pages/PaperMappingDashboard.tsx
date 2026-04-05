@@ -220,8 +220,8 @@ export default function PaperMappingDashboard() {
           <SummaryCard title="Datasets With Mapped Papers" value={formatNumber(summary?.summary.datasets_with_mapped_papers)} />
           <SummaryCard title="Distinct Primary Papers" value={formatNumber(summary?.summary.distinct_mapped_primary_papers)} />
           <SummaryCard title="Citation Edges" value={formatNumber(summary?.summary.citation_edges)} />
-          <SummaryCard title="Citations With Contexts" value={formatNumber(summary?.summary.citations_with_contexts)} />
-          <SummaryCard title="Placeholder Classifications" value={formatNumber(summary?.summary.placeholder_classification_edges)} />
+          <SummaryCard title="Unclassified Edges" value={formatNumber((summary?.summary.citation_edges ?? 0) - (summary?.summary.classified_edges ?? 0))} />
+          <SummaryCard title="Classified Edges" value={formatNumber(summary?.summary.classified_edges)} />
         </div>
 
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
