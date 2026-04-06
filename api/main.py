@@ -463,7 +463,7 @@ async def get_datasets(
 
                 sort_column_by_key = {
                     "published": "d.created_at",
-                    "papers": f"(COALESCE(d.papers, 0) + ({secondary_reuse_subquery}))",
+                    "papers": "(COALESCE(d.papers, 0) + secondary_reuse_count)",
                     "title": "d.title",
                     "id": "d.dataset_id",
                     "source": "d.source",
@@ -842,7 +842,7 @@ async def get_dataset_detail(dataset_id: str):
                             {c_country}
                             p_citing.publication_date AS citing_publication_date,
                             p_citing.publication_year AS citing_publication_year,
-                            COALESCE(cc.classification, cc.status, 'unclassified') AS classification_status,
+                            COALESCE(NULLIF(cc.classification, ''), cc.status, 'unclassified') AS classification_status,
                             cc.classification,
                             cc.confidence,
                             cc.reasoning
@@ -1246,7 +1246,7 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                         ce.matched_primary_openalex_id,
                         ce.citation_contexts,
                         ce.contexts_extracted_at,
-                        COALESCE(cc.classification, cc.status, 'unclassified') AS classification_status,
+                        COALESCE(NULLIF(cc.classification, ''), cc.status, 'unclassified') AS classification_status,
                         cc.classification,
                         cc.same_lab,
                         cc.confidence,
@@ -1330,7 +1330,7 @@ async def get_paper_mapping_citations(
                         ce.citation_source,
                         ce.citation_contexts,
                         ce.contexts_extracted_at,
-                        COALESCE(cc.classification, cc.status, 'unclassified') AS classification_status,
+                        COALESCE(NULLIF(cc.classification, ''), cc.status, 'unclassified') AS classification_status,
                         cc.classification,
                         cc.same_lab,
                         cc.confidence,

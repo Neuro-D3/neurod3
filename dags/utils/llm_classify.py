@@ -67,8 +67,8 @@ def get_openrouter_api_key() -> str:
     try:
         from airflow.models import Variable
         api_key = Variable.get("openrouter_api_key", default_var="").strip()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Airflow Variable not available, falling back to env var: %s", exc)
     if not api_key:
         api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
@@ -280,9 +280,9 @@ def call_openrouter(
                 json=payload,
                 timeout=timeout,
             )
-            if resp.status_code == 429:
+            if resp.status_code == 429 or resp.status_code in (502, 503, 504):
                 wait = 2 ** (attempt + 1)
-                logger.warning("Rate limited (429), waiting %ss (attempt %d/%d)", wait, attempt + 1, max_retries)
+                logger.warning("Retryable status %d, waiting %ss (attempt %d/%d)", resp.status_code, wait, attempt + 1, max_retries)
                 time.sleep(wait)
                 continue
 

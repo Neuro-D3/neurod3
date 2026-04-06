@@ -121,7 +121,7 @@ def _preflight_api_key_check(dry_run: bool) -> None:
     if dry_run:
         return
     key = get_openrouter_api_key()
-    logger.info("OPENROUTER_API_KEY present (%d chars, starts with %s…)", len(key), key[:8])
+    logger.info("OPENROUTER_API_KEY present (%d chars)", len(key))
     validate_openrouter_api_key(key)
 
 
