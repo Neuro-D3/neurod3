@@ -635,8 +635,8 @@ async def get_dataset_stats(
                     by_source_params.extend([f"%{m}%" for m in modalities])
                     by_source_clauses.extend([sql.SQL("modality ILIKE %s")] * len(modalities))
                 if search_pattern:
-                    by_source_clauses.append(sql.SQL("(title ILIKE %s OR description ILIKE %s)"))
-                    by_source_params.extend([search_pattern, search_pattern])
+                    by_source_clauses.append(sql.SQL("(title ILIKE %s OR description ILIKE %s OR authors::text ILIKE %s)"))
+                    by_source_params.extend([search_pattern, search_pattern, search_pattern])
                 by_source_where = sql.SQL("")
                 if by_source_clauses:
                     by_source_where = sql.SQL("WHERE ") + sql.SQL(" AND ").join(by_source_clauses)
@@ -657,8 +657,8 @@ async def get_dataset_stats(
                     by_modality_clauses.append(sql.SQL("source = %s"))
                     by_modality_params.append(source)
                 if search_pattern:
-                    by_modality_clauses.append(sql.SQL("(title ILIKE %s OR description ILIKE %s)"))
-                    by_modality_params.extend([search_pattern, search_pattern])
+                    by_modality_clauses.append(sql.SQL("(title ILIKE %s OR description ILIKE %s OR authors::text ILIKE %s)"))
+                    by_modality_params.extend([search_pattern, search_pattern, search_pattern])
                 if modalities:
                     for m in modalities:
                         by_modality_clauses.append(sql.SQL("modality ILIKE %s"))
@@ -702,8 +702,8 @@ async def get_dataset_stats(
                     total_where_clauses.append(sql.SQL("source = %s"))
                     total_params.append(source)
                 if search_pattern:
-                    total_where_clauses.append(sql.SQL("(title ILIKE %s OR description ILIKE %s)"))
-                    total_params.extend([search_pattern, search_pattern])
+                    total_where_clauses.append(sql.SQL("(title ILIKE %s OR description ILIKE %s OR authors::text ILIKE %s)"))
+                    total_params.extend([search_pattern, search_pattern, search_pattern])
                 if modalities:
                     for m in modalities:
                         total_where_clauses.append(sql.SQL("modality ILIKE %s"))

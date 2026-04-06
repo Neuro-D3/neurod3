@@ -454,7 +454,8 @@ export default function NeuroDatasetDiscovery() {
           : ''
         ).toLowerCase();
       const id = (ds.id || '').toLowerCase();
-      if (!title.includes(q) && !description.includes(q) && !id.includes(q)) return false;
+      const authors = (ds.authors || []).join(' ').toLowerCase();
+      if (!title.includes(q) && !description.includes(q) && !id.includes(q) && !authors.includes(q)) return false;
     }
 
     return true;
