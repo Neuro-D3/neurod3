@@ -449,9 +449,9 @@ async def get_datasets(
                         params.append(f"%{m}%")
 
                 if search:
-                    filters.append("(d.title ILIKE %s OR d.description ILIKE %s)")
+                    filters.append("(d.title ILIKE %s OR d.description ILIKE %s OR d.authors::text ILIKE %s)")
                     search_pattern = f"%{search}%"
-                    params.extend([search_pattern, search_pattern])
+                    params.extend([search_pattern, search_pattern, search_pattern])
 
                 filter_sql = f" AND {' AND '.join(filters)}" if filters else ""
 
