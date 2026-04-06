@@ -254,6 +254,16 @@ export default function NeuroDatasetDiscovery() {
       const p = parseInt(pageParam, 10);
       if (p > 0) setPage(p);
     }
+
+    const sortParam = params.get('sort')?.trim();
+    if (sortParam && ['published', 'papers', 'title', 'id', 'source', 'modality'].includes(sortParam)) {
+      setSortBy(sortParam as typeof sortBy);
+    }
+
+    const orderParam = params.get('order')?.trim().toLowerCase();
+    if (orderParam && (orderParam === 'asc' || orderParam === 'desc')) {
+      setSortOrder(orderParam);
+    }
   }, []);
 
   useEffect(() => {
@@ -286,9 +296,15 @@ export default function NeuroDatasetDiscovery() {
     if (page <= 1) params.delete('page');
     else params.set('page', String(page));
 
+    if (sortBy === 'published') params.delete('sort');
+    else params.set('sort', sortBy);
+
+    if (sortOrder === 'desc') params.delete('order');
+    else params.set('order', sortOrder);
+
     // Avoid pushing a new history entry for each change.
     window.history.replaceState(null, '', `${url.pathname}${params.toString() ? `?${params.toString()}` : ''}`);
-  }, [sourceFilter, selectedModalities, searchQuery, page]);
+  }, [sourceFilter, selectedModalities, searchQuery, page, sortBy, sortOrder]);
 
   // Close modality dropdown on outside click.
   useEffect(() => {
