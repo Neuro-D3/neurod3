@@ -463,7 +463,7 @@ async def get_datasets(
 
                 sort_column_by_key = {
                     "published": "d.created_at",
-                    "papers": "(COALESCE(d.papers, 0) + secondary_reuse_count)",
+                    "papers": f"(COALESCE(d.papers, 0) + ({secondary_reuse_subquery}))",
                     "title": "d.title",
                     "id": "d.dataset_id",
                     "source": "d.source",
