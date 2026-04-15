@@ -23,25 +23,9 @@ logger = logging.getLogger(__name__)
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-5.4-nano"
 
-# OpenRouter rejects these IDs; map to a current equivalent (stale Airflow UI params may still use them).
-_OPENROUTER_MODEL_ALIASES: Dict[str, str] = {
-    "openai/chatgpt-5.3-nano": "openai/gpt-5.4-nano",
-}
-
-
 def normalize_openrouter_model(model: Optional[str]) -> str:
-    """Resolve deprecated or invalid OpenRouter model IDs to a supported ID."""
-    m = (model or "").strip()
-    if not m:
-        return DEFAULT_MODEL
-    resolved = _OPENROUTER_MODEL_ALIASES.get(m, m)
-    if resolved != m:
-        logger.info(
-            "OpenRouter model %r is not valid; using %r instead.",
-            m,
-            resolved,
-        )
-    return resolved
+    """Return the given model ID, or DEFAULT_MODEL if empty."""
+    return (model or "").strip() or DEFAULT_MODEL
 
 
 VALID_CLASSIFICATIONS = {"PRIMARY", "SECONDARY", "NEITHER", "UNKNOWN"}
