@@ -29,6 +29,8 @@ export interface Dataset {
   papers: number | null;
   paper_dois?: string[] | null;
   paper_titles?: string[] | null;
+  /** Number of distinct citing papers classified as SECONDARY reuse by the LLM. */
+  secondary_reuse_count?: number | null;
   url: string;
   description?: string;
   authors?: string[] | null;
@@ -179,6 +181,10 @@ export interface DatasetDetailCitation {
   citing_senior_author_country?: string | null;
   citing_publication_date?: string | null;
   citing_publication_year?: number | null;
+  classification_status?: string | null;
+  classification?: string | null;
+  confidence?: number | null;
+  reasoning?: string | null;
 }
 
 export interface DatasetContributor {
@@ -321,6 +327,8 @@ export async function fetchPaperMappingSummary(params?: {
 export async function fetchPaperMappingDatasets(params?: {
   source?: 'DANDI' | 'OpenNeuro';
   search?: string;
+  /** Same bucket labels as summary by_classification (e.g. SECONDARY, NEITHER, placeholder). */
+  classification_bucket?: string;
   sort_by?:
     | 'mapped_papers'
     | 'citation_edges'
@@ -338,6 +346,9 @@ export async function fetchPaperMappingDatasets(params?: {
     const queryParams = new URLSearchParams();
     if (params?.source) queryParams.append('source', params.source);
     if (params?.search) queryParams.append('search', params.search);
+    if (params?.classification_bucket) {
+      queryParams.append('classification_bucket', params.classification_bucket);
+    }
     if (params?.sort_by) queryParams.append('sort_by', params.sort_by);
     if (params?.sort_order) queryParams.append('sort_order', params.sort_order);
     if (typeof params?.limit === 'number') queryParams.append('limit', String(params.limit));

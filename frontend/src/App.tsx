@@ -85,9 +85,16 @@ function AppLayout() {
   );
 }
 
+/** Derive basename from the URL for PR preview environments (e.g. /pr-62/app -> /pr-62/app). */
+function getBasename(): string {
+  if (typeof window === 'undefined') return '/';
+  const m = window.location.pathname.match(/^(\/pr-\d+\/app)/);
+  return m?.[1] ?? '/';
+}
+
 function App() {
   return (
-    <BrowserRouter unstable_useTransitions={false}>
+    <BrowserRouter basename={getBasename()} unstable_useTransitions={false}>
       <AppLayout />
     </BrowserRouter>
   );

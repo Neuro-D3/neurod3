@@ -350,6 +350,7 @@ jobs:
         env:
           UID: ${{ env.UID }}
           GID: ${{ env.GID }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           echo "Building and deploying PR #$PR_NUMBER..."
           echo "Using UID=$UID, GID=$GID for containers"

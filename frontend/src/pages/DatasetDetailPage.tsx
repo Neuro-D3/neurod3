@@ -54,6 +54,13 @@ function formatAuthors(authors: string[] | null | undefined, max = 5): string {
   return `${authors.slice(0, max).join(', ')} et al.`;
 }
 
+function confidenceLabel(value?: number | null): { text: string; color: string; bg: string } {
+  if (value === 3) return { text: 'High confidence', color: 'text-emerald-700', bg: 'bg-emerald-50 border-emerald-200' };
+  if (value === 2) return { text: 'Medium confidence', color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200' };
+  if (value === 1) return { text: 'Low confidence', color: 'text-red-600', bg: 'bg-red-50 border-red-200' };
+  return { text: '', color: 'text-slate-400', bg: 'bg-slate-50 border-slate-200' };
+}
+
 function PaperCard({
   paper,
   citations,
@@ -198,6 +205,13 @@ export default function DatasetDetailPage() {
 
   const citationsByPrimary = (doi: string): DatasetDetailCitation[] =>
     data?.citations.filter((c) => c.primary_paper_doi === doi) ?? [];
+
+  const secondaryReusePapers = (data?.citations ?? []).filter(
+    (c) => c.classification?.toUpperCase() === 'SECONDARY'
+  );
+
+  const reusePapersByConfidence = (level: number) =>
+    secondaryReusePapers.filter((c) => c.confidence === level);
 
   if (loading) {
     return (
@@ -367,16 +381,17 @@ export default function DatasetDetailPage() {
                 </div>
               </div>
             )}
+
           </div>
 
           {/* ─── Right column: papers sidebar ─── */}
-          <div className="w-full lg:w-[460px] flex-shrink-0 lg:sticky lg:top-24">
+          <div className="w-full lg:w-[460px] flex-shrink-0 lg:sticky lg:top-24 space-y-5">
             <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl p-5">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4">
                 Associated Papers
-                {data.primary_papers.length > 0 && (
-                  <span className="ml-2 text-slate-300 font-normal">({data.primary_papers.length})</span>
-                )}
+                <span className="ml-2 text-slate-300 font-normal">
+                  ({data.primary_papers.length + secondaryReusePapers.length})
+                </span>
               </h2>
               {data.primary_papers.length === 0 ? (
                 <p className="text-sm text-slate-400 italic">No papers have been mapped to this dataset yet.</p>
@@ -394,6 +409,65 @@ export default function DatasetDetailPage() {
                 </div>
               )}
             </div>
+
+            {/* AI-Identified Reuse Papers */}
+            {secondaryReusePapers.length > 0 && (
+              <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl p-5">
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                  AI-Identified Reuse Papers
+                  <span className="ml-2 text-slate-300 font-normal">({secondaryReusePapers.length})</span>
+                </h2>
+                <p className="text-[11px] text-slate-400 mb-4">
+                  Papers classified by AI as having reused this dataset.
+                </p>
+                <div className="space-y-4 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
+                  {[3, 2, 1].map((level) => {
+                    const papers = reusePapersByConfidence(level);
+                    if (papers.length === 0) return null;
+                    const conf = confidenceLabel(level);
+                    return (
+                      <div key={level}>
+                        <h3 className={`text-xs font-semibold mb-2 ${conf.color}`}>
+                          {conf.text} ({papers.length})
+                        </h3>
+                        <div className="space-y-2">
+                          {papers.map((c, i) => (
+                            <div
+                              key={`${c.citing_paper_doi}-${i}`}
+                              className={`rounded-lg border p-3 ${conf.bg}`}
+                            >
+                              <a
+                                href={doiUrl(c.citing_paper_doi)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs font-semibold text-blue-700 hover:text-blue-600 hover:underline leading-snug line-clamp-2"
+                              >
+                                {c.citing_paper_title || c.citing_paper_doi}
+                              </a>
+                              <p className="mt-0.5 text-[11px] text-slate-500">
+                                {formatAuthors(c.citing_authors, 3)}
+                                {c.citing_journal && <> &middot; <em>{c.citing_journal}</em></>}
+                                {c.citing_publication_date && (
+                                  <> &middot; {new Date(c.citing_publication_date).toLocaleDateString()}</>
+                                )}
+                                {countryLabel(c.citing_senior_author_country) && (
+                                  <> &middot; {countryLabel(c.citing_senior_author_country)}</>
+                                )}
+                              </p>
+                              {c.reasoning && (
+                                <p className="mt-1 text-[11px] text-slate-500 italic leading-relaxed">
+                                  {c.reasoning}
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

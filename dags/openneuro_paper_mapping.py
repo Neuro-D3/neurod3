@@ -1187,6 +1187,8 @@ def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_i
     min_interval_seconds = float(params.get("min_api_interval_seconds", 0.2))
     max_retries = min(int(params.get("max_retries", 6)), 12)
     backoff_seconds = min(float(params.get("backoff_seconds", 2.0)), 10.0)
+    enable_title_search = bool(params.get("enable_title_search", True))
+    title_search_similarity_threshold = float(params.get("title_search_similarity_threshold", 0.8))
 
     output_dir = _get_output_root() / run_id
 
@@ -1237,6 +1239,8 @@ def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_i
                 min_interval_seconds=min_interval_seconds,
                 max_retries=max_retries,
                 backoff_seconds=backoff_seconds,
+                enable_title_search=enable_title_search,
+                title_search_similarity_threshold=title_search_similarity_threshold,
             )
             for k in telemetry.keys():
                 telemetry[k] += result.telemetry.get(k, 0)  # type: ignore[operator]
@@ -1485,6 +1489,8 @@ dag = DAG(
         "max_citing_papers_per_primary": 10,
         "citation_context_chars": 500,
         "force_refresh_citation_contexts": False,
+        "enable_title_search": True,
+        "title_search_similarity_threshold": 0.8,
     },
 )
 

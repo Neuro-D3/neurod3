@@ -254,6 +254,16 @@ export default function NeuroDatasetDiscovery() {
       const p = parseInt(pageParam, 10);
       if (p > 0) setPage(p);
     }
+
+    const sortParam = params.get('sort')?.trim();
+    if (sortParam && ['published', 'papers', 'title', 'id', 'source', 'modality'].includes(sortParam)) {
+      setSortBy(sortParam as typeof sortBy);
+    }
+
+    const orderParam = params.get('order')?.trim().toLowerCase();
+    if (orderParam && (orderParam === 'asc' || orderParam === 'desc')) {
+      setSortOrder(orderParam);
+    }
   }, []);
 
   useEffect(() => {
@@ -286,9 +296,15 @@ export default function NeuroDatasetDiscovery() {
     if (page <= 1) params.delete('page');
     else params.set('page', String(page));
 
+    if (sortBy === 'published') params.delete('sort');
+    else params.set('sort', sortBy);
+
+    if (sortOrder === 'desc') params.delete('order');
+    else params.set('order', sortOrder);
+
     // Avoid pushing a new history entry for each change.
     window.history.replaceState(null, '', `${url.pathname}${params.toString() ? `?${params.toString()}` : ''}`);
-  }, [sourceFilter, selectedModalities, searchQuery, page]);
+  }, [sourceFilter, selectedModalities, searchQuery, page, sortBy, sortOrder]);
 
   // Close modality dropdown on outside click.
   useEffect(() => {
@@ -438,7 +454,8 @@ export default function NeuroDatasetDiscovery() {
           : ''
         ).toLowerCase();
       const id = (ds.id || '').toLowerCase();
-      if (!title.includes(q) && !description.includes(q) && !id.includes(q)) return false;
+      const authors = (ds.authors || []).join(' ').toLowerCase();
+      if (!title.includes(q) && !description.includes(q) && !id.includes(q) && !authors.includes(q)) return false;
     }
 
     return true;
@@ -864,7 +881,9 @@ export default function NeuroDatasetDiscovery() {
                 const desc = (ds.description || '').trim();
                 const shortDesc = desc.length > 200 ? desc.slice(0, 200).replace(/\s+\S*$/, '') + '...' : desc;
                 const parts = (ds.modality || '').split(/[;,]/).map((p) => p.trim()).filter(Boolean);
-                const paperCount = ds.papers ?? 0;
+                const primaryPapers = ds.papers ?? 0;
+                const reusePapers = ds.secondary_reuse_count ?? 0;
+                const paperCount = primaryPapers + reusePapers;
 
                 return (
                   <div
