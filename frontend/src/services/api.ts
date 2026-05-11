@@ -21,7 +21,7 @@ function inferApiBaseUrl(): string {
 const API_BASE_URL = inferApiBaseUrl();
 
 export interface Dataset {
-  source: 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet';
+  source: 'CRCNS' | 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet';
   id: string;
   title: string;
   modality: string | null;
@@ -56,7 +56,7 @@ export interface ApiHealthResponse {
 }
 
 export interface PaperMappingSourceSummary {
-  source: 'DANDI' | 'OpenNeuro';
+  source: 'CRCNS' | 'DANDI' | 'OpenNeuro';
   datasets_with_mapped_papers: number;
   distinct_mapped_primary_papers: number;
   citation_edges: number;
@@ -79,7 +79,7 @@ export interface PaperMappingSummary {
 }
 
 export interface PaperMappingDatasetRow {
-  source: 'DANDI' | 'OpenNeuro';
+  source: 'CRCNS' | 'DANDI' | 'OpenNeuro';
   dataset_id: string;
   dataset_title: string | null;
   dataset_description?: string | null;
@@ -121,7 +121,7 @@ export interface PaperMappingPrimaryPaper {
 }
 
 export interface PaperMappingCitation {
-  source?: 'DANDI' | 'OpenNeuro';
+  source?: 'CRCNS' | 'DANDI' | 'OpenNeuro';
   dataset_id?: string;
   primary_paper_doi: string;
   primary_paper_title?: string | null;
@@ -308,7 +308,7 @@ export async function checkApiHealth(): Promise<ApiHealthResponse> {
 }
 
 export async function fetchPaperMappingSummary(params?: {
-  source?: 'DANDI' | 'OpenNeuro';
+  source?: 'CRCNS' | 'DANDI' | 'OpenNeuro';
 }): Promise<PaperMappingSummary> {
   try {
     const queryParams = new URLSearchParams();
@@ -325,7 +325,7 @@ export async function fetchPaperMappingSummary(params?: {
 }
 
 export async function fetchPaperMappingDatasets(params?: {
-  source?: 'DANDI' | 'OpenNeuro';
+  source?: 'CRCNS' | 'DANDI' | 'OpenNeuro';
   search?: string;
   /** Same bucket labels as summary by_classification (e.g. SECONDARY, NEITHER, placeholder). */
   classification_bucket?: string;
@@ -365,7 +365,7 @@ export async function fetchPaperMappingDatasets(params?: {
 }
 
 export async function fetchPaperMappingDatasetDetail(
-  source: 'DANDI' | 'OpenNeuro',
+  source: 'CRCNS' | 'DANDI' | 'OpenNeuro',
   datasetId: string
 ): Promise<PaperMappingDatasetDetail> {
   try {
@@ -395,7 +395,7 @@ export async function fetchDatasetDetail(datasetId: string): Promise<DatasetDeta
 }
 
 export async function fetchPaperMappingCitations(params?: {
-  source?: 'DANDI' | 'OpenNeuro';
+  source?: 'CRCNS' | 'DANDI' | 'OpenNeuro';
   dataset_id?: string;
   limit?: number;
   offset?: number;

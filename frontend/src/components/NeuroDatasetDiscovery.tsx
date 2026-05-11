@@ -55,7 +55,7 @@ const ChevronDown: React.FC<{ size?: number; className?: string }> = ({ classNam
   <IconWrapper className={className}>▾</IconWrapper>
 );
 
-const SOURCE_OPTIONS = ['DANDI', 'Kaggle', 'OpenNeuro', 'PhysioNet'] as const;
+const SOURCE_OPTIONS = ['CRCNS', 'DANDI', 'Kaggle', 'OpenNeuro', 'PhysioNet'] as const;
 const SOURCE_CANONICAL_BY_PARAM = SOURCE_OPTIONS.reduce<Record<string, Dataset['source']>>((acc, s) => {
   acc[s.toLowerCase()] = s;
   return acc;
@@ -92,7 +92,7 @@ export default function NeuroDatasetDiscovery() {
     'published',
   );
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [sourceFilter, setSourceFilter] = useState<'all' | 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet'>(
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'CRCNS' | 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet'>(
     'all',
   );
   const [selectedModalities, setSelectedModalities] = useState<string[]>([]);
@@ -320,7 +320,7 @@ export default function NeuroDatasetDiscovery() {
     return () => document.removeEventListener('mousedown', onMouseDown);
   }, [modalityDropdownOpen]);
 
-  const fetchAllDatasets = useCallback(async () => {
+  const fetchAllDatasets = useCallback(async (isCancelled?: () => boolean) => {
     setLoading(true);
     setError(null);
     setNoDatasetsFound(false);
@@ -339,9 +339,12 @@ export default function NeuroDatasetDiscovery() {
         limit: pageSize,
         offset,
       });
+      // Drop the result if this effect run was superseded — otherwise a slower
+      // earlier fetch can clobber a faster later one (manifests as "Showing 0
+      // of <unfiltered total>" on back-navigation to ?source=CRCNS).
+      if (isCancelled?.()) return;
       const allDatasets: Dataset[] = response.datasets;
 
-      // Check if datasets array is empty (connection successful but no data)
       if (!allDatasets || allDatasets.length === 0) {
         setNoDatasetsFound(true);
         setDatasets([]);
@@ -354,6 +357,7 @@ export default function NeuroDatasetDiscovery() {
       setTotalCount(response.count ?? 0);
       setLoading(false);
     } catch (err) {
+      if (isCancelled?.()) return;
       const errorMessage = err instanceof Error ? err.message : 'Failed to connect to API';
       console.error('Error fetching datasets from API:', err);
       setError(`API connection error: ${errorMessage}. Please ensure the backend service is running.`);
@@ -364,10 +368,14 @@ export default function NeuroDatasetDiscovery() {
   }, [page, pageSize, sourceFilter, selectedModalities, searchQuery, sortBy, sortOrder]);
 
   useEffect(() => {
-    fetchAllDatasets();
+    let cancelled = false;
+    fetchAllDatasets(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [fetchAllDatasets]);
 
-  const fetchStats = useCallback(async () => {
+  const fetchStats = useCallback(async (isCancelled?: () => boolean) => {
     try {
       const sourceParam = sourceFilter !== 'all' ? sourceFilter : undefined;
       const modalitiesParam = selectedModalities.length ? selectedModalities : undefined;
@@ -377,6 +385,7 @@ export default function NeuroDatasetDiscovery() {
         modalities: modalitiesParam,
         search: searchQuery.trim() || undefined,
       });
+      if (isCancelled?.()) return;
 
       // Faceted options
       const bySource = response.by_source || {};
@@ -396,12 +405,17 @@ export default function NeuroDatasetDiscovery() {
         bySources: response.by_source || {},
       });
     } catch (err) {
+      if (isCancelled?.()) return;
       console.error('Error fetching dataset stats from API:', err);
     }
   }, [sourceFilter, selectedModalities, searchQuery]);
 
   useEffect(() => {
-    fetchStats();
+    let cancelled = false;
+    fetchStats(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [fetchStats]);
 
   // If current selections become unavailable, reset to All.
@@ -529,6 +543,7 @@ export default function NeuroDatasetDiscovery() {
 
   const getSourceBadgeColor = (source: Dataset['source']) => {
     const colors: Record<Dataset['source'], string> = {
+      CRCNS: 'bg-cyan-100 text-cyan-800',
       DANDI: 'bg-purple-100 text-purple-800',
       Kaggle: 'bg-blue-100 text-blue-800',
       OpenNeuro: 'bg-green-100 text-green-800',
@@ -612,7 +627,7 @@ export default function NeuroDatasetDiscovery() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <div
             className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
               darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
@@ -642,6 +657,16 @@ export default function NeuroDatasetDiscovery() {
               {stats.bySources['OpenNeuro'] || 0}
             </div>
             <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>OpenNeuro</div>
+          </div>
+          <div
+            className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
+              darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
+            }`}
+          >
+            <div className="text-2xl font-bold bg-gradient-to-r from-cyan-600 to-cyan-400 bg-clip-text text-transparent">
+              {stats.bySources['CRCNS'] || 0}
+            </div>
+            <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>CRCNS</div>
           </div>
         </div>
 
@@ -1103,6 +1128,14 @@ export default function NeuroDatasetDiscovery() {
               className="text-blue-500 hover:text-blue-400 transition-colors"
             >
               OpenNeuro
+            </a>
+            <a
+              href="https://crcns.org"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-500 hover:text-blue-400 transition-colors"
+            >
+              CRCNS
             </a>
             <a
               href="https://physionet.org"

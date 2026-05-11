@@ -11,7 +11,7 @@ import {
   PaperMappingSummary,
 } from '../services/api';
 
-type SourceFilter = 'all' | 'DANDI' | 'OpenNeuro';
+type SourceFilter = 'all' | 'CRCNS' | 'DANDI' | 'OpenNeuro';
 type SortKey =
   | 'mapped_papers'
   | 'citation_edges'
@@ -181,13 +181,13 @@ export default function PaperMappingDashboard() {
         <div className="mb-6">
           <h1 className="text-3xl font-semibold tracking-tight">Internal Paper Mapping Dashboard</h1>
           <p className="mt-2 max-w-3xl text-sm text-slate-600">
-            Review mapped primary papers, citation enrichment coverage, and placeholder classification state across DANDI and OpenNeuro.
+            Review mapped primary papers, citation enrichment coverage, and placeholder classification state across DANDI, OpenNeuro, and CRCNS.
           </p>
         </div>
 
         <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-2">
-            {(['all', 'DANDI', 'OpenNeuro'] as SourceFilter[]).map((option) => (
+            {(['all', 'DANDI', 'OpenNeuro', 'CRCNS'] as SourceFilter[]).map((option) => (
               <button
                 key={option}
                 type="button"
