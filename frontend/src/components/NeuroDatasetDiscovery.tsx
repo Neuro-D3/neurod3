@@ -55,7 +55,7 @@ const ChevronDown: React.FC<{ size?: number; className?: string }> = ({ classNam
   <IconWrapper className={className}>▾</IconWrapper>
 );
 
-const SOURCE_OPTIONS = ['CRCNS', 'DANDI', 'Kaggle', 'OpenNeuro', 'PhysioNet'] as const;
+const SOURCE_OPTIONS = ['CRCNS', 'DANDI', 'Kaggle', 'OpenNeuro', 'PhysioNet', 'SPARC'] as const;
 const SOURCE_CANONICAL_BY_PARAM = SOURCE_OPTIONS.reduce<Record<string, Dataset['source']>>((acc, s) => {
   acc[s.toLowerCase()] = s;
   return acc;
@@ -92,7 +92,7 @@ export default function NeuroDatasetDiscovery() {
     'published',
   );
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [sourceFilter, setSourceFilter] = useState<'all' | 'CRCNS' | 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet'>(
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'CRCNS' | 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet' | 'SPARC'>(
     'all',
   );
   const [selectedModalities, setSelectedModalities] = useState<string[]>([]);
@@ -548,6 +548,7 @@ export default function NeuroDatasetDiscovery() {
       Kaggle: 'bg-blue-100 text-blue-800',
       OpenNeuro: 'bg-green-100 text-green-800',
       PhysioNet: 'bg-orange-100 text-orange-800',
+      SPARC: 'bg-amber-100 text-amber-800',
     };
     return colors[source] || 'bg-gray-100 text-gray-800';
   };
@@ -627,7 +628,7 @@ export default function NeuroDatasetDiscovery() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
           <div
             className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
               darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
@@ -667,6 +668,16 @@ export default function NeuroDatasetDiscovery() {
               {stats.bySources['CRCNS'] || 0}
             </div>
             <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>CRCNS</div>
+          </div>
+          <div
+            className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
+              darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
+            }`}
+          >
+            <div className="text-2xl font-bold bg-gradient-to-r from-amber-600 to-amber-400 bg-clip-text text-transparent">
+              {stats.bySources['SPARC'] || 0}
+            </div>
+            <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>SPARC</div>
           </div>
         </div>
 
@@ -1136,6 +1147,14 @@ export default function NeuroDatasetDiscovery() {
               className="text-blue-500 hover:text-blue-400 transition-colors"
             >
               CRCNS
+            </a>
+            <a
+              href="https://sparc.science"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-500 hover:text-blue-400 transition-colors"
+            >
+              SPARC
             </a>
             <a
               href="https://physionet.org"

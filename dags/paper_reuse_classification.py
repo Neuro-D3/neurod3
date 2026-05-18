@@ -69,13 +69,14 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Same repository labels as unified_datasets.source (dandi_dataset, openneuro_dataset, neuroscience_datasets).
-DATASET_REPOSITORY_SOURCES: Tuple[str, ...] = ("DANDI", "OpenNeuro", "CRCNS", "Kaggle", "PhysioNet")
+DATASET_REPOSITORY_SOURCES: Tuple[str, ...] = ("DANDI", "OpenNeuro", "CRCNS", "SPARC", "Kaggle", "PhysioNet")
 SOURCE_FILTER_ENUM: Tuple[str, ...] = ("all",) + DATASET_REPOSITORY_SOURCES
 
 # (internal_key, citations_table, classifications_table, dataset_id_column)
 _DANDI_ROW = ("dandi", "dandi_paper_citations", "dandi_paper_citation_classifications", "dandi_id")
 _OPENNEURO_ROW = ("openneuro", "openneuro_paper_citations", "openneuro_paper_citation_classifications", "openneuro_id")
 _CRCNS_ROW = ("crcns", "crcns_paper_citations", "crcns_paper_citation_classifications", "crcns_id")
+_SPARC_ROW = ("sparc", "sparc_paper_citations", "sparc_paper_citation_classifications", "sparc_id")
 
 
 def _normalize_repository_filter(raw: Any) -> str:
@@ -92,6 +93,7 @@ def _normalize_repository_filter(raw: Any) -> str:
         "dandi": "DANDI",
         "openneuro": "OpenNeuro",
         "crcns": "CRCNS",
+        "sparc": "SPARC",
         "kaggle": "Kaggle",
         "physionet": "PhysioNet",
     }
@@ -106,13 +108,15 @@ def _normalize_repository_filter(raw: Any) -> str:
 def _citation_table_sources_for_filter(canonical: str) -> List[Tuple[str, str, str, str]]:
     """Repositories that have paper citation + classification tables (subset of DATASET_REPOSITORY_SOURCES)."""
     if canonical == "all":
-        return [_DANDI_ROW, _OPENNEURO_ROW, _CRCNS_ROW]
+        return [_DANDI_ROW, _OPENNEURO_ROW, _CRCNS_ROW, _SPARC_ROW]
     if canonical == "DANDI":
         return [_DANDI_ROW]
     if canonical == "OpenNeuro":
         return [_OPENNEURO_ROW]
     if canonical == "CRCNS":
         return [_CRCNS_ROW]
+    if canonical == "SPARC":
+        return [_SPARC_ROW]
     return []
 
 
@@ -146,7 +150,7 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
     if not sources:
         logger.info(
             "source_filter=%s: no paper citation / classification tables for this repository "
-            "(classification is only wired for DANDI, OpenNeuro, and CRCNS). Returning 0 edges.",
+            "(classification is only wired for DANDI, OpenNeuro, CRCNS, and SPARC). Returning 0 edges.",
             repo,
         )
         return []
@@ -349,6 +353,9 @@ def _fetch_full_edge_data(
         elif source == "crcns":
             cit_table = "crcns_paper_citations"
             id_col = "crcns_id"
+        elif source == "sparc":
+            cit_table = "sparc_paper_citations"
+            id_col = "sparc_id"
         else:
             logger.warning("_fetch_full_edge_data: unknown source %r, skipping %d keys", source, len(keys))
             continue
@@ -635,6 +642,9 @@ def _upsert_classification(
     elif source == "crcns":
         table = "crcns_paper_citation_classifications"
         id_col = "crcns_id"
+    elif source == "sparc":
+        table = "sparc_paper_citation_classifications"
+        id_col = "sparc_id"
     else:
         logger.error("Unknown source %r, cannot upsert classification", source)
         return
@@ -741,7 +751,7 @@ def _build_dag_params() -> Dict[str, Any]:
             title="Source repository",
             description=(
                 "Same values as unified_datasets.source (ingested dataset repositories). "
-                "LLM classification uses citation tables for DANDI, OpenNeuro, and CRCNS; "
+                "LLM classification uses citation tables for DANDI, OpenNeuro, CRCNS, and SPARC; "
                 "choosing Kaggle or PhysioNet selects no edges until those pipelines exist."
             ),
             schema={"type": "string", "enum": list(SOURCE_FILTER_ENUM)},
