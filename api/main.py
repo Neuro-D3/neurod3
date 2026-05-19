@@ -1044,7 +1044,7 @@ async def get_dataset_detail(dataset_id: str):
 
 @app.get("/api/paper-mapping/summary")
 async def get_paper_mapping_summary(
-    source: Optional[str] = Query(None, description="Filter by source (DANDI, OpenNeuro)"),
+    source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, OpenNeuro, SPARC)"),
 ):
     source = _validate_paper_mapping_source(source)
     try:
@@ -1196,7 +1196,7 @@ async def get_paper_mapping_summary(
 
 @app.get("/api/paper-mapping/datasets")
 async def get_paper_mapping_datasets(
-    source: Optional[str] = Query(None, description="Filter by source (DANDI, OpenNeuro)"),
+    source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, OpenNeuro, SPARC)"),
     search: Optional[str] = Query(None, description="Search in dataset id, title, and description"),
     classification_bucket: Optional[str] = Query(
         None,
@@ -1485,7 +1485,7 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
 
 @app.get("/api/paper-mapping/citations")
 async def get_paper_mapping_citations(
-    source: Optional[str] = Query(None, description="Filter by source (DANDI, OpenNeuro)"),
+    source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, OpenNeuro, SPARC)"),
     dataset_id: Optional[str] = Query(None, description="Filter by dataset id"),
     limit: int = Query(50, ge=1, le=250),
     offset: int = Query(0, ge=0),

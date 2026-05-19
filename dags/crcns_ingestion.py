@@ -67,7 +67,7 @@ def _parse_iso8601(dt_str: Optional[str]) -> Optional[datetime]:
         # DataCite sometimes emits bare years or "YYYY-MM"; try a relaxed parse.
         for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
             try:
-                return datetime.strptime(dt_str[: len(fmt) + (fmt.count("%") - 1)], fmt)
+                return datetime.strptime(dt_str, fmt)
             except ValueError:
                 continue
         logger.warning("Could not parse timestamp '%s'", dt_str)
@@ -268,7 +268,7 @@ def _resolve_doi_to_code(doi: str, session: requests.Session) -> Tuple[Optional[
     return code, final_url
 
 
-def _enrich_single(ds: Dict[str, Any], session: requests.Session) -> Tuple[Dict[str, Any], Dict[str, int]]:
+def _enrich_single(ds: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, int]]:
     stats = {"resolved_code": 0, "fallback_doi": 0, "request_errors": 0}
     enriched = ds.copy()
     doi = ds.get("doi")
@@ -276,6 +276,9 @@ def _enrich_single(ds: Dict[str, Any], session: requests.Session) -> Tuple[Dict[
         stats["fallback_doi"] = 1
         return enriched, stats
 
+    # requests.Session is not thread-safe; build one per worker call.
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
     code, final_url = _resolve_doi_to_code(doi, session)
     if final_url is None:
         stats["request_errors"] = 1
@@ -306,13 +309,10 @@ def enrich_crcns_current_run(**context) -> List[Dict[str, Any]]:
         total, max_workers,
     )
 
-    session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT})
-
     results: Dict[int, Tuple[Dict[str, Any], Dict[str, int]]] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_idx = {
-            executor.submit(_enrich_single, ds, session): idx
+            executor.submit(_enrich_single, ds): idx
             for idx, ds in enumerate(datasets)
         }
         completed = 0

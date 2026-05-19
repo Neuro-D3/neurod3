@@ -120,6 +120,37 @@ def _citation_table_sources_for_filter(canonical: str) -> List[Tuple[str, str, s
     return []
 
 
+def _public_table_exists(cursor, table_name: str) -> bool:
+    cursor.execute(
+        "SELECT to_regclass(%s) IS NOT NULL",
+        (f"public.{table_name}",),
+    )
+    row = cursor.fetchone()
+    return bool(row and row[0])
+
+
+def _drop_sources_with_missing_tables(
+    cursor, sources: List[Tuple[str, str, str, str]]
+) -> List[Tuple[str, str, str, str]]:
+    """Filter sources to those whose citation + classification tables both exist.
+
+    Used only for source_filter='all' so partial deployments (e.g. CRCNS/SPARC
+    mapping DAGs not yet run) don't blow up on UndefinedTable. Explicit
+    single-repo selection bypasses this and surfaces the SQL error.
+    """
+    kept: List[Tuple[str, str, str, str]] = []
+    for row in sources:
+        _src, cit_table, cls_table, _id = row
+        if _public_table_exists(cursor, cit_table) and _public_table_exists(cursor, cls_table):
+            kept.append(row)
+        else:
+            logger.info(
+                "Skipping %s: required tables (%s, %s) not present in this database.",
+                row[0], cit_table, cls_table,
+            )
+    return kept
+
+
 # ---------------------------------------------------------------------------
 # Task 1: Fetch unclassified edges
 # ---------------------------------------------------------------------------
@@ -157,6 +188,15 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
 
     with get_db_connection() as conn:
         cursor = conn.cursor()
+
+        if repo == "all":
+            sources = _drop_sources_with_missing_tables(cursor, sources)
+            if not sources:
+                logger.info(
+                    "source_filter=all: no citation / classification tables exist in this database yet. "
+                    "Run the per-repository paper-mapping DAGs first. Returning 0 edges."
+                )
+                return []
 
         for source_name, cit_table, cls_table, id_col in sources:
             if max_edges > 0 and len(edges) >= max_edges:
