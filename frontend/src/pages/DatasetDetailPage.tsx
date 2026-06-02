@@ -166,7 +166,8 @@ function decodedDatasetIdParam(raw: string | undefined): string {
 }
 
 export default function DatasetDetailPage() {
-  const { datasetId: datasetIdParam } = useParams<{ datasetId: string }>();
+  const { source: sourceParam, datasetId: datasetIdParam } = useParams<{ source: string; datasetId: string }>();
+  const source = decodedDatasetIdParam(sourceParam);
   const datasetId = decodedDatasetIdParam(datasetIdParam);
   const navigate = useNavigate();
   const [data, setData] = useState<DatasetDetailResponse | null>(null);
@@ -175,12 +176,12 @@ export default function DatasetDetailPage() {
   const [expandedPapers, setExpandedPapers] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    if (!datasetId) return;
+    if (!source || !datasetId) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    fetchDatasetDetail(datasetId)
+    fetchDatasetDetail(source, datasetId)
       .then((res) => {
         if (!cancelled) setData(res);
       })
@@ -192,7 +193,7 @@ export default function DatasetDetailPage() {
       });
 
     return () => { cancelled = true; };
-  }, [datasetId]);
+  }, [source, datasetId]);
 
   const togglePaper = (doi: string) => {
     setExpandedPapers((prev) => {

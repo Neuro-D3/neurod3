@@ -252,19 +252,37 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         );
     """)
     openneuro_table_exists = cursor.fetchone()[0]
-    
+
     cursor.execute("""
         SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' 
+            SELECT FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name = 'crcns_dataset'
+        );
+    """)
+    crcns_table_exists = cursor.fetchone()[0]
+
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name = 'sparc_dataset'
+        );
+    """)
+    sparc_table_exists = cursor.fetchone()[0]
+
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_schema = 'public'
             AND table_name = 'neuroscience_datasets'
         );
     """)
     neuro_table_exists = cursor.fetchone()[0]
-    
-    if not dandi_table_exists and not openneuro_table_exists and not neuro_table_exists:
+
+    if not dandi_table_exists and not openneuro_table_exists and not crcns_table_exists and not sparc_table_exists and not neuro_table_exists:
         logger.warning(
-            "No dataset source tables exist (dandi_dataset, openneuro_dataset, neuroscience_datasets). Cannot create view."
+            "No dataset source tables exist (dandi_dataset, openneuro_dataset, crcns_dataset, sparc_dataset, neuroscience_datasets). Cannot create view."
         )
         return {
             "view_created": False,
@@ -272,6 +290,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             "rows_by_source": {},
             "dandi_table_exists": False,
             "openneuro_table_exists": False,
+            "crcns_table_exists": False,
+            "sparc_table_exists": False,
             "neuro_table_exists": False,
         }
     
@@ -333,8 +353,58 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         FROM openneuro_dataset
         """.strip())
 
+    if crcns_table_exists:
+        fd = _col_or_null("crcns_dataset", "full_description", "text")
+        au = _col_or_null("crcns_dataset", "authors", "jsonb")
+        co = _col_or_null("crcns_dataset", "contributors", "jsonb")
+        li = _col_or_null("crcns_dataset", "license", "text")
+        ns = _col_or_null("crcns_dataset", "num_subjects", "integer")
+        selects.append(f"""
+        SELECT
+            'CRCNS'::text AS source,
+            dataset_id, title, modality, papers, url, description,
+            {fd},
+            {au},
+            {co},
+            {li},
+            {ns},
+            created_at, updated_at
+        FROM crcns_dataset
+        """.strip())
+
+    if sparc_table_exists:
+        fd = _col_or_null("sparc_dataset", "full_description", "text")
+        au = _col_or_null("sparc_dataset", "authors", "jsonb")
+        co = _col_or_null("sparc_dataset", "contributors", "jsonb")
+        li = _col_or_null("sparc_dataset", "license", "text")
+        ns = _col_or_null("sparc_dataset", "num_subjects", "integer")
+        selects.append(f"""
+        SELECT
+            'SPARC'::text AS source,
+            dataset_id, title, modality, papers, url, description,
+            {fd},
+            {au},
+            {co},
+            {li},
+            {ns},
+            created_at, updated_at
+        FROM sparc_dataset
+        """.strip())
+
     if neuro_table_exists:
-        where_clause = "WHERE source NOT IN ('DANDI', 'OpenNeuro')" if openneuro_table_exists else "WHERE source != 'DANDI'"
+        excluded_sources = ["'DANDI'", "'OpenNeuro'", "'CRCNS'", "'SPARC'"]
+        if not dandi_table_exists:
+            excluded_sources.remove("'DANDI'")
+        if not openneuro_table_exists:
+            excluded_sources.remove("'OpenNeuro'")
+        if not crcns_table_exists:
+            excluded_sources.remove("'CRCNS'")
+        if not sparc_table_exists:
+            excluded_sources.remove("'SPARC'")
+        if excluded_sources:
+            where_clause = f"WHERE source NOT IN ({', '.join(excluded_sources)})"
+        else:
+            where_clause = ""
         selects.append(f"""
         SELECT
             source::text,
@@ -396,5 +466,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         "rows_by_source": rows_by_source,
         "dandi_table_exists": dandi_table_exists,
         "openneuro_table_exists": openneuro_table_exists,
+        "crcns_table_exists": crcns_table_exists,
+        "sparc_table_exists": sparc_table_exists,
         "neuro_table_exists": neuro_table_exists,
     }

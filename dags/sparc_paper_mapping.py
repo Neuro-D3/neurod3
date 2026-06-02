@@ -1,0 +1,1667 @@
+"""
+Airflow DAG: Resolve SPARC dataset -> paper DOI/title mappings.
+
+Mirrors `crcns_paper_mapping` but the resolver pulls primary papers from
+Pennsieve's `externalPublications` field on each dataset (structured JSON,
+no HTML scraping like CRCNS).
+
+Pipeline:
+1. create_sparc_paper_mapping_tables  - DDL for sparc_paper_map et al.
+2. fetch_unmapped_sparc_ids           - pick SPARC datasets without mappings
+3. build_batches                      - chunk for dynamic task mapping
+4. resolve_and_persist_batch (mapped) - call Pennsieve, resolve via Crossref/OpenAlex, upsert
+5. fetch_and_persist_citations_batch (mapped) - OpenAlex citing-paper enrichment
+6. extract_and_persist_citation_contexts_batch (mapped) - citation contexts from cached text
+7. summarize_run                      - run-level telemetry summary
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+import json
+import logging
+import os
+from pathlib import Path
+import re
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import requests
+
+from airflow import DAG
+
+try:
+    from airflow.providers.standard.operators.python import PythonOperator
+except Exception:  # pragma: no cover
+    from airflow.operators.python import PythonOperator  # type: ignore
+
+from utils.database import get_db_connection
+from utils.cache_keys import paper_cache_key_for_doi
+from utils.find_reuse_core import (
+    normalize_doi,
+    Telemetry,
+    resolve_crossref_metadata,
+    resolve_openalex_work,
+)
+from utils.paper_citations import (
+    find_citation_contexts,
+    get_alternate_doi,
+    get_citing_papers,
+    get_openalex_paper_data,
+)
+from utils.paper_fulltext import fetch_fulltext_oa
+
+try:
+    from airflow.models.xcom_arg import XComArg
+except Exception:  # pragma: no cover
+    XComArg = None  # type: ignore
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Inline SPARC paper resolver
+# ---------------------------------------------------------------------------
+# Pennsieve returns externalPublications as structured JSON on each dataset, so
+# unlike CRCNS we don't need HTML scraping. Keep this inline rather than its
+# own dags/utils/sparc_paper_resolution.py — it's small enough.
+
+_PENNSIEVE_API = "https://api.pennsieve.io/discover"
+_SPARC_USER_AGENT = "D3-SPARC-PaperMapping/1.0"
+
+# Relationship types that indicate the publication describes / introduces this
+# dataset. Mirrors the research adapter at
+# _tmp_find_reuse_friend/archives/sparc.py:119-121.
+_ALLOWED_RELATIONSHIPS: Set[str] = {
+    "IsDescribedBy",
+    "IsPublishedIn",
+    "IsSupplementTo",
+    "Describes",
+    "References",
+}
+
+
+@dataclass
+class SparcPaperResolutionResult:
+    papers: List[Dict[str, Any]] = field(default_factory=list)
+    telemetry: Dict[str, Any] = field(default_factory=dict)
+    reason: Optional[str] = None
+    error: Optional[str] = None
+
+
+def resolve_papers_for_sparc_dataset(
+    *,
+    dataset_id: str,
+    dataset_title: Optional[str] = None,
+    dataset_description: Optional[str] = None,
+    dataset_url: Optional[str] = None,
+    min_interval_seconds: float = 0.2,
+    max_retries: int = 6,
+    backoff_seconds: float = 2.0,
+) -> SparcPaperResolutionResult:
+    """Find primary paper DOIs for a SPARC dataset and enrich metadata.
+
+    Strategy:
+    1. GET /discover/datasets/{dataset_id} and read externalPublications.
+    2. Keep entries whose relationshipType is in the allowlist and whose DOI is
+       not on protocols.io (protocol DOIs aren't papers).
+    3. For each remaining DOI, resolve title/authors via Crossref then OpenAlex
+       (shared helpers from utils.find_reuse_core).
+    """
+    telemetry = Telemetry()
+    session = requests.Session()
+    session.headers.update({"User-Agent": _SPARC_USER_AGENT})
+
+    try:
+        resp = session.get(
+            f"{_PENNSIEVE_API}/datasets/{dataset_id}",
+            timeout=20,
+        )
+    except requests.RequestException as e:
+        return SparcPaperResolutionResult(
+            papers=[],
+            telemetry=telemetry.to_dict(),
+            reason="pennsieve_unreachable",
+            error=str(e),
+        )
+
+    if resp.status_code == 404:
+        return SparcPaperResolutionResult(
+            papers=[],
+            telemetry=telemetry.to_dict(),
+            reason="pennsieve_404",
+        )
+    if resp.status_code != 200:
+        return SparcPaperResolutionResult(
+            papers=[],
+            telemetry=telemetry.to_dict(),
+            reason=f"pennsieve_http_{resp.status_code}",
+        )
+
+    try:
+        record = resp.json()
+    except ValueError as e:
+        return SparcPaperResolutionResult(
+            papers=[],
+            telemetry=telemetry.to_dict(),
+            reason="pennsieve_invalid_json",
+            error=str(e),
+        )
+
+    ext_pubs = record.get("externalPublications") or []
+    candidates: List[Tuple[str, str]] = []  # (doi_norm, relationship_type)
+    seen: Set[str] = set()
+    for entry in ext_pubs:
+        if not isinstance(entry, dict):
+            continue
+        rel = (entry.get("relationshipType") or "").strip()
+        if rel not in _ALLOWED_RELATIONSHIPS:
+            continue
+        raw_doi = (entry.get("doi") or "").strip()
+        if not raw_doi or "protocols.io" in raw_doi.lower():
+            continue
+        norm = normalize_doi(raw_doi)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        candidates.append((norm, rel))
+
+    if not candidates:
+        return SparcPaperResolutionResult(
+            papers=[],
+            telemetry=telemetry.to_dict(),
+            reason="no_external_publications",
+        )
+
+    out: List[Dict[str, Any]] = []
+    for doi_norm, rel in candidates:
+        paper: Dict[str, Any] = {
+            "doi": doi_norm,
+            "title": None,
+            "openalex_id": None,
+            "authors": None,
+            "source": "sparc_external_publications",
+            "relation_type": rel,
+            "paper_metadata_source": None,
+            "publication_date": None,
+            "publication_year": None,
+            "journal": None,
+            "senior_author_country": None,
+        }
+
+        cr = resolve_crossref_metadata(
+            session,
+            doi_norm,
+            telemetry=telemetry,
+            min_interval_seconds=min_interval_seconds,
+            max_retries=max_retries,
+            backoff_seconds=backoff_seconds,
+        )
+        if cr.get("title"):
+            paper["title"] = cr.get("title")
+            paper["paper_metadata_source"] = "crossref"
+        if cr.get("authors"):
+            paper["authors"] = cr.get("authors")
+            paper["paper_metadata_source"] = paper.get("paper_metadata_source") or "crossref"
+        if cr.get("publication_date"):
+            paper["publication_date"] = cr.get("publication_date")
+        if cr.get("publication_year"):
+            paper["publication_year"] = cr.get("publication_year")
+
+        if not paper.get("title") or not paper.get("authors") or not paper.get("openalex_id"):
+            oa = resolve_openalex_work(
+                session,
+                doi_norm,
+                telemetry=telemetry,
+                min_interval_seconds=min_interval_seconds,
+                max_retries=max_retries,
+                backoff_seconds=backoff_seconds,
+            )
+            if not paper.get("title") and oa.get("title"):
+                paper["title"] = oa.get("title")
+            if oa.get("openalex_id"):
+                paper["openalex_id"] = oa.get("openalex_id")
+            if not paper.get("authors") and oa.get("authors"):
+                paper["authors"] = oa.get("authors")
+            if not paper.get("publication_date") and oa.get("publication_date"):
+                paper["publication_date"] = oa.get("publication_date")
+            if not paper.get("publication_year") and oa.get("publication_year"):
+                paper["publication_year"] = oa.get("publication_year")
+            if (oa.get("title") or oa.get("openalex_id") or oa.get("authors")) and not paper.get("paper_metadata_source"):
+                paper["paper_metadata_source"] = "openalex"
+            if not paper.get("journal") and oa.get("journal"):
+                paper["journal"] = oa["journal"]
+            if not paper.get("senior_author_country") and oa.get("senior_author_country"):
+                paper["senior_author_country"] = oa["senior_author_country"]
+
+        out.append(paper)
+
+    return SparcPaperResolutionResult(
+        papers=out,
+        telemetry=telemetry.to_dict(),
+        reason=None,
+        error=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DAG plumbing (mirrors crcns_paper_mapping.py)
+# ---------------------------------------------------------------------------
+
+default_args = {
+    "owner": "neurod3",
+    "depends_on_past": False,
+    "start_date": datetime(2024, 1, 1),
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _sanitize_run_id(run_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", run_id).strip("_")
+
+
+def _get_output_root() -> Path:
+    env = os.getenv("SPARC_PAPER_MAPPING_OUTPUT_DIR", "").strip()
+    if env:
+        return Path(env)
+    return Path(__file__).parent / "output" / "sparc_paper_mapping"
+
+
+def _parse_max_datasets_per_run(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"", "all", "none", "null"}:
+            return None
+        try:
+            value = int(v)
+        except Exception:
+            raise ValueError(f"Invalid max_datasets_per_run: {value!r}")
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid max_datasets_per_run: {value!r}")
+    try:
+        n = int(value)
+    except Exception:
+        raise ValueError(f"Invalid max_datasets_per_run: {value!r}")
+    if n <= 0:
+        return None
+    return n
+
+
+def _parse_batch_size(value: Any, default: int = 25) -> int:
+    if value is None:
+        return default
+    if isinstance(value, str) and value.strip():
+        value = int(value.strip())
+    n = int(value)
+    if n <= 0:
+        raise ValueError(f"Invalid batch_size: {value!r}")
+    return min(n, 1000)
+
+
+_TEST_DUMMY_KEYWORDS = (
+    "test", "dummy", "example", "sample", "tutorial",
+    "benchmark", "synthetic", "placeholder",
+)
+
+
+def keyword_filter_dataset(
+    title: Optional[str], description: Optional[str], keywords: Tuple[str, ...]
+) -> Tuple[bool, Optional[str]]:
+    hay = " ".join([title or "", description or ""]).strip().lower()
+    if not hay:
+        return False, None
+    for kw in keywords:
+        if re.search(rf"\b{re.escape(kw)}\b", hay):
+            return True, f"keyword:{kw}"
+    return False, None
+
+
+def create_sparc_paper_mapping_tables(**_context) -> None:
+    ddl = """
+    ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;
+    CREATE INDEX IF NOT EXISTS idx_sparc_papers ON sparc_dataset (papers DESC);
+
+    CREATE TABLE IF NOT EXISTS papers (
+        paper_doi TEXT PRIMARY KEY,
+        openalex_id TEXT,
+        title TEXT,
+        authors JSONB,
+        publication_date TEXT,
+        publication_year INTEGER,
+        fulltext_cache_key TEXT,
+        fulltext_cached_at TIMESTAMPTZ,
+        fulltext_source TEXT,
+        fulltext_available BOOLEAN,
+        fulltext_reason TEXT,
+        source TEXT,
+        fetched_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS authors JSONB;
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS publication_date TEXT;
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS publication_year INTEGER;
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS fulltext_cache_key TEXT;
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS fulltext_cached_at TIMESTAMPTZ;
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS fulltext_source TEXT;
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS fulltext_available BOOLEAN;
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS fulltext_reason TEXT;
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS journal TEXT;
+    ALTER TABLE papers ADD COLUMN IF NOT EXISTS senior_author_country TEXT;
+
+    CREATE TABLE IF NOT EXISTS sparc_paper_resolution_runs (
+        run_id TEXT PRIMARY KEY,
+        started_at TIMESTAMPTZ,
+        finished_at TIMESTAMPTZ,
+        max_datasets_per_run INTEGER,
+        candidates_loaded INTEGER,
+        filtered_out INTEGER,
+        candidates_processed INTEGER,
+        resolved_mappings INTEGER,
+        unresolved_datasets INTEGER,
+        api_429_count INTEGER,
+        api_5xx_count INTEGER,
+        api_retry_count INTEGER,
+        api_throttled_sleep_seconds DOUBLE PRECISION,
+        output_path TEXT,
+        summary JSONB
+    );
+
+    CREATE TABLE IF NOT EXISTS sparc_paper_map (
+        id SERIAL PRIMARY KEY,
+        sparc_id VARCHAR(255) NOT NULL,
+        sparc_title TEXT,
+        paper_doi TEXT NOT NULL,
+        doi_source TEXT,
+        relation_type TEXT,
+        resolved_at TIMESTAMPTZ DEFAULT NOW(),
+        run_id TEXT,
+        UNIQUE (sparc_id, paper_doi),
+        FOREIGN KEY (paper_doi) REFERENCES papers(paper_doi) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sparc_paper_map_sparc_id ON sparc_paper_map(sparc_id);
+    CREATE INDEX IF NOT EXISTS idx_sparc_paper_map_paper_doi ON sparc_paper_map(paper_doi);
+    CREATE INDEX IF NOT EXISTS idx_papers_openalex_id ON papers(openalex_id);
+    CREATE INDEX IF NOT EXISTS idx_papers_publication_year ON papers(publication_year);
+
+    CREATE TABLE IF NOT EXISTS sparc_paper_citations (
+        id SERIAL PRIMARY KEY,
+        sparc_id VARCHAR(255) NOT NULL,
+        primary_paper_doi TEXT NOT NULL,
+        citing_paper_doi TEXT NOT NULL,
+        matched_primary_paper_doi TEXT,
+        matched_primary_openalex_id TEXT,
+        citation_source TEXT,
+        citing_publication_date TEXT,
+        citing_journal TEXT,
+        citing_senior_author_country TEXT,
+        citation_contexts JSONB,
+        contexts_extracted_at TIMESTAMPTZ,
+        resolved_at TIMESTAMPTZ DEFAULT NOW(),
+        run_id TEXT,
+        UNIQUE (sparc_id, primary_paper_doi, citing_paper_doi),
+        FOREIGN KEY (primary_paper_doi) REFERENCES papers(paper_doi) ON DELETE CASCADE,
+        FOREIGN KEY (citing_paper_doi) REFERENCES papers(paper_doi) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sparc_paper_citations_dataset ON sparc_paper_citations(sparc_id);
+    CREATE INDEX IF NOT EXISTS idx_sparc_paper_citations_primary ON sparc_paper_citations(primary_paper_doi);
+    CREATE INDEX IF NOT EXISTS idx_sparc_paper_citations_citing ON sparc_paper_citations(citing_paper_doi);
+
+    CREATE TABLE IF NOT EXISTS sparc_paper_citation_classifications (
+        id SERIAL PRIMARY KEY,
+        sparc_id VARCHAR(255) NOT NULL,
+        primary_paper_doi TEXT NOT NULL,
+        citing_paper_doi TEXT NOT NULL,
+        classification TEXT,
+        confidence INTEGER,
+        same_lab BOOLEAN,
+        same_lab_confidence INTEGER,
+        source_archive TEXT,
+        reasoning TEXT,
+        classification_model TEXT,
+        classified_at TIMESTAMPTZ,
+        status TEXT DEFAULT 'placeholder',
+        run_id TEXT,
+        UNIQUE (sparc_id, primary_paper_doi, citing_paper_doi),
+        FOREIGN KEY (primary_paper_doi) REFERENCES papers(paper_doi) ON DELETE CASCADE,
+        FOREIGN KEY (citing_paper_doi) REFERENCES papers(paper_doi) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sparc_paper_citation_classifications_dataset
+      ON sparc_paper_citation_classifications(sparc_id);
+
+    CREATE OR REPLACE VIEW sparc_dataset_papers AS
+    SELECT
+        d.dataset_id AS sparc_id,
+        d.title AS sparc_title,
+        ARRAY_AGG(m.paper_doi ORDER BY m.paper_doi) FILTER (WHERE m.paper_doi IS NOT NULL) AS paper_dois,
+        ARRAY_AGG(p.title ORDER BY m.paper_doi) FILTER (WHERE m.paper_doi IS NOT NULL) AS paper_titles
+    FROM sparc_dataset d
+    LEFT JOIN sparc_paper_map m ON d.dataset_id = m.sparc_id
+    LEFT JOIN papers p ON m.paper_doi = p.paper_doi
+    GROUP BY d.dataset_id, d.title;
+    """
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(ddl)
+        conn.commit()
+    logger.info("Ensured SPARC paper mapping tables/views exist.")
+
+
+def fetch_unmapped_sparc_ids(**context) -> Dict[str, Any]:
+    params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
+    include_already_mapped = bool(params.get("include_already_mapped", False))
+    max_cap = _parse_max_datasets_per_run(params.get("max_datasets_per_run", 50))
+    batch_size = _parse_batch_size(params.get("batch_size", 25), default=25)
+
+    exclude_kw_raw = params.get("exclude_keywords")
+    exclude_keywords = _TEST_DUMMY_KEYWORDS
+    if isinstance(exclude_kw_raw, str) and exclude_kw_raw.strip():
+        exclude_keywords = tuple([k.strip().lower() for k in exclude_kw_raw.split(",") if k.strip()])
+
+    base_where = ""
+    if not include_already_mapped:
+        base_where = """
+        WHERE NOT EXISTS (
+            SELECT 1 FROM sparc_paper_map m WHERE m.sparc_id = d.dataset_id
+        )
+        """
+
+    query = f"""
+    SELECT d.dataset_id, d.title, d.description, d.url, d.updated_at
+    FROM sparc_dataset d
+    {base_where}
+    ORDER BY d.updated_at DESC NULLS LAST, d.dataset_id ASC;
+    """
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            rows = cursor.fetchall()
+
+    filtered_counts: Dict[str, int] = {}
+    dataset_ids: List[str] = []
+    for (ds_id, title, description, _url, _updated_at) in rows:
+        filtered, reason = keyword_filter_dataset(title, description, exclude_keywords)
+        if filtered:
+            filtered_counts[reason or "filtered"] = filtered_counts.get(reason or "filtered", 0) + 1
+            continue
+        dataset_ids.append(str(ds_id))
+        if max_cap is not None and len(dataset_ids) >= max_cap:
+            break
+
+    raw_count = len(rows)
+    filtered_out = int(sum(filtered_counts.values()))
+
+    run_id_raw = (context.get("run_id") or (context.get("dag_run").run_id if context.get("dag_run") else "manual"))
+    run_id = _sanitize_run_id(str(run_id_raw))
+    output_dir = _get_output_root() / run_id
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO sparc_paper_resolution_runs (run_id, started_at, max_datasets_per_run, candidates_loaded, filtered_out, output_path, summary)
+                VALUES (%s, NOW(), %s, %s, %s, %s, %s)
+                ON CONFLICT (run_id) DO UPDATE SET started_at = EXCLUDED.started_at;
+                """,
+                (
+                    run_id,
+                    max_cap,
+                    raw_count,
+                    filtered_out,
+                    str(output_dir),
+                    json.dumps(
+                        {
+                            "filtered_counts": filtered_counts,
+                            "batch_size": batch_size,
+                            "include_already_mapped": include_already_mapped,
+                        }
+                    ),
+                ),
+            )
+        conn.commit()
+
+    logger.info(
+        "Selected %d SPARC dataset_ids (raw_loaded=%d filtered_out=%d max_cap=%s batch_size=%d include_already_mapped=%s)",
+        len(dataset_ids),
+        raw_count,
+        filtered_out,
+        max_cap if max_cap is not None else "ALL",
+        batch_size,
+        include_already_mapped,
+    )
+
+    return {
+        "run_id": run_id,
+        "output_dir": str(output_dir),
+        "raw_count": raw_count,
+        "filtered_out": filtered_out,
+        "filtered_counts": filtered_counts,
+        "dataset_ids": dataset_ids,
+        "selected_count": len(dataset_ids),
+        "max_datasets_per_run": max_cap,
+        "batch_size": batch_size,
+        "exclude_keywords": list(exclude_keywords),
+        "include_already_mapped": include_already_mapped,
+    }
+
+
+def build_batches(**context) -> List[Dict[str, Any]]:
+    ti = context["ti"]
+    payload: Dict[str, Any] = ti.xcom_pull(task_ids="fetch_unmapped_sparc_ids") or {}
+    dataset_ids: List[str] = payload.get("dataset_ids") or []
+    run_id: str = payload.get("run_id") or _sanitize_run_id(
+        str(context.get("run_id") or (context.get("dag_run").run_id if context.get("dag_run") else "manual"))
+    )
+    params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
+    batch_size = _parse_batch_size(params.get("batch_size", payload.get("batch_size", 25)), default=25)
+
+    batches: List[Dict[str, Any]] = []
+    for i in range(0, len(dataset_ids), batch_size):
+        batch_ids = dataset_ids[i : i + batch_size]
+        batches.append({"batch_index": int(i // batch_size), "dataset_ids": batch_ids, "run_id": run_id})
+    logger.info("Built %d batches (batch_size=%d total_ids=%d)", len(batches), batch_size, len(dataset_ids))
+    return batches
+
+
+def _persist_sparc_records(
+    *,
+    resolved: List[Dict[str, Any]],
+    unresolved: List[Dict[str, Any]],
+    run_id: str,
+    output_dir: Path,
+    params: Dict[str, Any],
+) -> Dict[str, Any]:
+    force_refresh_fulltext = bool(params.get("force_refresh_fulltext", False))
+    output_root = _get_output_root()
+
+    paper_upsert = """
+    INSERT INTO papers (
+        paper_doi, openalex_id, title, authors, publication_date, publication_year,
+        fulltext_cache_key, fulltext_cached_at, fulltext_source, fulltext_available, fulltext_reason,
+        source, journal, senior_author_country, fetched_at
+    )
+    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+    ON CONFLICT (paper_doi) DO UPDATE SET
+        openalex_id = COALESCE(EXCLUDED.openalex_id, papers.openalex_id),
+        title = COALESCE(EXCLUDED.title, papers.title),
+        authors = COALESCE(EXCLUDED.authors, papers.authors),
+        publication_date = COALESCE(EXCLUDED.publication_date, papers.publication_date),
+        publication_year = COALESCE(EXCLUDED.publication_year, papers.publication_year),
+        fulltext_cache_key = COALESCE(EXCLUDED.fulltext_cache_key, papers.fulltext_cache_key),
+        fulltext_cached_at = COALESCE(EXCLUDED.fulltext_cached_at, papers.fulltext_cached_at),
+        fulltext_source = COALESCE(EXCLUDED.fulltext_source, papers.fulltext_source),
+        fulltext_available = COALESCE(EXCLUDED.fulltext_available, papers.fulltext_available),
+        fulltext_reason = COALESCE(EXCLUDED.fulltext_reason, papers.fulltext_reason),
+        source = COALESCE(EXCLUDED.source, papers.source),
+        journal = COALESCE(EXCLUDED.journal, papers.journal),
+        senior_author_country = COALESCE(EXCLUDED.senior_author_country, papers.senior_author_country),
+        fetched_at = NOW();
+    """
+
+    map_upsert = """
+    INSERT INTO sparc_paper_map (sparc_id, sparc_title, paper_doi, doi_source, relation_type, resolved_at, run_id)
+    VALUES (%s, %s, %s, %s, %s, NOW(), %s)
+    ON CONFLICT (sparc_id, paper_doi) DO UPDATE SET
+        sparc_title = COALESCE(EXCLUDED.sparc_title, sparc_paper_map.sparc_title),
+        doi_source = COALESCE(EXCLUDED.doi_source, sparc_paper_map.doi_source),
+        relation_type = COALESCE(EXCLUDED.relation_type, sparc_paper_map.relation_type),
+        resolved_at = NOW(),
+        run_id = EXCLUDED.run_id;
+    """
+
+    inserted_papers = 0
+    inserted_maps = 0
+    papers_already_cached = 0
+    papers_fulltext_fetched = 0
+    papers_fulltext_unavailable = 0
+    fulltext_source_counts: Dict[str, int] = {}
+
+    processed_dois: set[str] = set()
+    processed_datasets: set[str] = set()
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            for rec in resolved:
+                doi = rec.get("paper_doi")
+                if not doi:
+                    continue
+                doi_norm = normalize_doi(doi)
+                if not doi_norm:
+                    continue
+                ds_id = rec.get("sparc_id")
+                if isinstance(ds_id, str) and ds_id:
+                    processed_datasets.add(ds_id)
+
+                if doi_norm not in processed_dois:
+                    processed_dois.add(doi_norm)
+                    cursor.execute(
+                        "SELECT fulltext_cache_key FROM papers WHERE paper_doi = %s",
+                        (doi_norm,),
+                    )
+                    row = cursor.fetchone()
+                    existing_cache_key = row[0] if row else None
+
+                    cache_key = existing_cache_key
+                    fulltext_cached_at = None
+                    fulltext_source = None
+                    fulltext_available = None
+                    fulltext_reason = None
+
+                    if existing_cache_key and not force_refresh_fulltext:
+                        papers_already_cached += 1
+                    else:
+                        cache_key = paper_cache_key_for_doi(doi_norm)
+                        if not cache_key:
+                            fulltext_available = False
+                            fulltext_source = "none"
+                            fulltext_reason = "invalid_doi"
+                            papers_fulltext_unavailable += 1
+                        else:
+                            tel = Telemetry()
+                            session = requests.Session()
+                            full_text, src, available, reason = fetch_fulltext_oa(
+                                session,
+                                doi_norm,
+                                telemetry=tel,
+                                min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
+                                max_retries=int(params.get("max_retries", 6)),
+                                backoff_seconds=float(params.get("backoff_seconds", 2.0)),
+                            )
+                            fulltext_source = src
+                            fulltext_available = bool(available)
+                            fulltext_reason = reason
+                            if available:
+                                papers_fulltext_fetched += 1
+                            else:
+                                papers_fulltext_unavailable += 1
+                            fulltext_source_counts[src] = fulltext_source_counts.get(src, 0) + 1
+
+                            cache_path = output_root / cache_key
+                            cache_path.parent.mkdir(parents=True, exist_ok=True)
+                            with open(cache_path, "w", encoding="utf-8") as f:
+                                json.dump(
+                                    {
+                                        "doi": doi_norm,
+                                        "title": rec.get("paper_title"),
+                                        "authors": rec.get("authors"),
+                                        "canonical_url": f"https://doi.org/{doi_norm}",
+                                        "openalex_id": rec.get("openalex_id"),
+                                        "paper_metadata_source": rec.get("paper_metadata_source"),
+                                        "full_text": full_text,
+                                        "full_text_source": src,
+                                        "full_text_available": bool(available),
+                                        "full_text_reason": reason,
+                                        "cached_at": _utc_now_iso(),
+                                    },
+                                    f,
+                                    ensure_ascii=False,
+                                )
+                            fulltext_cached_at = datetime.now(timezone.utc)
+
+                    cursor.execute(
+                        paper_upsert,
+                        (
+                            doi_norm,
+                            rec.get("openalex_id"),
+                            rec.get("paper_title"),
+                            json.dumps(rec.get("authors")) if rec.get("authors") is not None else None,
+                            rec.get("publication_date"),
+                            rec.get("publication_year"),
+                            cache_key,
+                            fulltext_cached_at,
+                            fulltext_source,
+                            fulltext_available,
+                            fulltext_reason,
+                            rec.get("paper_metadata_source"),
+                            rec.get("journal"),
+                            rec.get("senior_author_country"),
+                        ),
+                    )
+                    inserted_papers += 1
+
+                cursor.execute(
+                    map_upsert,
+                    (
+                        ds_id,
+                        rec.get("sparc_title"),
+                        doi_norm,
+                        rec.get("doi_source"),
+                        rec.get("relation_type"),
+                        run_id,
+                    ),
+                )
+                inserted_maps += 1
+
+            for u in unresolved:
+                ds_id = u.get("sparc_id")
+                if isinstance(ds_id, str) and ds_id:
+                    processed_datasets.add(ds_id)
+
+            if processed_datasets:
+                ds_ids = sorted(processed_datasets)
+                placeholders = ", ".join(["%s"] * len(ds_ids))
+                cursor.execute(f"UPDATE sparc_dataset SET papers = 0 WHERE dataset_id IN ({placeholders});", ds_ids)
+                cursor.execute(
+                    f"""
+                    UPDATE sparc_dataset d
+                    SET papers = sub.cnt
+                    FROM (
+                        SELECT sparc_id, COUNT(*)::int AS cnt
+                        FROM sparc_paper_map
+                        WHERE sparc_id IN ({placeholders})
+                        GROUP BY sparc_id
+                    ) sub
+                    WHERE d.dataset_id = sub.sparc_id;
+                    """,
+                    ds_ids,
+                )
+        conn.commit()
+
+    return {
+        "papers_upserted": inserted_papers,
+        "mappings_upserted": inserted_maps,
+        "unresolved_datasets": len(unresolved),
+        "unique_dois_processed": len(processed_dois),
+        "papers_already_cached": papers_already_cached,
+        "papers_fulltext_fetched": papers_fulltext_fetched,
+        "papers_fulltext_unavailable": papers_fulltext_unavailable,
+        "fulltext_source_counts": fulltext_source_counts,
+        "paper_cache_root": str(output_root),
+        "output_dir": str(output_dir),
+    }
+
+
+def _load_cached_text(cache_key: Optional[str]) -> Optional[str]:
+    if not isinstance(cache_key, str) or not cache_key.strip():
+        return None
+    cache_path = _get_output_root() / cache_key
+    if not cache_path.exists():
+        return None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        logger.debug("Failed reading cached paper text at %s", cache_path, exc_info=True)
+        return None
+    if isinstance(payload.get("full_text"), str) and payload.get("full_text").strip():
+        return payload.get("full_text")
+    if isinstance(payload.get("text"), str) and payload.get("text").strip():
+        return payload.get("text")
+    return None
+
+
+def _ensure_citing_paper_record(
+    *,
+    cursor: Any,
+    paper: Dict[str, Any],
+    params: Dict[str, Any],
+    output_root: Path,
+) -> Dict[str, Any]:
+    doi = normalize_doi(paper.get("doi"))
+    if not doi:
+        return {
+            "paper_upserted": False,
+            "already_cached": 0,
+            "fulltext_fetched": 0,
+            "fulltext_unavailable": 1,
+            "cache_key": None,
+        }
+
+    paper_upsert = """
+    INSERT INTO papers (
+        paper_doi, openalex_id, title, authors, publication_date, publication_year,
+        fulltext_cache_key, fulltext_cached_at, fulltext_source, fulltext_available, fulltext_reason,
+        source, journal, senior_author_country, fetched_at
+    )
+    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+    ON CONFLICT (paper_doi) DO UPDATE SET
+        openalex_id = COALESCE(EXCLUDED.openalex_id, papers.openalex_id),
+        title = COALESCE(EXCLUDED.title, papers.title),
+        authors = COALESCE(EXCLUDED.authors, papers.authors),
+        publication_date = COALESCE(EXCLUDED.publication_date, papers.publication_date),
+        publication_year = COALESCE(EXCLUDED.publication_year, papers.publication_year),
+        fulltext_cache_key = COALESCE(EXCLUDED.fulltext_cache_key, papers.fulltext_cache_key),
+        fulltext_cached_at = COALESCE(EXCLUDED.fulltext_cached_at, papers.fulltext_cached_at),
+        fulltext_source = COALESCE(EXCLUDED.fulltext_source, papers.fulltext_source),
+        fulltext_available = COALESCE(EXCLUDED.fulltext_available, papers.fulltext_available),
+        fulltext_reason = COALESCE(EXCLUDED.fulltext_reason, papers.fulltext_reason),
+        source = COALESCE(EXCLUDED.source, papers.source),
+        journal = COALESCE(EXCLUDED.journal, papers.journal),
+        senior_author_country = COALESCE(EXCLUDED.senior_author_country, papers.senior_author_country),
+        fetched_at = NOW();
+    """
+
+    force_refresh_fulltext = bool(params.get("force_refresh_fulltext", False))
+    cursor.execute("SELECT fulltext_cache_key FROM papers WHERE paper_doi = %s", (doi,))
+    row = cursor.fetchone()
+    existing_cache_key = row[0] if row else None
+
+    cache_key = existing_cache_key
+    fulltext_cached_at = None
+    fulltext_source = None
+    fulltext_available = None
+    fulltext_reason = None
+    already_cached = 0
+    fulltext_fetched = 0
+    fulltext_unavailable = 0
+
+    if existing_cache_key and not force_refresh_fulltext:
+        already_cached = 1
+    else:
+        cache_key = paper_cache_key_for_doi(doi)
+        if not cache_key:
+            fulltext_available = False
+            fulltext_source = "none"
+            fulltext_reason = "invalid_doi"
+            fulltext_unavailable = 1
+        else:
+            tel = Telemetry()
+            session = requests.Session()
+            full_text, src, available, reason = fetch_fulltext_oa(
+                session,
+                doi,
+                telemetry=tel,
+                min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
+                max_retries=int(params.get("max_retries", 6)),
+                backoff_seconds=float(params.get("backoff_seconds", 2.0)),
+            )
+            fulltext_source = src
+            fulltext_available = bool(available)
+            fulltext_reason = reason
+            if available:
+                fulltext_fetched = 1
+            else:
+                fulltext_unavailable = 1
+
+            cache_path = output_root / cache_key
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "doi": doi,
+                        "title": paper.get("title"),
+                        "authors": paper.get("authors"),
+                        "canonical_url": f"https://doi.org/{doi}",
+                        "openalex_id": paper.get("openalex_id"),
+                        "publication_date": paper.get("publication_date"),
+                        "publication_year": paper.get("publication_year"),
+                        "full_text": full_text,
+                        "text": full_text,
+                        "full_text_source": src,
+                        "full_text_available": bool(available),
+                        "full_text_reason": reason,
+                        "cached_at": _utc_now_iso(),
+                    },
+                    f,
+                    ensure_ascii=False,
+                )
+            fulltext_cached_at = datetime.now(timezone.utc)
+
+    cursor.execute(
+        paper_upsert,
+        (
+            doi,
+            paper.get("openalex_id"),
+            paper.get("title"),
+            json.dumps(paper.get("authors")) if paper.get("authors") is not None else None,
+            paper.get("publication_date"),
+            paper.get("publication_year"),
+            cache_key,
+            fulltext_cached_at,
+            fulltext_source,
+            fulltext_available,
+            fulltext_reason,
+            paper.get("source"),
+            paper.get("journal"),
+            paper.get("senior_author_country"),
+        ),
+    )
+    return {
+        "paper_upserted": True,
+        "already_cached": already_cached,
+        "fulltext_fetched": fulltext_fetched,
+        "fulltext_unavailable": fulltext_unavailable,
+        "cache_key": cache_key,
+    }
+
+
+def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str], run_id: str, **context) -> Dict[str, Any]:
+    params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
+    if not bool(params.get("enable_citation_enrichment", True)):
+        return {
+            "batch_index": batch_index,
+            "citation_edges_upserted": 0,
+            "citing_papers_upserted": 0,
+            "primary_papers_reviewed": 0,
+            "datasets_with_primary_papers": 0,
+            "already_cached": 0,
+            "fulltext_fetched": 0,
+            "fulltext_unavailable": 0,
+            "telemetry": {},
+        }
+
+    max_citing_papers_per_primary = max(int(params.get("max_citing_papers_per_primary", 10) or 0), 0)
+    if max_citing_papers_per_primary <= 0:
+        return {
+            "batch_index": batch_index,
+            "citation_edges_upserted": 0,
+            "citing_papers_upserted": 0,
+            "primary_papers_reviewed": 0,
+            "datasets_with_primary_papers": 0,
+            "already_cached": 0,
+            "fulltext_fetched": 0,
+            "fulltext_unavailable": 0,
+            "telemetry": {},
+        }
+
+    output_root = _get_output_root()
+    telemetry = Telemetry()
+    session = requests.Session()
+    dataset_rows: List[Dict[str, Any]] = []
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    d.dataset_id,
+                    d.created_at,
+                    m.paper_doi,
+                    p.openalex_id,
+                    p.title,
+                    p.authors,
+                    p.publication_date,
+                    p.publication_year
+                FROM sparc_dataset d
+                JOIN sparc_paper_map m ON m.sparc_id = d.dataset_id
+                LEFT JOIN papers p ON p.paper_doi = m.paper_doi
+                WHERE d.dataset_id = ANY(%s)
+                ORDER BY d.dataset_id, m.paper_doi;
+                """,
+                (dataset_ids,),
+            )
+            for row in cursor.fetchall():
+                dataset_rows.append(
+                    {
+                        "sparc_id": str(row[0]),
+                        "created_at": row[1],
+                        "paper_doi": row[2],
+                        "openalex_id": row[3],
+                        "paper_title": row[4],
+                        "authors": row[5],
+                        "publication_date": row[6],
+                        "publication_year": row[7],
+                    }
+                )
+
+    citation_upsert = """
+    INSERT INTO sparc_paper_citations (
+        sparc_id, primary_paper_doi, citing_paper_doi,
+        matched_primary_paper_doi, matched_primary_openalex_id, citation_source,
+        citing_publication_date, citing_journal, citing_senior_author_country,
+        resolved_at, run_id
+    )
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+    ON CONFLICT (sparc_id, primary_paper_doi, citing_paper_doi) DO UPDATE SET
+        matched_primary_paper_doi = COALESCE(EXCLUDED.matched_primary_paper_doi, sparc_paper_citations.matched_primary_paper_doi),
+        matched_primary_openalex_id = COALESCE(EXCLUDED.matched_primary_openalex_id, sparc_paper_citations.matched_primary_openalex_id),
+        citation_source = COALESCE(EXCLUDED.citation_source, sparc_paper_citations.citation_source),
+        citing_publication_date = COALESCE(EXCLUDED.citing_publication_date, sparc_paper_citations.citing_publication_date),
+        citing_journal = COALESCE(EXCLUDED.citing_journal, sparc_paper_citations.citing_journal),
+        citing_senior_author_country = COALESCE(EXCLUDED.citing_senior_author_country, sparc_paper_citations.citing_senior_author_country),
+        resolved_at = NOW(),
+        run_id = EXCLUDED.run_id;
+    """
+
+    metrics = {
+        "citation_edges_upserted": 0,
+        "citing_papers_upserted": 0,
+        "primary_papers_reviewed": 0,
+        "datasets_with_primary_papers": 0,
+        "already_cached": 0,
+        "fulltext_fetched": 0,
+        "fulltext_unavailable": 0,
+    }
+    seen_datasets: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            for rec in dataset_rows:
+                sparc_id = rec["sparc_id"]
+                primary_doi = normalize_doi(rec.get("paper_doi"))
+                created_at = rec.get("created_at")
+                if not primary_doi or not created_at:
+                    continue
+                seen_datasets.add(sparc_id)
+                metrics["primary_papers_reviewed"] += 1
+                after_date = created_at.date().isoformat()
+
+                openalex_id = rec.get("openalex_id")
+                publication_date = rec.get("publication_date")
+                publication_year = rec.get("publication_year")
+                authors = rec.get("authors")
+                title = rec.get("paper_title")
+
+                if not openalex_id or not publication_date or not publication_year:
+                    extra = get_openalex_paper_data(
+                        session,
+                        primary_doi,
+                        telemetry=telemetry,
+                        min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
+                        max_retries=int(params.get("max_retries", 6)),
+                        backoff_seconds=float(params.get("backoff_seconds", 2.0)),
+                    )
+                    openalex_id = openalex_id or extra.get("openalex_id")
+                    publication_date = publication_date or extra.get("publication_date")
+                    publication_year = publication_year or extra.get("publication_year")
+                    title = title or extra.get("title")
+                    authors = authors or extra.get("authors")
+                    if extra.get("openalex_id") or extra.get("publication_date") or extra.get("publication_year"):
+                        cursor.execute(
+                            """
+                            UPDATE papers
+                            SET
+                                openalex_id = COALESCE(%s, openalex_id),
+                                title = COALESCE(%s, title),
+                                authors = COALESCE(%s::jsonb, authors),
+                                publication_date = COALESCE(%s, publication_date),
+                                publication_year = COALESCE(%s, publication_year),
+                                fetched_at = NOW()
+                            WHERE paper_doi = %s;
+                            """,
+                            (
+                                openalex_id,
+                                title,
+                                json.dumps(authors) if authors is not None else None,
+                                publication_date,
+                                publication_year,
+                                primary_doi,
+                            ),
+                        )
+                        conn.commit()
+
+                primary_versions: List[Tuple[str, str]] = []
+                if isinstance(openalex_id, str) and openalex_id.strip():
+                    primary_versions.append((primary_doi, openalex_id))
+
+                alternate_doi = get_alternate_doi(
+                    session,
+                    primary_doi,
+                    telemetry=telemetry,
+                    min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
+                    max_retries=int(params.get("max_retries", 6)),
+                    backoff_seconds=float(params.get("backoff_seconds", 2.0)),
+                )
+                if alternate_doi and alternate_doi != primary_doi:
+                    alt_extra = get_openalex_paper_data(
+                        session,
+                        alternate_doi,
+                        telemetry=telemetry,
+                        min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
+                        max_retries=int(params.get("max_retries", 6)),
+                        backoff_seconds=float(params.get("backoff_seconds", 2.0)),
+                    )
+                    if isinstance(alt_extra.get("openalex_id"), str) and alt_extra.get("openalex_id"):
+                        primary_versions.append((alternate_doi, alt_extra.get("openalex_id")))
+
+                dedup_versions: List[Tuple[str, str]] = []
+                seen_versions: set[str] = set()
+                for matched_doi, matched_openalex_id in primary_versions:
+                    key = f"{matched_doi}|{matched_openalex_id}"
+                    if key in seen_versions:
+                        continue
+                    seen_versions.add(key)
+                    dedup_versions.append((matched_doi, matched_openalex_id))
+
+                for matched_primary_doi, matched_primary_openalex_id in dedup_versions:
+                    citing_papers = get_citing_papers(
+                        session,
+                        matched_primary_openalex_id,
+                        after_date,
+                        telemetry=telemetry,
+                        max_results=max_citing_papers_per_primary,
+                        min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
+                        max_retries=int(params.get("max_retries", 6)),
+                        backoff_seconds=float(params.get("backoff_seconds", 2.0)),
+                    )
+                    for citing in citing_papers:
+                        citing_doi = normalize_doi(citing.get("doi"))
+                        if not citing_doi:
+                            continue
+                        edge_key = (sparc_id, primary_doi, citing_doi)
+                        if edge_key in seen_edges:
+                            continue
+                        seen_edges.add(edge_key)
+
+                        cache_metrics = _ensure_citing_paper_record(
+                            cursor=cursor,
+                            paper={
+                                "doi": citing_doi,
+                                "openalex_id": citing.get("openalex_id"),
+                                "title": citing.get("title"),
+                                "authors": citing.get("authors"),
+                                "publication_date": citing.get("publication_date"),
+                                "publication_year": citing.get("publication_year"),
+                                "source": "openalex_citation",
+                            },
+                            params=params,
+                            output_root=output_root,
+                        )
+                        metrics["citing_papers_upserted"] += int(bool(cache_metrics.get("paper_upserted")))
+                        metrics["already_cached"] += int(cache_metrics.get("already_cached", 0))
+                        metrics["fulltext_fetched"] += int(cache_metrics.get("fulltext_fetched", 0))
+                        metrics["fulltext_unavailable"] += int(cache_metrics.get("fulltext_unavailable", 0))
+                        conn.commit()
+
+                        cursor.execute(
+                            citation_upsert,
+                            (
+                                sparc_id,
+                                primary_doi,
+                                citing_doi,
+                                matched_primary_doi,
+                                matched_primary_openalex_id,
+                                citing.get("citation_source"),
+                                citing.get("publication_date"),
+                                citing.get("journal"),
+                                citing.get("senior_author_country"),
+                                run_id,
+                            ),
+                        )
+                        metrics["citation_edges_upserted"] += 1
+                        conn.commit()
+        conn.commit()
+
+    metrics["datasets_with_primary_papers"] = len(seen_datasets)
+    return {"batch_index": batch_index, **metrics, "telemetry": telemetry.to_dict()}
+
+
+def extract_and_persist_citation_contexts_batch(*, batch_index: int, dataset_ids: List[str], run_id: str, **context) -> Dict[str, Any]:
+    params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
+    if not bool(params.get("enable_citation_enrichment", True)):
+        return {
+            "batch_index": batch_index,
+            "citation_edges_seen": 0,
+            "citation_edges_updated": 0,
+            "citation_contexts_extracted": 0,
+            "citation_contexts_missing_text": 0,
+            "telemetry": {},
+        }
+
+    force_refresh = bool(params.get("force_refresh_citation_contexts", False))
+    context_chars = int(params.get("citation_context_chars", 500) or 500)
+    telemetry = Telemetry()
+    session = requests.Session()
+    rows: List[Dict[str, Any]] = []
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    c.sparc_id,
+                    c.primary_paper_doi,
+                    c.citing_paper_doi,
+                    c.contexts_extracted_at,
+                    p_primary.title,
+                    p_primary.authors,
+                    p_primary.publication_year,
+                    p_citing.fulltext_cache_key
+                FROM sparc_paper_citations c
+                LEFT JOIN papers p_primary ON p_primary.paper_doi = c.primary_paper_doi
+                LEFT JOIN papers p_citing ON p_citing.paper_doi = c.citing_paper_doi
+                WHERE c.sparc_id = ANY(%s)
+                ORDER BY c.sparc_id, c.primary_paper_doi, c.citing_paper_doi;
+                """,
+                (dataset_ids,),
+            )
+            for row in cursor.fetchall():
+                rows.append(
+                    {
+                        "sparc_id": row[0],
+                        "primary_paper_doi": row[1],
+                        "citing_paper_doi": row[2],
+                        "contexts_extracted_at": row[3],
+                        "primary_title": row[4],
+                        "primary_authors": row[5],
+                        "primary_publication_year": row[6],
+                        "fulltext_cache_key": row[7],
+                    }
+                )
+
+    metrics = {
+        "citation_edges_seen": 0,
+        "citation_edges_updated": 0,
+        "citation_contexts_extracted": 0,
+        "citation_contexts_missing_text": 0,
+    }
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            for rec in rows:
+                metrics["citation_edges_seen"] += 1
+                if rec.get("contexts_extracted_at") and not force_refresh:
+                    continue
+                citing_text = _load_cached_text(rec.get("fulltext_cache_key"))
+                contexts: List[Dict[str, Any]] = []
+                if citing_text:
+                    contexts = find_citation_contexts(
+                        citing_text,
+                        rec["primary_paper_doi"],
+                        cited_title=rec.get("primary_title"),
+                        cited_authors=rec.get("primary_authors") if isinstance(rec.get("primary_authors"), list) else None,
+                        cited_year=rec.get("primary_publication_year") if isinstance(rec.get("primary_publication_year"), int) else None,
+                        context_chars=context_chars,
+                        session=session,
+                        telemetry=telemetry,
+                        min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
+                        max_retries=int(params.get("max_retries", 6)),
+                        backoff_seconds=float(params.get("backoff_seconds", 2.0)),
+                    )
+                    metrics["citation_contexts_extracted"] += len(contexts)
+                else:
+                    metrics["citation_contexts_missing_text"] += 1
+
+                cursor.execute(
+                    """
+                    UPDATE sparc_paper_citations
+                    SET
+                        citation_contexts = %s::jsonb,
+                        contexts_extracted_at = NOW(),
+                        run_id = %s
+                    WHERE sparc_id = %s
+                      AND primary_paper_doi = %s
+                      AND citing_paper_doi = %s;
+                    """,
+                    (
+                        json.dumps(contexts),
+                        run_id,
+                        rec["sparc_id"],
+                        rec["primary_paper_doi"],
+                        rec["citing_paper_doi"],
+                    ),
+                )
+                metrics["citation_edges_updated"] += 1
+        conn.commit()
+
+    return {"batch_index": batch_index, **metrics, "telemetry": telemetry.to_dict()}
+
+
+def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_id: str, **context) -> Dict[str, Any]:
+    params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
+    min_interval_seconds = float(params.get("min_api_interval_seconds", 0.2))
+    max_retries = min(int(params.get("max_retries", 6)), 12)
+    backoff_seconds = min(float(params.get("backoff_seconds", 2.0)), 10.0)
+
+    output_dir = _get_output_root() / run_id
+
+    meta_by_id: Dict[str, Dict[str, Any]] = {}
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT dataset_id, title, description, url, updated_at
+                FROM sparc_dataset
+                WHERE dataset_id = ANY(%s);
+                """,
+                (dataset_ids,),
+            )
+            for (ds_id, title, description, url, updated_at) in cursor.fetchall():
+                meta_by_id[str(ds_id)] = {
+                    "dataset_id": str(ds_id),
+                    "title": title,
+                    "description": description,
+                    "url": url,
+                    "updated_at": updated_at.isoformat() if updated_at else None,
+                }
+
+    resolved: List[Dict[str, Any]] = []
+    unresolved: List[Dict[str, Any]] = []
+    telemetry = {
+        "api_429_count": 0,
+        "api_5xx_count": 0,
+        "api_retry_count": 0,
+        "throttled_count": 0,
+        "throttled_sleep_seconds": 0.0,
+        "total_requests": 0,
+    }
+
+    for i, ds_id in enumerate(dataset_ids, start=1):
+        meta = meta_by_id.get(str(ds_id))
+        if not meta:
+            unresolved.append({"sparc_id": str(ds_id), "sparc_title": None, "reason": "missing_in_db", "error": None})
+            continue
+
+        title = meta.get("title")
+        desc = meta.get("description")
+        url = meta.get("url")
+        logger.info("Batch %d: processing %d/%d sparc=%s title=%r", batch_index, i, len(dataset_ids), ds_id, (title or "")[:120])
+        try:
+            result: SparcPaperResolutionResult = resolve_papers_for_sparc_dataset(
+                dataset_id=str(ds_id),
+                dataset_title=title,
+                dataset_description=desc,
+                dataset_url=url,
+                min_interval_seconds=min_interval_seconds,
+                max_retries=max_retries,
+                backoff_seconds=backoff_seconds,
+            )
+            for k in telemetry.keys():
+                telemetry[k] += result.telemetry.get(k, 0)  # type: ignore[operator]
+
+            if not result.papers:
+                unresolved.append({"sparc_id": str(ds_id), "sparc_title": title, "reason": result.reason or "no_papers_found", "error": result.error})
+            else:
+                for p in result.papers:
+                    resolved.append(
+                        {
+                            "sparc_id": str(ds_id),
+                            "sparc_title": title,
+                            "paper_doi": p.get("doi"),
+                            "paper_title": p.get("title"),
+                            "openalex_id": p.get("openalex_id"),
+                            "authors": p.get("authors"),
+                            "publication_date": p.get("publication_date"),
+                            "publication_year": p.get("publication_year"),
+                            "doi_source": p.get("source"),
+                            "paper_metadata_source": p.get("paper_metadata_source"),
+                            "relation_type": p.get("relation_type"),
+                            "journal": p.get("journal"),
+                            "senior_author_country": p.get("senior_author_country"),
+                            "resolved_at": _utc_now_iso(),
+                            "run_id": run_id,
+                        }
+                    )
+        except Exception as e:
+            unresolved.append({"sparc_id": str(ds_id), "sparc_title": title, "reason": "exception", "error": str(e)})
+            logger.exception("Batch %d: exception resolving papers for sparc %s", batch_index, ds_id)
+
+    persist_metrics = _persist_sparc_records(
+        resolved=resolved,
+        unresolved=unresolved,
+        run_id=run_id,
+        output_dir=output_dir,
+        params=params,
+    )
+
+    return {
+        "batch_index": batch_index,
+        "datasets_processed": len(dataset_ids),
+        "resolved_mappings": len(resolved),
+        "unresolved_datasets": len(unresolved),
+        "telemetry": telemetry,
+        **persist_metrics,
+    }
+
+
+def summarize_run(**context) -> None:
+    ti = context["ti"]
+    seed: Dict[str, Any] = ti.xcom_pull(task_ids="fetch_unmapped_sparc_ids") or {}
+    run_id = seed.get("run_id") or _sanitize_run_id(
+        str(context.get("run_id") or (context.get("dag_run").run_id if context.get("dag_run") else "manual"))
+    )
+    output_dir = seed.get("output_dir")
+    params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
+    write_run_artifacts = bool(params.get("write_run_artifacts", False))
+
+    batch_results = ti.xcom_pull(task_ids="resolve_and_persist_batch") or []
+    if isinstance(batch_results, dict):
+        batch_results = [batch_results]
+    if not isinstance(batch_results, list):
+        batch_results = []
+
+    totals = {
+        "batches": 0,
+        "datasets_processed": 0,
+        "resolved_mappings": 0,
+        "unresolved_datasets": 0,
+        "papers_upserted": 0,
+        "mappings_upserted": 0,
+        "unique_dois_processed": 0,
+        "papers_already_cached": 0,
+        "papers_fulltext_fetched": 0,
+        "papers_fulltext_unavailable": 0,
+        "fulltext_source_counts": {},
+        "citation_edges_upserted": 0,
+        "citing_papers_upserted": 0,
+        "datasets_with_primary_papers": 0,
+        "citation_edges_seen": 0,
+        "citation_edges_updated": 0,
+        "citation_contexts_extracted": 0,
+        "citation_contexts_missing_text": 0,
+    }
+    telemetry_totals = {
+        "api_429_count": 0,
+        "api_5xx_count": 0,
+        "api_retry_count": 0,
+        "throttled_count": 0,
+        "throttled_sleep_seconds": 0.0,
+        "total_requests": 0,
+    }
+
+    for r in batch_results:
+        if not isinstance(r, dict):
+            continue
+        totals["batches"] += 1
+        totals["datasets_processed"] += int(r.get("datasets_processed", 0) or 0)
+        totals["resolved_mappings"] += int(r.get("resolved_mappings", 0) or 0)
+        totals["unresolved_datasets"] += int(r.get("unresolved_datasets", 0) or 0)
+        totals["papers_upserted"] += int(r.get("papers_upserted", 0) or 0)
+        totals["mappings_upserted"] += int(r.get("mappings_upserted", 0) or 0)
+        totals["unique_dois_processed"] += int(r.get("unique_dois_processed", 0) or 0)
+        totals["papers_already_cached"] += int(r.get("papers_already_cached", 0) or 0)
+        totals["papers_fulltext_fetched"] += int(r.get("papers_fulltext_fetched", 0) or 0)
+        totals["papers_fulltext_unavailable"] += int(r.get("papers_fulltext_unavailable", 0) or 0)
+
+        ft = r.get("fulltext_source_counts") or {}
+        if isinstance(ft, dict):
+            for k, v in ft.items():
+                try:
+                    totals["fulltext_source_counts"][k] = totals["fulltext_source_counts"].get(k, 0) + int(v)
+                except Exception:
+                    continue
+
+        tel = r.get("telemetry") or {}
+        if isinstance(tel, dict):
+            for k in telemetry_totals.keys():
+                telemetry_totals[k] += tel.get(k, 0)  # type: ignore[operator]
+
+    citation_results = ti.xcom_pull(task_ids="fetch_and_persist_citations_batch") or []
+    if isinstance(citation_results, dict):
+        citation_results = [citation_results]
+    if not isinstance(citation_results, list):
+        citation_results = []
+    for r in citation_results:
+        if not isinstance(r, dict):
+            continue
+        totals["citation_edges_upserted"] += int(r.get("citation_edges_upserted", 0) or 0)
+        totals["citing_papers_upserted"] += int(r.get("citing_papers_upserted", 0) or 0)
+        totals["datasets_with_primary_papers"] += int(r.get("datasets_with_primary_papers", 0) or 0)
+        tel = r.get("telemetry") or {}
+        if isinstance(tel, dict):
+            for k in telemetry_totals.keys():
+                telemetry_totals[k] += tel.get(k, 0)  # type: ignore[operator]
+
+    context_results = ti.xcom_pull(task_ids="extract_and_persist_citation_contexts_batch") or []
+    if isinstance(context_results, dict):
+        context_results = [context_results]
+    if not isinstance(context_results, list):
+        context_results = []
+    for r in context_results:
+        if not isinstance(r, dict):
+            continue
+        totals["citation_edges_seen"] += int(r.get("citation_edges_seen", 0) or 0)
+        totals["citation_edges_updated"] += int(r.get("citation_edges_updated", 0) or 0)
+        totals["citation_contexts_extracted"] += int(r.get("citation_contexts_extracted", 0) or 0)
+        totals["citation_contexts_missing_text"] += int(r.get("citation_contexts_missing_text", 0) or 0)
+        tel = r.get("telemetry") or {}
+        if isinstance(tel, dict):
+            for k in telemetry_totals.keys():
+                telemetry_totals[k] += tel.get(k, 0)  # type: ignore[operator]
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE sparc_paper_resolution_runs
+                SET
+                    finished_at = NOW(),
+                    candidates_processed = %s,
+                    resolved_mappings = %s,
+                    unresolved_datasets = %s,
+                    api_429_count = %s,
+                    api_5xx_count = %s,
+                    api_retry_count = %s,
+                    api_throttled_sleep_seconds = %s,
+                    output_path = %s,
+                    summary = %s
+                WHERE run_id = %s;
+                """,
+                (
+                    int(totals["datasets_processed"]),
+                    int(totals["resolved_mappings"]),
+                    int(totals["unresolved_datasets"]),
+                    int(telemetry_totals.get("api_429_count", 0)),
+                    int(telemetry_totals.get("api_5xx_count", 0)),
+                    int(telemetry_totals.get("api_retry_count", 0)),
+                    float(telemetry_totals.get("throttled_sleep_seconds", 0.0)),
+                    str(output_dir),
+                    json.dumps({"seed": seed, "totals": totals, "telemetry": telemetry_totals}),
+                    run_id,
+                ),
+            )
+        conn.commit()
+
+    if write_run_artifacts:
+        try:
+            out_dir = Path(str(output_dir)) if output_dir else (_get_output_root() / run_id)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            summary_path = out_dir / "summary.json"
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {"seed": seed, "totals": totals, "telemetry": telemetry_totals},
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            logger.info("Wrote run artifacts: %s", str(summary_path))
+        except Exception:
+            logger.debug("Failed to write run artifacts (write_run_artifacts=true).", exc_info=True)
+
+    logger.info(
+        "\n".join(
+            [
+                "SPARC paper mapping run summary",
+                f"- run_id: {run_id}",
+                f"- batches: {totals['batches']}",
+                f"- datasets reviewed: {totals['datasets_processed']} (raw_loaded={seed.get('raw_count')}, filtered_out={seed.get('filtered_out')})",
+                f"- mappings persisted: {totals['mappings_upserted']} (resolved_records={totals['resolved_mappings']}, unresolved={totals['unresolved_datasets']})",
+                f"- unique papers processed: {totals['unique_dois_processed']}",
+                f"- fulltext: fetched={totals['papers_fulltext_fetched']} unavailable={totals['papers_fulltext_unavailable']} already_cached={totals['papers_already_cached']}",
+                f"- fulltext sources: {totals['fulltext_source_counts']}",
+                f"- citation edges: upserted={totals['citation_edges_upserted']} context_edges_updated={totals['citation_edges_updated']}",
+                f"- citing papers upserted: {totals['citing_papers_upserted']} (datasets_with_primary_papers={totals['datasets_with_primary_papers']})",
+                f"- citation contexts: extracted={totals['citation_contexts_extracted']} missing_text={totals['citation_contexts_missing_text']}",
+                f"- telemetry: {telemetry_totals}",
+                f"- cache root: {_get_output_root()}",
+                f"- run output dir: {output_dir}",
+            ]
+        )
+    )
+
+
+dag = DAG(
+    "sparc_paper_mapping",
+    default_args=default_args,
+    description="Resolve SPARC dataset -> paper DOI/title mappings (Pennsieve externalPublications)",
+    schedule="@daily",
+    catchup=False,
+    tags=["datasets", "sparc", "papers", "mapping"],
+    is_paused_upon_creation=False,
+    params={
+        "max_datasets_per_run": 50,
+        "batch_size": 25,
+        "include_already_mapped": False,
+        "min_api_interval_seconds": 0.2,
+        "max_retries": 6,
+        "backoff_seconds": 2.0,
+        "force_refresh_fulltext": False,
+        "write_run_artifacts": False,
+        "enable_citation_enrichment": True,
+        "max_citing_papers_per_primary": 10,
+        "citation_context_chars": 500,
+        "force_refresh_citation_contexts": False,
+    },
+)
+
+create_tables_task = PythonOperator(
+    task_id="create_sparc_paper_mapping_tables",
+    python_callable=create_sparc_paper_mapping_tables,
+    dag=dag,
+)
+
+fetch_ids_task = PythonOperator(
+    task_id="fetch_unmapped_sparc_ids",
+    python_callable=fetch_unmapped_sparc_ids,
+    dag=dag,
+)
+
+build_batches_task = PythonOperator(
+    task_id="build_batches",
+    python_callable=build_batches,
+    dag=dag,
+)
+
+if XComArg is None:  # pragma: no cover
+    raise RuntimeError(
+        "Dynamic task mapping requires XComArg (airflow.models.xcom_arg). "
+        "Upgrade Airflow or update imports to enable mapped batch execution."
+    )
+
+resolve_and_persist_batch_task = (
+    PythonOperator.partial(
+        task_id="resolve_and_persist_batch",
+        python_callable=resolve_and_persist_batch,
+        pool="dandi_paper_api_pool",
+        dag=dag,
+    ).expand(op_kwargs=XComArg(build_batches_task))
+)
+
+fetch_and_persist_citations_batch_task = (
+    PythonOperator.partial(
+        task_id="fetch_and_persist_citations_batch",
+        python_callable=fetch_and_persist_citations_batch,
+        pool="dandi_paper_api_pool",
+        dag=dag,
+    ).expand(op_kwargs=XComArg(build_batches_task))
+)
+
+extract_and_persist_citation_contexts_batch_task = (
+    PythonOperator.partial(
+        task_id="extract_and_persist_citation_contexts_batch",
+        python_callable=extract_and_persist_citation_contexts_batch,
+        dag=dag,
+    ).expand(op_kwargs=XComArg(build_batches_task))
+)
+
+summarize_task = PythonOperator(
+    task_id="summarize_run",
+    python_callable=summarize_run,
+    dag=dag,
+)
+
+create_tables_task >> fetch_ids_task >> build_batches_task >> resolve_and_persist_batch_task
+resolve_and_persist_batch_task >> fetch_and_persist_citations_batch_task >> extract_and_persist_citation_contexts_batch_task >> summarize_task

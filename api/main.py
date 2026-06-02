@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="NeuroD3 API", version="1.0.0")
 
 # Allowed filter values
-ALLOWED_SOURCES = {"DANDI", "Kaggle", "OpenNeuro", "PhysioNet"}
-ALLOWED_PAPER_MAPPING_SOURCES = {"DANDI", "OpenNeuro"}
+ALLOWED_SOURCES = {"CRCNS", "DANDI", "Kaggle", "OpenNeuro", "PhysioNet", "SPARC"}
+ALLOWED_PAPER_MAPPING_SOURCES = {"CRCNS", "DANDI", "OpenNeuro", "SPARC"}
 
 # CORS configuration to allow frontend to access the API
 app.add_middleware(
@@ -137,8 +137,162 @@ def _ensure_paper_mapping_tables(cursor) -> None:
         )
 
 
-def _paper_mapping_ctes() -> str:
-    return """
+def _paper_mapping_ctes(cursor=None) -> str:
+    """Build the WITH … CTEs that union per-source paper-mapping tables.
+
+    If a cursor is provided, CRCNS and SPARC branches are appended only when
+    the corresponding tables exist (their ingestion / paper-mapping DAGs may
+    not yet have run on every deployment). When no cursor is supplied we
+    omit them to preserve the original DANDI/OpenNeuro-only behavior.
+    """
+    has_crcns_dataset = bool(cursor) and _paper_mapping_relation_exists(cursor, "crcns_dataset")
+    has_crcns_map = bool(cursor) and _paper_mapping_relation_exists(cursor, "crcns_paper_map")
+    has_crcns_citations = bool(cursor) and _paper_mapping_relation_exists(cursor, "crcns_paper_citations")
+    has_crcns_classifications = bool(cursor) and _paper_mapping_relation_exists(
+        cursor, "crcns_paper_citation_classifications"
+    )
+    has_sparc_dataset = bool(cursor) and _paper_mapping_relation_exists(cursor, "sparc_dataset")
+    has_sparc_map = bool(cursor) and _paper_mapping_relation_exists(cursor, "sparc_paper_map")
+    has_sparc_citations = bool(cursor) and _paper_mapping_relation_exists(cursor, "sparc_paper_citations")
+    has_sparc_classifications = bool(cursor) and _paper_mapping_relation_exists(
+        cursor, "sparc_paper_citation_classifications"
+    )
+
+    crcns_dataset_branch = """
+        UNION ALL
+        SELECT
+            'CRCNS'::text AS source,
+            d.dataset_id::text AS dataset_id,
+            d.title AS dataset_title,
+            d.description AS dataset_description,
+            d.modality AS modality,
+            d.papers AS papers_count,
+            d.created_at,
+            d.updated_at,
+            d.url
+        FROM crcns_dataset d
+    """ if has_crcns_dataset else ""
+
+    crcns_map_branch = """
+        UNION ALL
+        SELECT
+            'CRCNS'::text AS source,
+            m.crcns_id::text AS dataset_id,
+            m.crcns_title AS dataset_title,
+            m.paper_doi,
+            m.doi_source,
+            m.relation_type,
+            m.resolved_at,
+            m.run_id
+        FROM crcns_paper_map m
+    """ if has_crcns_map else ""
+
+    crcns_citations_branch = """
+        UNION ALL
+        SELECT
+            'CRCNS'::text AS source,
+            c.crcns_id::text AS dataset_id,
+            c.primary_paper_doi,
+            c.citing_paper_doi,
+            c.matched_primary_paper_doi,
+            c.matched_primary_openalex_id,
+            c.citation_source,
+            c.citing_publication_date,
+            c.citation_contexts,
+            c.contexts_extracted_at,
+            c.resolved_at,
+            c.run_id
+        FROM crcns_paper_citations c
+    """ if has_crcns_citations else ""
+
+    crcns_classifications_branch = """
+        UNION ALL
+        SELECT
+            'CRCNS'::text AS source,
+            c.crcns_id::text AS dataset_id,
+            c.primary_paper_doi,
+            c.citing_paper_doi,
+            c.classification,
+            c.same_lab,
+            c.confidence,
+            c.status,
+            c.same_lab_confidence,
+            c.source_archive,
+            c.reasoning,
+            c.classification_model,
+            c.classified_at,
+            c.run_id
+        FROM crcns_paper_citation_classifications c
+    """ if has_crcns_classifications else ""
+
+    sparc_dataset_branch = """
+        UNION ALL
+        SELECT
+            'SPARC'::text AS source,
+            d.dataset_id::text AS dataset_id,
+            d.title AS dataset_title,
+            d.description AS dataset_description,
+            d.modality AS modality,
+            d.papers AS papers_count,
+            d.created_at,
+            d.updated_at,
+            d.url
+        FROM sparc_dataset d
+    """ if has_sparc_dataset else ""
+
+    sparc_map_branch = """
+        UNION ALL
+        SELECT
+            'SPARC'::text AS source,
+            m.sparc_id::text AS dataset_id,
+            m.sparc_title AS dataset_title,
+            m.paper_doi,
+            m.doi_source,
+            m.relation_type,
+            m.resolved_at,
+            m.run_id
+        FROM sparc_paper_map m
+    """ if has_sparc_map else ""
+
+    sparc_citations_branch = """
+        UNION ALL
+        SELECT
+            'SPARC'::text AS source,
+            c.sparc_id::text AS dataset_id,
+            c.primary_paper_doi,
+            c.citing_paper_doi,
+            c.matched_primary_paper_doi,
+            c.matched_primary_openalex_id,
+            c.citation_source,
+            c.citing_publication_date,
+            c.citation_contexts,
+            c.contexts_extracted_at,
+            c.resolved_at,
+            c.run_id
+        FROM sparc_paper_citations c
+    """ if has_sparc_citations else ""
+
+    sparc_classifications_branch = """
+        UNION ALL
+        SELECT
+            'SPARC'::text AS source,
+            c.sparc_id::text AS dataset_id,
+            c.primary_paper_doi,
+            c.citing_paper_doi,
+            c.classification,
+            c.same_lab,
+            c.confidence,
+            c.status,
+            c.same_lab_confidence,
+            c.source_archive,
+            c.reasoning,
+            c.classification_model,
+            c.classified_at,
+            c.run_id
+        FROM sparc_paper_citation_classifications c
+    """ if has_sparc_classifications else ""
+
+    return f"""
     WITH dataset_base AS (
         SELECT
             'DANDI'::text AS source,
@@ -163,6 +317,8 @@ def _paper_mapping_ctes() -> str:
             d.updated_at,
             d.url
         FROM openneuro_dataset d
+        {crcns_dataset_branch}
+        {sparc_dataset_branch}
     ),
     dataset_map AS (
         SELECT
@@ -186,6 +342,8 @@ def _paper_mapping_ctes() -> str:
             m.resolved_at,
             m.run_id
         FROM openneuro_paper_map m
+        {crcns_map_branch}
+        {sparc_map_branch}
     ),
     citation_edges AS (
         SELECT
@@ -217,6 +375,8 @@ def _paper_mapping_ctes() -> str:
             c.resolved_at,
             c.run_id
         FROM openneuro_paper_citations c
+        {crcns_citations_branch}
+        {sparc_citations_branch}
     ),
     citation_classifications AS (
         SELECT
@@ -252,6 +412,8 @@ def _paper_mapping_ctes() -> str:
             c.classified_at,
             c.run_id
         FROM openneuro_paper_citation_classifications c
+        {crcns_classifications_branch}
+        {sparc_classifications_branch}
     )
     """
 
@@ -334,7 +496,7 @@ async def health_check():
 
 @app.get("/api/datasets")
 async def get_datasets(
-    source: Optional[str] = Query(None, description="Filter by source (DANDI, Kaggle, OpenNeuro, PhysioNet)"),
+    source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, Kaggle, OpenNeuro, PhysioNet, SPARC)"),
     modality: Optional[str] = Query(None, description="Filter by modality (comma-separated for AND)"),
     search: Optional[str] = Query(None, description="Search in title and description"),
     sort_by: str = Query("published", description="Sort column (published, papers, title, id, source, modality)"),
@@ -734,12 +896,18 @@ async def get_dataset_stats(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@app.get("/api/datasets/{dataset_id:path}")
-async def get_dataset_detail(dataset_id: str):
+@app.get("/api/datasets/{source}/{dataset_id:path}")
+async def get_dataset_detail(source: str, dataset_id: str):
     """
-    Fetch a single dataset by its archive-native ID (e.g. 000003 for DANDI, ds000001
-    for OpenNeuro), including associated primary papers and citing papers when available.
+    Fetch a single dataset by its source and archive-native ID (e.g. crcns/590,
+    dandi/000003, openneuro/ds000001), including associated primary papers and citing
+    papers when available. The source is matched case-insensitively; the (source,
+    dataset_id) pair is unique, so this resolves the dataset unambiguously.
     """
+    # Normalize the URL source (lowercase) to the canonical stored form.
+    canonical_source = {s.lower(): s for s in ALLOWED_SOURCES}.get(source.lower())
+    if canonical_source is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
     try:
         with get_db_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cursor:
@@ -769,9 +937,9 @@ async def get_dataset_detail(dataset_id: str):
 
                 cols_sql = sql.SQL(", ").join(sql.Identifier(c) for c in select_cols)
                 detail_query = sql.SQL(
-                    "SELECT {cols} FROM {table} WHERE dataset_id = %s LIMIT 1;"
+                    "SELECT {cols} FROM {table} WHERE source = %s AND dataset_id = %s LIMIT 1;"
                 ).format(cols=cols_sql, table=sql.Identifier(table_name))
-                cursor.execute(detail_query, (dataset_id,))
+                cursor.execute(detail_query, (canonical_source, dataset_id))
                 dataset = cursor.fetchone()
                 if not dataset:
                     raise HTTPException(status_code=404, detail="Dataset not found")
@@ -796,7 +964,7 @@ async def get_dataset_detail(dataset_id: str):
                     p_country = "p.senior_author_country," if "senior_author_country" in paper_opt_cols else "NULL AS senior_author_country,"
 
                     primary_papers_query = f"""
-                        {_paper_mapping_ctes()}
+                        {_paper_mapping_ctes(cursor)}
                         SELECT
                             map.paper_doi,
                             map.doi_source,
@@ -831,7 +999,7 @@ async def get_dataset_detail(dataset_id: str):
                     c_country = "p_citing.senior_author_country AS citing_senior_author_country," if "senior_author_country" in paper_opt_cols else "NULL AS citing_senior_author_country,"
 
                     citations_query = f"""
-                        {_paper_mapping_ctes()}
+                        {_paper_mapping_ctes(cursor)}
                         SELECT
                             ce.primary_paper_doi,
                             p_primary.title AS primary_paper_title,
@@ -882,7 +1050,7 @@ async def get_dataset_detail(dataset_id: str):
 
 @app.get("/api/paper-mapping/summary")
 async def get_paper_mapping_summary(
-    source: Optional[str] = Query(None, description="Filter by source (DANDI, OpenNeuro)"),
+    source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, OpenNeuro, SPARC)"),
 ):
     source = _validate_paper_mapping_source(source)
     try:
@@ -927,6 +1095,21 @@ async def get_paper_mapping_summary(
                         **map_row, **cit_row, **cls_row,
                     }
 
+                # CRCNS and SPARC paper-mapping tables are optional (their
+                # mapping DAGs may not have run on every deployment). Include
+                # each only when its three tables exist, mirroring
+                # _paper_mapping_ctes.
+                crcns_tables_exist = (
+                    _paper_mapping_relation_exists(cursor, "crcns_paper_map")
+                    and _paper_mapping_relation_exists(cursor, "crcns_paper_citations")
+                    and _paper_mapping_relation_exists(cursor, "crcns_paper_citation_classifications")
+                )
+                sparc_tables_exist = (
+                    _paper_mapping_relation_exists(cursor, "sparc_paper_map")
+                    and _paper_mapping_relation_exists(cursor, "sparc_paper_citations")
+                    and _paper_mapping_relation_exists(cursor, "sparc_paper_citation_classifications")
+                )
+
                 source_configs = []
                 if not source or source == "DANDI":
                     source_configs.append(("DANDI", "dandi_paper_map", "dandi_id",
@@ -934,17 +1117,27 @@ async def get_paper_mapping_summary(
                 if not source or source == "OpenNeuro":
                     source_configs.append(("OpenNeuro", "openneuro_paper_map", "openneuro_id",
                                            "openneuro_paper_citations", "openneuro_paper_citation_classifications"))
+                if (not source or source == "CRCNS") and crcns_tables_exist:
+                    source_configs.append(("CRCNS", "crcns_paper_map", "crcns_id",
+                                           "crcns_paper_citations", "crcns_paper_citation_classifications"))
+                if (not source or source == "SPARC") and sparc_tables_exist:
+                    source_configs.append(("SPARC", "sparc_paper_map", "sparc_id",
+                                           "sparc_paper_citations", "sparc_paper_citation_classifications"))
 
                 by_source = [_per_source_summary(*cfg) for cfg in source_configs]
 
                 # Build overall summary by summing per-source values.
                 # distinct_mapped_primary_papers needs dedup across sources
-                # (a DOI could appear in both maps).
+                # (a DOI could appear in multiple maps).
                 all_dois_parts = []
                 if not source or source == "DANDI":
                     all_dois_parts.append("SELECT DISTINCT paper_doi FROM dandi_paper_map")
                 if not source or source == "OpenNeuro":
                     all_dois_parts.append("SELECT DISTINCT paper_doi FROM openneuro_paper_map")
+                if (not source or source == "CRCNS") and crcns_tables_exist:
+                    all_dois_parts.append("SELECT DISTINCT paper_doi FROM crcns_paper_map")
+                if (not source or source == "SPARC") and sparc_tables_exist:
+                    all_dois_parts.append("SELECT DISTINCT paper_doi FROM sparc_paper_map")
                 if all_dois_parts:
                     cursor.execute(f"SELECT COUNT(DISTINCT paper_doi)::int AS n FROM ({' UNION ALL '.join(all_dois_parts)}) t;")
                     distinct_papers = (cursor.fetchone() or {}).get("n", 0)
@@ -973,6 +1166,16 @@ async def get_paper_mapping_summary(
                         SELECT COALESCE(NULLIF(classification, ''), status, 'unclassified') AS bucket
                         FROM openneuro_paper_citation_classifications
                     """)
+                if (not source or source == "CRCNS") and crcns_tables_exist:
+                    cls_parts.append("""
+                        SELECT COALESCE(NULLIF(classification, ''), status, 'unclassified') AS bucket
+                        FROM crcns_paper_citation_classifications
+                    """)
+                if (not source or source == "SPARC") and sparc_tables_exist:
+                    cls_parts.append("""
+                        SELECT COALESCE(NULLIF(classification, ''), status, 'unclassified') AS bucket
+                        FROM sparc_paper_citation_classifications
+                    """)
                 by_classification: Dict[str, int] = {}
                 if cls_parts:
                     cursor.execute(f"""
@@ -999,7 +1202,7 @@ async def get_paper_mapping_summary(
 
 @app.get("/api/paper-mapping/datasets")
 async def get_paper_mapping_datasets(
-    source: Optional[str] = Query(None, description="Filter by source (DANDI, OpenNeuro)"),
+    source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, OpenNeuro, SPARC)"),
     search: Optional[str] = Query(None, description="Search in dataset id, title, and description"),
     classification_bucket: Optional[str] = Query(
         None,
@@ -1059,7 +1262,7 @@ async def get_paper_mapping_datasets(
                 # so the final join is 1:1 — avoids the cartesian product between
                 # maps × citations × classifications that blows up at scale.
                 aggregated_cte = f"""
-                    {_paper_mapping_ctes()},
+                    {_paper_mapping_ctes(cursor)},
                     map_agg AS (
                         SELECT source, dataset_id,
                                COUNT(DISTINCT paper_doi)::int AS mapped_papers_count,
@@ -1150,7 +1353,7 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                 _ensure_paper_mapping_tables(cursor)
 
                 base_query = f"""
-                    {_paper_mapping_ctes()}
+                    {_paper_mapping_ctes(cursor)}
                     SELECT
                         db.source,
                         db.dataset_id,
@@ -1185,7 +1388,7 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                     raise HTTPException(status_code=404, detail="Dataset not found in paper mapping tables")
 
                 primary_papers_query = f"""
-                    {_paper_mapping_ctes()},
+                    {_paper_mapping_ctes(cursor)},
                     ce_per_primary AS (
                         SELECT source, dataset_id, primary_paper_doi,
                                COUNT(DISTINCT citing_paper_doi)::int AS citing_papers_count,
@@ -1231,7 +1434,7 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                 primary_papers = [dict(row) for row in cursor.fetchall()]
 
                 citations_query = f"""
-                    {_paper_mapping_ctes()}
+                    {_paper_mapping_ctes(cursor)}
                     SELECT
                         ce.primary_paper_doi,
                         p_primary.title AS primary_paper_title,
@@ -1288,7 +1491,7 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
 
 @app.get("/api/paper-mapping/citations")
 async def get_paper_mapping_citations(
-    source: Optional[str] = Query(None, description="Filter by source (DANDI, OpenNeuro)"),
+    source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, OpenNeuro, SPARC)"),
     dataset_id: Optional[str] = Query(None, description="Filter by dataset id"),
     limit: int = Query(50, ge=1, le=250),
     offset: int = Query(0, ge=0),
@@ -1309,7 +1512,7 @@ async def get_paper_mapping_citations(
                 where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
                 count_query = f"""
-                    {_paper_mapping_ctes()}
+                    {_paper_mapping_ctes(cursor)}
                     SELECT COUNT(*)::int AS total
                     FROM citation_edges ce
                     {where_sql};
@@ -1318,7 +1521,7 @@ async def get_paper_mapping_citations(
                 total = cursor.fetchone()["total"]
 
                 query = f"""
-                    {_paper_mapping_ctes()}
+                    {_paper_mapping_ctes(cursor)}
                     SELECT
                         ce.source,
                         ce.dataset_id,
