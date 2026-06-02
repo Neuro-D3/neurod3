@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { fetchDatasets, fetchDatasetStats } from '../services/api';
+import { datasetDetailPath, fetchDatasets, fetchDatasetStats } from '../services/api';
 import type { Dataset } from '../services/api';
 import { PopulationIcon } from './PopulationIcon';
 
@@ -934,7 +934,7 @@ export default function NeuroDatasetDiscovery() {
                       {/* Left: main content */}
                       <div className="flex-1 min-w-0">
                         <Link
-                          to={`/datasets/${encodeURIComponent(ds.id)}`}
+                          to={datasetDetailPath(ds.source, ds.id)}
                           className={`text-base font-semibold leading-snug hover:underline transition-colors ${
                             darkMode ? 'text-white hover:text-blue-300' : 'text-gray-900 hover:text-blue-600'
                           }`}

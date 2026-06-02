@@ -896,12 +896,18 @@ async def get_dataset_stats(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@app.get("/api/datasets/{dataset_id:path}")
-async def get_dataset_detail(dataset_id: str):
+@app.get("/api/datasets/{source}/{dataset_id:path}")
+async def get_dataset_detail(source: str, dataset_id: str):
     """
-    Fetch a single dataset by its archive-native ID (e.g. 000003 for DANDI, ds000001
-    for OpenNeuro), including associated primary papers and citing papers when available.
+    Fetch a single dataset by its source and archive-native ID (e.g. crcns/590,
+    dandi/000003, openneuro/ds000001), including associated primary papers and citing
+    papers when available. The source is matched case-insensitively; the (source,
+    dataset_id) pair is unique, so this resolves the dataset unambiguously.
     """
+    # Normalize the URL source (lowercase) to the canonical stored form.
+    canonical_source = {s.lower(): s for s in ALLOWED_SOURCES}.get(source.lower())
+    if canonical_source is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
     try:
         with get_db_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cursor:
@@ -931,9 +937,9 @@ async def get_dataset_detail(dataset_id: str):
 
                 cols_sql = sql.SQL(", ").join(sql.Identifier(c) for c in select_cols)
                 detail_query = sql.SQL(
-                    "SELECT {cols} FROM {table} WHERE dataset_id = %s LIMIT 1;"
+                    "SELECT {cols} FROM {table} WHERE source = %s AND dataset_id = %s LIMIT 1;"
                 ).format(cols=cols_sql, table=sql.Identifier(table_name))
-                cursor.execute(detail_query, (dataset_id,))
+                cursor.execute(detail_query, (canonical_source, dataset_id))
                 dataset = cursor.fetchone()
                 if not dataset:
                     raise HTTPException(status_code=404, detail="Dataset not found")

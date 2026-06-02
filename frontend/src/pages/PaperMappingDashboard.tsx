@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  datasetDetailPath,
   fetchPaperMappingCitations,
   fetchPaperMappingDatasetDetail,
   fetchPaperMappingDatasets,
@@ -295,7 +296,7 @@ export default function PaperMappingDashboard() {
                         <td className="px-4 py-3 align-top font-mono text-xs text-slate-700">{dataset.dataset_id}</td>
                         <td className="px-4 py-3 align-top">
                           <Link
-                            to={`/datasets/${encodeURIComponent(dataset.dataset_id)}`}
+                            to={datasetDetailPath(dataset.source, dataset.dataset_id)}
                             className="font-medium text-slate-900 hover:text-blue-600 hover:underline transition-colors"
                             onClick={(e) => e.stopPropagation()}
                           >
@@ -422,7 +423,7 @@ export default function PaperMappingDashboard() {
                       <div className="text-xs uppercase tracking-wide text-slate-500">{datasetDetail.dataset.source}</div>
                       <h3 className="mt-1 text-lg font-semibold">
                         <Link
-                          to={`/datasets/${encodeURIComponent(datasetDetail.dataset.dataset_id)}`}
+                          to={datasetDetailPath(datasetDetail.dataset.source, datasetDetail.dataset.dataset_id)}
                           className="hover:text-blue-600 hover:underline transition-colors"
                         >
                           {datasetDetail.dataset.dataset_title || datasetDetail.dataset.dataset_id}

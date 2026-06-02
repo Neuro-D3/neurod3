@@ -11,9 +11,9 @@ function scrollWindowToTop() {
   document.body.scrollTop = 0;
 }
 
-/** Only `/datasets/:id` — scroll the feed when returning home is left unchanged. */
+/** Only `/datasets/:source/:id` — scroll the feed when returning home is left unchanged. */
 function isDatasetDetailPath(pathname: string): boolean {
-  return /^\/datasets\/[^/]+$/.test(pathname);
+  return /^\/datasets\/[^/]+\/[^/]+$/.test(pathname);
 }
 
 function ScrollToTop() {
@@ -78,7 +78,7 @@ function AppLayout() {
       <Routes>
         <Route path="/" element={<NeuroDatasetDiscovery />} />
         <Route path="/paper-mapping" element={<PaperMappingDashboard />} />
-        <Route path="/datasets/:datasetId" element={<DatasetDetailPage />} />
+        <Route path="/datasets/:source/:datasetId" element={<DatasetDetailPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </div>

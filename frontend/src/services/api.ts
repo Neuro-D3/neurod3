@@ -380,9 +380,13 @@ export async function fetchPaperMappingDatasetDetail(
   }
 }
 
-export async function fetchDatasetDetail(datasetId: string): Promise<DatasetDetailResponse> {
+/** Build the in-app route to a dataset detail page (source is lowercased for clean URLs). */
+export const datasetDetailPath = (source: string, id: string) =>
+  `/datasets/${encodeURIComponent(source.toLowerCase())}/${encodeURIComponent(id)}`;
+
+export async function fetchDatasetDetail(source: string, datasetId: string): Promise<DatasetDetailResponse> {
   try {
-    const url = `${API_BASE_URL}/api/datasets/${encodeURIComponent(datasetId)}`;
+    const url = `${API_BASE_URL}/api/datasets/${encodeURIComponent(source.toLowerCase())}/${encodeURIComponent(datasetId)}`;
     const response = await fetch(url);
     if (!response.ok) {
       if (response.status === 404) throw new Error('Dataset not found');

@@ -151,6 +151,17 @@ def parse_sparc_dataset(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     dataset_id = str(raw_id)
 
+    # The Pennsieve Discover `/datasets` endpoint ignores the `organizationId` query
+    # param, so it returns the entire public catalog (Mayo, IT'IS, PennEPI, ...), not
+    # just SPARC. Filter to the SPARC Consortium org here, and to research datasets so
+    # cross-portal "collection" entries (e.g. PennEPI id 590, which redirects off
+    # sparc.science to epilepsy.science) don't get ingested as SPARC.
+    if record.get("organizationId") != SPARC_ORG_ID:
+        return None
+    dataset_type = (record.get("datasetType") or "").strip().lower()
+    if dataset_type and dataset_type != "research":
+        return None
+
     tags = {(t or "").strip().lower() for t in (record.get("tags") or [])}
     if tags & _SKIP_TAGS:
         return None
