@@ -90,11 +90,11 @@ if [ ! -d "$APP_DIR/.git" ]; then
 fi
 
 # Try infra/gcp-staging first (staging deployment), fall back to main/default branch
-git -C "$APP_DIR" fetch origin 2>/dev/null || true
+git -C "$APP_DIR" fetch origin infra/gcp-staging 2>/dev/null || true
 if git -C "$APP_DIR" rev-parse --verify origin/infra/gcp-staging >/dev/null 2>&1; then
-  git -C "$APP_DIR" checkout infra/gcp-staging 2>/dev/null || git -C "$APP_DIR" pull --ff-only || true
+  git -C "$APP_DIR" checkout -B infra/gcp-staging origin/infra/gcp-staging 2>/dev/null || true
 else
-  git -C "$APP_DIR" pull --ff-only || echo "WARN: git pull failed; using existing checkout"
+  git -C "$APP_DIR" pull --ff-only 2>/dev/null || true
 fi
 
 if [ -f "$COMPOSE_FILE" ]; then
