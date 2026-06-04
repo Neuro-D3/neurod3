@@ -57,7 +57,9 @@ cat > /root/.docker/config.json <<EOF
 {
   "auths": {
     "us-west1-docker.pkg.dev": {
-      "auth": "$(echo -n "_json_key:$ACCESS_TOKEN" | base64 -w 0)"
+      "username": "_oauth2accesstoken",
+      "password": "$ACCESS_TOKEN",
+      "auth": "$(echo -n "_oauth2accesstoken:$ACCESS_TOKEN" | base64 -w 0)"
     }
   }
 }
