@@ -49,7 +49,20 @@ apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 systemctl enable --now docker
 
-# Docker auth skipped — VM service account credentials work automatically via ADC
+# Configure docker to use metadata server for Artifact Registry auth
+# Get access token and configure docker config.json for us-west1-docker.pkg.dev
+mkdir -p /root/.docker
+ACCESS_TOKEN=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" -H "Metadata-Flavor: Google" | jq -r '.access_token')
+cat > /root/.docker/config.json <<EOF
+{
+  "auths": {
+    "us-west1-docker.pkg.dev": {
+      "auth": "$(echo -n "_json_key:$ACCESS_TOKEN" | base64 -w 0)"
+    }
+  }
+}
+EOF
+chmod 600 /root/.docker/config.json
 
 # ─── 3. Fetch secrets into an env file consumed by compose --env-file ───────
 mkdir -p /etc/neuro-d3
