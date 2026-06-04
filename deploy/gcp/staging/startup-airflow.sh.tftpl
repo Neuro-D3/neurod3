@@ -49,8 +49,10 @@ apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin google-cloud-cli
 systemctl enable --now docker
 
-# Use gcloud to configure docker for Artifact Registry (with stdin redirect to avoid TTY issues)
+# Use gcloud to configure docker for Artifact Registry
 echo "" | gcloud auth configure-docker us-west1-docker.pkg.dev --quiet 2>/dev/null || true
+# Restart docker to pick up new credentials
+systemctl restart docker
 
 # ─── 3. Fetch secrets into an env file consumed by compose --env-file ───────
 mkdir -p /etc/neuro-d3
