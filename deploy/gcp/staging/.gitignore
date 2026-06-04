@@ -1,0 +1,15 @@
+# Terraform local state, caches, and secret-bearing tfvars.
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored — commit it.
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Real variable values (may contain secrets). Commit only the .example.
+terraform.tfvars
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

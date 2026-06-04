@@ -1,0 +1,28 @@
+# Caddy config for the staging Airflow UI (GCE VM).
+#
+# Staging has no domain yet, so we use Caddy's internal CA (self-signed): traffic
+# is encrypted (no more plaintext logins / sniffable tokens) but browsers show a
+# cert warning. This is a stopgap.
+#
+# To switch to real, warning-free HTTPS later:
+#   1. Point a DNS A record (e.g. airflow.staging.neurod3.duralabs.ai) at the VM's
+#      static IP (the `airflow_vm_ip` Terraform output).
+#   2. Replace the `:443` site address below with that hostname.
+#   3. Replace `tls internal` with `tls you@duralabs.ai` (Let's Encrypt) — or just
+#      delete the `tls internal` line and let Caddy auto-provision.
+# No infra change is needed (firewall already allows 80/443).
+
+{
+	# Keep Caddy's internal cert management, but don't auto-add http->https
+	# redirects (we define :80 explicitly below).
+	auto_https disable_redirects
+}
+
+:80 {
+	redir https://{host}{uri} permanent
+}
+
+:443 {
+	tls internal
+	reverse_proxy airflow-api-server:8080
+}

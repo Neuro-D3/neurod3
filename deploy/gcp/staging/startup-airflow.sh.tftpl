@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Startup script for the NeuroD3 Airflow VM (staging).
+#
+#   1. install Docker + compose plugin + the Google Cloud CLI + git
+#   2. configure Docker auth for Artifact Registry (via the VM service account)
+#   3. fetch app secrets from Secret Manager into /etc/neuro-d3/airflow.env
+#   4. clone the repo (DAGs sync from GitHub) and bring up the Airflow-only
+#      compose stack (Cloud SQL proxy sidecar + Airflow services + Caddy)
+#
+# Persistence: run history -> Cloud SQL; task logs -> GCS (native remote logging).
+# Paper-mapping output is currently EPHEMERAL on the VM (local Airflow volume).
+# TODO(separate PR): write paper-mapping output to GCS via ObjectStoragePath; the
+# neuro-d3-staging-paper-mapping bucket + VM objectAdmin already exist for it.
+#
+# Idempotent: safe to re-run. Logs to the serial console + /var/log/neuro-d3-startup.log.
+set -euo pipefail
+exec > >(tee -a /var/log/neuro-d3-startup.log) 2>&1
+echo "=== neuro-d3 airflow startup $(date -u) ==="
+set -x
+
+PROJECT_ID="${project_id}"
+REGION="${region}"
+SQL_CONNECTION_NAME="${sql_connection_name}"
+AIRFLOW_IMAGE="${airflow_image}"
+DATA_BUCKET="${data_bucket}"
+LOGS_BUCKET="${logs_bucket}"
+AIRFLOW_BASE_URL="${airflow_base_url}"
+REPO_URL="https://github.com/Neuro-D3/neurod3.git"
+APP_DIR="/opt/neuro-d3"
+ENV_FILE="/etc/neuro-d3/airflow.env"
+COMPOSE_FILE="$APP_DIR/deploy/gcp/staging/docker-compose.gce.yml"
+
+# ─── 1. Base packages: Docker, gcloud, git ──────────────────────────────────
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends ca-certificates curl gnupg git jq apt-transport-https
+
+UBUNTU_CODENAME="$(. /etc/os-release && echo $VERSION_CODENAME)"
+
+if ! command -v docker >/dev/null 2>&1; then
+  install -m 0755 -d /etc/apt/keyrings
+  rm -f /etc/apt/keyrings/docker.gpg
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg 2>/dev/null | gpg --batch --no-tty --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $${UBUNTU_CODENAME} stable" \
+    > /etc/apt/sources.list.d/docker.list
+fi
+
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+systemctl enable --now docker
+
+# Docker auth skipped — VM service account credentials work automatically via ADC
+
+# ─── 3. Fetch secrets into an env file consumed by compose --env-file ───────
+echo "DEBUG: Starting secret fetch section at $(date -u)"
+mkdir -p /etc/neuro-d3 || echo "DEBUG: mkdir failed with $?"
+echo "DEBUG: /etc/neuro-d3 directory created"
+
+# Disable strict error handling for fetch to see detailed errors
+set +e
+fetch() {
+  # Fetch secret using Secret Manager API (no gcloud CLI needed)
+  local secret_name="$1"
+  echo "DEBUG: Fetching secret $secret_name" >&2
+  local access_token=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" -H "Metadata-Flavor: Google" 2>&1 | jq -r '.access_token')
+  echo "DEBUG: Got metadata access token" >&2
+  local response=$(curl -s "https://secretmanager.googleapis.com/v1/projects/$PROJECT_ID/secrets/$secret_name/versions/latest:access" \
+    -H "Authorization: Bearer $access_token" 2>&1)
+  echo "DEBUG: Got Secret Manager response" >&2
+  echo "$response" | jq -r '.payload.data' 2>&1 | base64 -d 2>&1
+}
+set -e
+
+DB_PASSWORD="$(fetch d3-staging-db-master-password 2>&1)"
+echo "DEBUG: DB password fetched, status=$?"
+{
+  echo "AIRFLOW_UID=50000"
+  echo "AIRFLOW_IMAGE=$AIRFLOW_IMAGE"
+  echo "SQL_CONNECTION_NAME=$SQL_CONNECTION_NAME"
+  echo "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:$${DB_PASSWORD}@cloudsql-proxy:5432/airflow"
+  echo "AIRFLOW__API__BASE_URL=$AIRFLOW_BASE_URL"
+  echo "AIRFLOW__CORE__FERNET_KEY=$(fetch d3-staging-airflow-fernet-key)"
+  echo "AIRFLOW__API__SECRET_KEY=$(fetch d3-staging-airflow-api-secret-key)"
+  echo "AIRFLOW__API_AUTH__JWT_SECRET=$(fetch d3-staging-airflow-jwt-secret)"
+  echo "_AIRFLOW_WWW_USER_USERNAME=airflow"
+  echo "_AIRFLOW_WWW_USER_PASSWORD=$(fetch d3-staging-airflow-admin-password)"
+  echo "OPENROUTER_API_KEY=$(fetch d3-staging-openrouter-api-key)"
+  # Reserved for the future GCS paper-mapping PR (artifacts are local for now).
+  echo "DATA_BUCKET=$DATA_BUCKET"
+  # Native GCS remote logging target (provider baked into the image).
+  echo "AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER=gs://$${LOGS_BUCKET}/airflow-logs"
+  # Paper-mapping output dirs are left UNSET here -> the compose defaults to the
+  # local /opt/airflow/output/* paths (ephemeral). TODO(separate PR): point these
+  # at gs://$${DATA_BUCKET}/... once the DAGs use ObjectStoragePath.
+} > "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+
+# ─── 4. Clone repo + bring up the Airflow-only compose stack ────────────────
+if [ ! -d "$APP_DIR/.git" ]; then
+  git clone --depth 1 "$REPO_URL" "$APP_DIR"
+else
+  git -C "$APP_DIR" pull --ff-only || echo "WARN: git pull failed; using existing checkout"
+fi
+
+if [ -f "$COMPOSE_FILE" ]; then
+  # --project-directory = repo root so ./dags, ./config, ./deploy/... resolve.
+  docker compose --project-directory "$APP_DIR" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull || true
+  docker compose --project-directory "$APP_DIR" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d
+else
+  echo "ERROR: $COMPOSE_FILE not found in the checkout. Host is provisioned"
+  echo "       (docker, secrets at $ENV_FILE) — bring up compose manually."
+fi
+
+echo "=== neuro-d3 airflow startup complete $(date -u) ==="
