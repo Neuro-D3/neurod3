@@ -16,7 +16,6 @@
 set -euo pipefail
 exec > >(tee -a /var/log/neuro-d3-startup.log) 2>&1
 echo "=== neuro-d3 airflow startup $(date -u) ==="
-set -x
 
 PROJECT_ID="${project_id}"
 REGION="${region}"
@@ -53,27 +52,16 @@ systemctl enable --now docker
 # Docker auth skipped — VM service account credentials work automatically via ADC
 
 # ─── 3. Fetch secrets into an env file consumed by compose --env-file ───────
-echo "DEBUG: Starting secret fetch section at $(date -u)"
-mkdir -p /etc/neuro-d3 || echo "DEBUG: mkdir failed with $?"
-echo "DEBUG: /etc/neuro-d3 directory created"
-
-# Disable strict error handling for fetch to see detailed errors
-set +e
+mkdir -p /etc/neuro-d3
 fetch() {
   # Fetch secret using Secret Manager API (no gcloud CLI needed)
   local secret_name="$1"
-  echo "DEBUG: Fetching secret $secret_name" >&2
-  local access_token=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" -H "Metadata-Flavor: Google" 2>&1 | jq -r '.access_token')
-  echo "DEBUG: Got metadata access token" >&2
-  local response=$(curl -s "https://secretmanager.googleapis.com/v1/projects/$PROJECT_ID/secrets/$secret_name/versions/latest:access" \
-    -H "Authorization: Bearer $access_token" 2>&1)
-  echo "DEBUG: Got Secret Manager response" >&2
-  echo "$response" | jq -r '.payload.data' 2>&1 | base64 -d 2>&1
+  local access_token=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" -H "Metadata-Flavor: Google" | jq -r '.access_token')
+  curl -s "https://secretmanager.googleapis.com/v1/projects/$PROJECT_ID/secrets/$secret_name/versions/latest:access" \
+    -H "Authorization: Bearer $access_token" | jq -r '.payload.data' | base64 -d
 }
-set -e
 
-DB_PASSWORD="$(fetch d3-staging-db-master-password 2>&1)"
-echo "DEBUG: DB password fetched, status=$?"
+DB_PASSWORD="$(fetch d3-staging-db-master-password)"
 {
   echo "AIRFLOW_UID=50000"
   echo "AIRFLOW_IMAGE=$AIRFLOW_IMAGE"
@@ -100,7 +88,8 @@ chmod 600 "$ENV_FILE"
 if [ ! -d "$APP_DIR/.git" ]; then
   git clone --depth 1 "$REPO_URL" "$APP_DIR"
 else
-  git -C "$APP_DIR" pull --ff-only || echo "WARN: git pull failed; using existing checkout"
+  git -C "$APP_DIR" fetch origin infra/gcp-staging:infra/gcp-staging 2>/dev/null || true
+  git -C "$APP_DIR" checkout infra/gcp-staging 2>/dev/null || git -C "$APP_DIR" pull --ff-only || echo "WARN: git pull failed; using existing checkout"
 fi
 
 if [ -f "$COMPOSE_FILE" ]; then
