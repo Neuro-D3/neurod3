@@ -46,13 +46,8 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin google-cloud-cli
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 systemctl enable --now docker
-
-# Use gcloud to configure docker for Artifact Registry
-echo "" | gcloud auth configure-docker us-west1-docker.pkg.dev --quiet 2>/dev/null || true
-# Restart docker to pick up new credentials
-systemctl restart docker
 
 # ─── 3. Fetch secrets into an env file consumed by compose --env-file ───────
 mkdir -p /etc/neuro-d3
@@ -86,6 +81,17 @@ DB_PASSWORD="$(fetch d3-staging-db-master-password)"
   # at gs://$${DATA_BUCKET}/... once the DAGs use ObjectStoragePath.
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
+
+# ─── Docker auth for Artifact Registry via oauth2accesstoken ────────────────
+# Set HOME explicitly for startup environment (may be unset or "/" in GCE startup)
+export HOME=/root
+
+# Get access token from metadata server and authenticate with docker
+ACCESS_TOKEN=$(curl -s -H "Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+echo "$ACCESS_TOKEN" | docker login -u oauth2accesstoken --password-stdin https://us-west1-docker.pkg.dev
 
 # ─── 4. Clone repo + bring up the Airflow-only compose stack ────────────────
 if [ ! -d "$APP_DIR/.git" ]; then
