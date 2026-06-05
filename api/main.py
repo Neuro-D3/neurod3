@@ -77,17 +77,22 @@ DB_CONNINFO = (
 
 @contextmanager
 def get_db_connection():
-    """Context manager for database connections."""
-    conn = None
+    """Context manager for database connections.
+
+    Only connect() failures are reported as "connection failed". Query errors
+    raised while the connection is in use propagate to the caller so they surface
+    accurately (e.g. "Database query failed: relation ... does not exist") instead
+    of being mislabeled as a connection failure.
+    """
     try:
         conn = psycopg.connect(DB_CONNINFO)
-        yield conn
     except psycopg.Error as e:
         logger.error(f"Database connection error: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed")
+    try:
+        yield conn
     finally:
-        if conn:
-            conn.close()
+        conn.close()
 
 
 def _validate_paper_mapping_source(source: Optional[str]) -> Optional[str]:
@@ -571,19 +576,25 @@ async def get_datasets(
                 authors_expr = "authors," if "authors" in ds_opt_cols else "NULL::jsonb AS authors,"
                 num_subjects_expr = "num_subjects," if "num_subjects" in ds_opt_cols else "NULL::integer AS num_subjects,"
 
-                secondary_reuse_subquery = """
-                    COALESCE((
-                        SELECT COUNT(DISTINCT citing_paper_doi)::int
-                        FROM dandi_paper_citation_classifications
-                        WHERE dandi_id = d.dataset_id AND classification = 'SECONDARY'
-                    ), 0)
-                    +
-                    COALESCE((
-                        SELECT COUNT(DISTINCT citing_paper_doi)::int
-                        FROM openneuro_paper_citation_classifications
-                        WHERE openneuro_id = d.dataset_id AND classification = 'SECONDARY'
-                    ), 0)
-                """
+                # secondary_reuse_count comes from the per-source citation-classification
+                # tables, which only exist after the paper-mapping DAGs have run. Include
+                # each branch only when its table exists, so the datasets list still works
+                # on a DB that has only the base datasets — otherwise the whole query fails
+                # with UndefinedTable and the endpoint 500s.
+                _reuse_parts = []
+                if _paper_mapping_relation_exists(cursor, "dandi_paper_citation_classifications"):
+                    _reuse_parts.append(
+                        "COALESCE((SELECT COUNT(DISTINCT citing_paper_doi)::int "
+                        "FROM dandi_paper_citation_classifications "
+                        "WHERE dandi_id = d.dataset_id AND classification = 'SECONDARY'), 0)"
+                    )
+                if _paper_mapping_relation_exists(cursor, "openneuro_paper_citation_classifications"):
+                    _reuse_parts.append(
+                        "COALESCE((SELECT COUNT(DISTINCT citing_paper_doi)::int "
+                        "FROM openneuro_paper_citation_classifications "
+                        "WHERE openneuro_id = d.dataset_id AND classification = 'SECONDARY'), 0)"
+                    )
+                secondary_reuse_subquery = " + ".join(_reuse_parts) if _reuse_parts else "0"
 
                 base_select = f"""
                     SELECT
