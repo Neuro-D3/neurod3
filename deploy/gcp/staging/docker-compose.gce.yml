@@ -34,6 +34,12 @@ x-airflow-common:
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
     AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
     PYTHONPATH: /opt/airflow/dags
+    # Public base URL for the api-server's absolute links. Staging serves the UI
+    # over PLAIN HTTP (Caddy :80 — see ./deploy/gcp/staging/Caddyfile), so this MUST
+    # be http://: an https base URL makes Airflow emit https links / set Secure
+    # cookies that break login over HTTP. Hardcoded to the VM's static IP; this
+    # intentionally overrides the (https) value the startup script writes to env_file.
+    AIRFLOW__API__BASE_URL: http://34.169.165.25
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
@@ -55,7 +61,7 @@ x-airflow-common:
     # The following are provided at runtime by env_file (/etc/neuro-d3/airflow.env),
     # NOT by ${VAR} interpolation, so a --env-file-less invocation can't blank them
     # (and can't desync JWT/secret/fernet across services):
-    #   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN  AIRFLOW__API__BASE_URL
+    #   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN  (AIRFLOW__API__BASE_URL is overridden above)
     #   AIRFLOW__CORE__FERNET_KEY            AIRFLOW__API__SECRET_KEY
     #   AIRFLOW__API_AUTH__JWT_SECRET        OPENROUTER_API_KEY
     #   AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER  DB_PASSWORD

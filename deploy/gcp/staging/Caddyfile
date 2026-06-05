@@ -1,28 +1,23 @@
 # Caddy config for the staging Airflow UI (GCE VM).
 #
-# Staging has no domain yet, so we use Caddy's internal CA (self-signed): traffic
-# is encrypted (no more plaintext logins / sniffable tokens) but browsers show a
-# cert warning. This is a stopgap.
+# Staging serves the Airflow UI over PLAIN HTTP on :80 — no TLS. We went HTTP-only
+# because Airflow's login/session handling didn't work behind the self-signed cert
+# (https base URL + Secure cookies). Access is restricted at the network layer
+# (the airflow_web_public firewall in network.tf), not by TLS.
 #
-# To switch to real, warning-free HTTPS later:
-#   1. Point a DNS A record (e.g. airflow.staging.neurod3.duralabs.ai) at the VM's
-#      static IP (the `airflow_vm_ip` Terraform output).
-#   2. Replace the `:443` site address below with that hostname.
-#   3. Replace `tls internal` with `tls you@duralabs.ai` (Let's Encrypt) — or just
-#      delete the `tls internal` line and let Caddy auto-provision.
-# No infra change is needed (firewall already allows 80/443).
+# IMPORTANT: AIRFLOW__API__BASE_URL must be http://<host> to match (set in
+# docker-compose.gce.yml). An https base URL makes Airflow emit https links and
+# set Secure cookies that won't be sent back over plain HTTP, which breaks login.
+#
+# To move to real HTTPS later: point a DNS A record at the static IP, change the
+# site below to `your.hostname { reverse_proxy airflow-api-server:8080 }`, and
+# remove `auto_https off` so Caddy auto-provisions a Let's Encrypt cert.
 
 {
-	# Keep Caddy's internal cert management, but don't auto-add http->https
-	# redirects (we define :80 explicitly below).
-	auto_https disable_redirects
+	# No TLS at all: don't provision certs and don't add http->https redirects.
+	auto_https off
 }
 
 :80 {
-	redir https://{host}{uri} permanent
-}
-
-:443 {
-	tls internal
 	reverse_proxy airflow-api-server:8080
 }
