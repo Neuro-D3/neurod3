@@ -2,4 +2,9 @@
 # Leave this file empty if you don't need extra Python packages beyond what
 # the base apache/airflow image already provides.
 
+# GCS remote task logging (staging/GCP). Provides the gs:// log handler so
+# Airflow uploads task logs to Cloud Storage and streams them back into the UI.
+# If a build hits a version conflict with apache-airflow 3.1.5, install with the
+# official constraints file or pin a compatible provider version.
+apache-airflow-providers-google
 

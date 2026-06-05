@@ -23,7 +23,7 @@ resource "google_cloud_run_v2_service" "frontend" {
     service_account = google_service_account.frontend.email
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = 1
       max_instance_count = var.cloudrun_max_instances
     }
 

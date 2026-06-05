@@ -48,10 +48,18 @@ app = FastAPI(title="NeuroD3 API", version="1.0.0")
 ALLOWED_SOURCES = {"CRCNS", "DANDI", "Kaggle", "OpenNeuro", "PhysioNet", "SPARC"}
 ALLOWED_PAPER_MAPPING_SOURCES = {"CRCNS", "DANDI", "OpenNeuro", "SPARC"}
 
-# CORS configuration to allow frontend to access the API
+# CORS configuration to allow the frontend to access the API.
+# Local/dev origins are always allowed; cloud deployments add their frontend
+# origin(s) via the ALLOWED_ORIGINS env var (comma-separated). On Cloud Run the
+# frontend and API are on different *.run.app origins, so the frontend's URL must
+# be listed here for browser requests to succeed.
+_DEFAULT_ORIGINS = ["http://localhost:3000", "http://frontend:3000"]
+_extra_origins = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://frontend:3000"],
+    allow_origins=_DEFAULT_ORIGINS + _extra_origins,
     allow_credentials=True,
     allow_methods=["GET", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
