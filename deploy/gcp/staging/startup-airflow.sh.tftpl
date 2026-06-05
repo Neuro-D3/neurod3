@@ -65,6 +65,9 @@ DB_PASSWORD="$(fetch d3-staging-db-master-password)"
   echo "AIRFLOW_IMAGE=$AIRFLOW_IMAGE"
   echo "SQL_CONNECTION_NAME=$SQL_CONNECTION_NAME"
   echo "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:$${DB_PASSWORD}@cloudsql-proxy:5432/airflow"
+  # App-data DB (dag_data) password for DAG tasks (utils/database.py). Same Cloud SQL
+  # user/password; host/port/name/user are static in the compose `environment:` block.
+  echo "DB_PASSWORD=$${DB_PASSWORD}"
   echo "AIRFLOW__API__BASE_URL=$AIRFLOW_BASE_URL"
   echo "AIRFLOW__CORE__FERNET_KEY=$(fetch d3-staging-airflow-fernet-key)"
   echo "AIRFLOW__API__SECRET_KEY=$(fetch d3-staging-airflow-api-secret-key)"

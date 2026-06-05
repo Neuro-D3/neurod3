@@ -17,32 +17,48 @@
 
 x-airflow-common:
   &airflow-common
-  image: ${AIRFLOW_IMAGE}
+  image: "${AIRFLOW_IMAGE:?AIRFLOW_IMAGE is unset; run via the startup script or pass --env-file /etc/neuro-d3/airflow.env}"
+  # Secrets + per-deployment values are injected straight into EVERY container from
+  # the env file the VM startup script writes. Using env_file (not ${VAR} interpolation
+  # in `environment:` below) means an ad-hoc
+  #   docker compose ... up -d --force-recreate airflow-api-server
+  # that forgets --env-file still gets the real Cloud SQL conn + JWT/secret keys — it
+  # cannot silently fall back to a blank value and a phantom database. A missing file
+  # aborts `up` loudly instead of booting misconfigured.
+  env_file:
+    - /etc/neuro-d3/airflow.env
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
     AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
-    # DB is Cloud SQL via the proxy sidecar.
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}
     PYTHONPATH: /opt/airflow/dags
-    # Public base URL (Caddy/HTTPS) so the api-server emits correct absolute links.
-    AIRFLOW__API__BASE_URL: ${AIRFLOW__API__BASE_URL:-}
-    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:-}
-    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-}
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
-    OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     # Task logs -> GCS (apache-airflow-providers-google baked into the image).
     # Auth is ADC from the VM service account via the google_cloud_default conn.
     AIRFLOW__LOGGING__REMOTE_LOGGING: 'true'
     AIRFLOW__LOGGING__REMOTE_LOG_CONN_ID: 'google_cloud_default'
-    AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER: ${AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER:-}
     AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: 'google-cloud-platform://'
+    # App-data DB (the `dag_data` database) used by DAG tasks via utils/database.py.
+    # Same Cloud SQL instance as the metadata DB, reached through the proxy sidecar.
+    # These are the switch utils/environment.py keys off of (DB_HOST set => hosted).
+    # DB_PASSWORD is the d3-staging-db-master-password secret and comes from env_file.
+    DB_HOST: cloudsql-proxy
+    DB_PORT: '5432'
+    DB_NAME: dag_data
+    DB_USER: airflow
+    DB_SCHEMA: public
+    # The following are provided at runtime by env_file (/etc/neuro-d3/airflow.env),
+    # NOT by ${VAR} interpolation, so a --env-file-less invocation can't blank them
+    # (and can't desync JWT/secret/fernet across services):
+    #   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN  AIRFLOW__API__BASE_URL
+    #   AIRFLOW__CORE__FERNET_KEY            AIRFLOW__API__SECRET_KEY
+    #   AIRFLOW__API_AUTH__JWT_SECRET        OPENROUTER_API_KEY
+    #   AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER  DB_PASSWORD
     # TODO(separate PR): write paper-mapping output to GCS via ObjectStoragePath.
     # For now it's ephemeral on the VM (local named volume below) — these are lost
     # if the VM is recreated. The neuro-d3-staging-paper-mapping bucket + VM
@@ -72,7 +88,7 @@ services:
     command:
       - "--address=0.0.0.0"
       - "--port=5432"
-      - "${SQL_CONNECTION_NAME}"
+      - "${SQL_CONNECTION_NAME:?SQL_CONNECTION_NAME is unset; run via the startup script or pass --env-file /etc/neuro-d3/airflow.env}"
     restart: always
 
   airflow-api-server:
@@ -160,8 +176,9 @@ services:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'
       _AIRFLOW_WWW_USER_CREATE: 'true'
-      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
-      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+      # Admin user/password come from env_file (password = the
+      # d3-staging-airflow-admin-password secret). Don't default them here, or a
+      # --env-file-less run would seed an airflow/airflow admin on whatever DB it hit.
       _PIP_ADDITIONAL_REQUIREMENTS: ''
       DANDI_PAPER_API_POOL_SLOTS: ${DANDI_PAPER_API_POOL_SLOTS:-2}
     user: "0:0"
