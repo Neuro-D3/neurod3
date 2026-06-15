@@ -1,0 +1,23 @@
+# Caddy config for the staging Airflow UI (GCE VM).
+#
+# Staging serves the Airflow UI over PLAIN HTTP on :80 — no TLS. We went HTTP-only
+# because Airflow's login/session handling didn't work behind the self-signed cert
+# (https base URL + Secure cookies). Access is restricted at the network layer
+# (the airflow_web_public firewall in network.tf), not by TLS.
+#
+# IMPORTANT: AIRFLOW__API__BASE_URL must be http://<host> to match (set in
+# docker-compose.gce.yml). An https base URL makes Airflow emit https links and
+# set Secure cookies that won't be sent back over plain HTTP, which breaks login.
+#
+# To move to real HTTPS later: point a DNS A record at the static IP, change the
+# site below to `your.hostname { reverse_proxy airflow-api-server:8080 }`, and
+# remove `auto_https off` so Caddy auto-provisions a Let's Encrypt cert.
+
+{
+	# No TLS at all: don't provision certs and don't add http->https redirects.
+	auto_https off
+}
+
+:80 {
+	reverse_proxy airflow-api-server:8080
+}

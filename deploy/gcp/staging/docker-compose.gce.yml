@@ -1,0 +1,217 @@
+# Airflow-only Compose for the staging GCE VM (neuro-d3-airflow).
+#
+# Differences from the root docker-compose.yml (local dev):
+#   - NO bundled postgres: the DB is Cloud SQL, reached via the cloud-sql-proxy
+#     sidecar (authenticated by the VM service account through ADC / the metadata
+#     server — no key file). Airflow connects to host "cloudsql-proxy:5432".
+#   - NO pgadmin / api / frontend: API + frontend run on Cloud Run; queries via
+#     Cloud SQL Studio / the cloud console.
+#   - Adds Caddy (TLS) fronting the Airflow UI on 80/443 -> airflow-api-server:8080.
+#   - Image is pulled from Artifact Registry (${AIRFLOW_IMAGE}), not built here.
+#
+# Values come from the env file the VM startup script writes (/etc/neuro-d3/airflow.env).
+# Run from the repo root as project dir so ./dags etc. resolve:
+#   docker compose --project-directory /opt/neuro-d3 \
+#     --env-file /etc/neuro-d3/airflow.env \
+#     -f /opt/neuro-d3/deploy/gcp/staging/docker-compose.gce.yml up -d
+
+x-airflow-common:
+  &airflow-common
+  image: "${AIRFLOW_IMAGE:?AIRFLOW_IMAGE is unset; run via the startup script or pass --env-file /etc/neuro-d3/airflow.env}"
+  # Secrets + per-deployment values are injected straight into EVERY container from
+  # the env file the VM startup script writes. Using env_file (not ${VAR} interpolation
+  # in `environment:` below) means an ad-hoc
+  #   docker compose ... up -d --force-recreate airflow-api-server
+  # that forgets --env-file still gets the real Cloud SQL conn + JWT/secret keys — it
+  # cannot silently fall back to a blank value and a phantom database. A missing file
+  # aborts `up` loudly instead of booting misconfigured.
+  env_file:
+    - /etc/neuro-d3/airflow.env
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+    AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
+    PYTHONPATH: /opt/airflow/dags
+    # Public base URL for the api-server's absolute links. Staging serves the UI
+    # over PLAIN HTTP (Caddy :80 — see ./deploy/gcp/staging/Caddyfile), so this MUST
+    # be http://: an https base URL makes Airflow emit https links / set Secure
+    # cookies that break login over HTTP. Hardcoded to the VM's static IP; this
+    # intentionally overrides the (https) value the startup script writes to env_file.
+    AIRFLOW__API__BASE_URL: http://34.169.165.25
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    # Task logs -> GCS (apache-airflow-providers-google baked into the image).
+    # Auth is ADC from the VM service account via the google_cloud_default conn.
+    AIRFLOW__LOGGING__REMOTE_LOGGING: 'true'
+    AIRFLOW__LOGGING__REMOTE_LOG_CONN_ID: 'google_cloud_default'
+    AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: 'google-cloud-platform://'
+    # App-data DB (the `dag_data` database) used by DAG tasks via utils/database.py.
+    # Same Cloud SQL instance as the metadata DB, reached through the proxy sidecar.
+    # These are the switch utils/environment.py keys off of (DB_HOST set => hosted).
+    # DB_PASSWORD is the d3-staging-db-master-password secret and comes from env_file.
+    DB_HOST: cloudsql-proxy
+    DB_PORT: '5432'
+    DB_NAME: dag_data
+    DB_USER: airflow
+    DB_SCHEMA: public
+    # The following are provided at runtime by env_file (/etc/neuro-d3/airflow.env),
+    # NOT by ${VAR} interpolation, so a --env-file-less invocation can't blank them
+    # (and can't desync JWT/secret/fernet across services):
+    #   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN  (AIRFLOW__API__BASE_URL is overridden above)
+    #   AIRFLOW__CORE__FERNET_KEY            AIRFLOW__API__SECRET_KEY
+    #   AIRFLOW__API_AUTH__JWT_SECRET        OPENROUTER_API_KEY
+    #   AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER  DB_PASSWORD
+    # TODO(separate PR): write paper-mapping output to GCS via ObjectStoragePath.
+    # For now it's ephemeral on the VM (local named volume below) — these are lost
+    # if the VM is recreated. The neuro-d3-staging-paper-mapping bucket + VM
+    # objectAdmin IAM already exist, reserved for that conversion.
+    DANDI_PAPER_MAPPING_OUTPUT_DIR: ${DANDI_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/dandi_paper_mapping}
+    OPENNEURO_PAPER_MAPPING_OUTPUT_DIR: ${OPENNEURO_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/openneuro_paper_mapping}
+    CRCNS_PAPER_MAPPING_OUTPUT_DIR: ${CRCNS_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/crcns_paper_mapping}
+    SPARC_PAPER_MAPPING_OUTPUT_DIR: ${SPARC_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/sparc_paper_mapping}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./config:/opt/airflow/config
+    - airflow-output:/opt/airflow/output # ephemeral; TODO move to GCS (separate PR)
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    cloudsql-proxy:
+      condition: service_started
+
+services:
+  # Cloud SQL Auth Proxy. Authenticates via the VM's service account (ADC through
+  # the metadata server) — roles/cloudsql.client. Exposes the instance on :5432
+  # inside the compose network as "cloudsql-proxy".
+  cloudsql-proxy:
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+    command:
+      - "--address=0.0.0.0"
+      - "--port=5432"
+      - "${SQL_CONNECTION_NAME:?SQL_CONNECTION_NAME is unset; run via the startup script or pass --env-file /etc/neuro-d3/airflow.env}"
+    restart: always
+
+  airflow-api-server:
+    <<: *airflow-common
+    command: api-server
+    # No published ports: Caddy is the only public entrypoint.
+    expose:
+      - "8080"
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    hostname: airflow-scheduler
+    command: scheduler
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-api-server:
+        condition: service_healthy
+
+  airflow-triggerer:
+    <<: *airflow-common
+    hostname: airflow-triggerer
+    command: triggerer
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        echo "Waiting for Cloud SQL proxy (cloudsql-proxy:5432)..."
+        for i in {1..60}; do
+          (echo > /dev/tcp/cloudsql-proxy/5432) >/dev/null 2>&1 && break
+          echo "  proxy not ready ($$i/60)"; sleep 2
+        done
+
+        mkdir -v -p /opt/airflow/{logs,dags,plugins,config,output}
+        echo "Airflow version:"
+        # Calling /entrypoint runs the image's init logic, which honors
+        # _AIRFLOW_DB_MIGRATE and _AIRFLOW_WWW_USER_CREATE below (db migrate +
+        # admin user) before exec'ing the command.
+        /entrypoint airflow version
+        /entrypoint airflow config list >/dev/null
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/
+
+        echo "Ensuring Airflow pool dandi_paper_api_pool exists:"
+        DANDI_PAPER_API_POOL_SLOTS="$${DANDI_PAPER_API_POOL_SLOTS:-2}"
+        pool_ok=0
+        for i in {1..30}; do
+          /entrypoint airflow pools set dandi_paper_api_pool "$$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency" && pool_ok=1 && break
+          echo "Pool creation failed; retrying in 2s ($$i/30)..."
+          sleep 2
+        done
+        if [[ "$$pool_ok" -ne 1 ]]; then
+          echo "WARNING: Could not ensure pool dandi_paper_api_pool after retries; continuing anyway."
+        fi
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      # Admin user/password come from env_file (password = the
+      # d3-staging-airflow-admin-password secret). Don't default them here, or a
+      # --env-file-less run would seed an airflow/airflow admin on whatever DB it hit.
+      _PIP_ADDITIONAL_REQUIREMENTS: ''
+      DANDI_PAPER_API_POOL_SLOTS: ${DANDI_PAPER_API_POOL_SLOTS:-2}
+    user: "0:0"
+
+  # TLS terminator + reverse proxy. Self-signed (tls internal) for staging.
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/gcp/staging/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      airflow-api-server:
+        condition: service_healthy
+
+volumes:
+  airflow-output:
+  caddy-data:
+  caddy-config:
+
+# Persistence summary:
+#   - Run history / task state -> Cloud SQL metadata DB (survives VM rebuilds).
+#   - Task logs                -> GCS via Airflow native remote logging (above).
+#   - Paper-mapping artifacts  -> EPHEMERAL on the VM (airflow-output volume).
+#                                 TODO(separate PR): write to GCS via ObjectStoragePath.
+#   - DAG code                 -> git (cloned on boot).

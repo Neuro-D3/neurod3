@@ -47,35 +47,45 @@ def is_local_environment() -> bool:
 
 def get_database_config() -> dict:
     """
-    Get database configuration based on environment.
-    
+    Get database configuration for the application data DB (`dag_data`).
+
+    Switched by EXPLICIT config, not environment auto-detection: if DB_HOST is set
+    (staging/prod — e.g. the GCE compose points it at the Cloud SQL proxy), the
+    config is built from the DB_* env vars. Only when DB_HOST is unset do we fall
+    back to the local-dev defaults (the bundled `postgres` container in the root
+    docker-compose.yml).
+
+    NOTE: do NOT key this off is_local_environment() / LocalExecutor / /.dockerenv.
+    The staging VM also runs LocalExecutor inside Docker, so those falsely read as
+    "local" and would send tasks to a non-existent `postgres` host.
+
     Returns:
         dict: Database connection parameters
     """
-    is_local = is_local_environment()
-    
-    if is_local:
-        # Local PostgreSQL configuration
+    db_host = os.environ.get('DB_HOST')
+
+    if db_host:
+        # Hosted (staging/prod): explicit coordinates from the environment.
         return {
-            'host': 'postgres',
-            'port': 5432,
-            'database': 'dag_data',
-            'user': 'airflow',
-            'password': 'airflow',
-            'schema': 'public'
-        }
-    else:
-        # Hosted environment - you can customize this later
-        # For now, return None or raise an error
-        # You can add environment variables for hosted DB config
-        return {
-            'host': os.environ.get('DB_HOST', 'localhost'),
+            'host': db_host,
             'port': int(os.environ.get('DB_PORT', 5432)),
             'database': os.environ.get('DB_NAME', 'dag_data'),
             'user': os.environ.get('DB_USER', 'airflow'),
-            'password': os.environ.get('DB_PASSWORD', 'airflow'),
-            'schema': os.environ.get('DB_SCHEMA', 'public')
+            # Empty (not "airflow") if unset, so a missing secret fails loudly at
+            # connect time rather than silently trying the dev password.
+            'password': os.environ.get('DB_PASSWORD', ''),
+            'schema': os.environ.get('DB_SCHEMA', 'public'),
         }
+
+    # Local development: the bundled Postgres from the root docker-compose.yml.
+    return {
+        'host': 'postgres',
+        'port': 5432,
+        'database': 'dag_data',
+        'user': 'airflow',
+        'password': 'airflow',
+        'schema': 'public',
+    }
 
 
 def get_database_connection_string() -> str:

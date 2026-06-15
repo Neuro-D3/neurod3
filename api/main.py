@@ -48,10 +48,18 @@ app = FastAPI(title="NeuroD3 API", version="1.0.0")
 ALLOWED_SOURCES = {"CRCNS", "DANDI", "Kaggle", "OpenNeuro", "PhysioNet", "SPARC"}
 ALLOWED_PAPER_MAPPING_SOURCES = {"CRCNS", "DANDI", "OpenNeuro", "SPARC"}
 
-# CORS configuration to allow frontend to access the API
+# CORS configuration to allow the frontend to access the API.
+# Local/dev origins are always allowed; cloud deployments add their frontend
+# origin(s) via the ALLOWED_ORIGINS env var (comma-separated). On Cloud Run the
+# frontend and API are on different *.run.app origins, so the frontend's URL must
+# be listed here for browser requests to succeed.
+_DEFAULT_ORIGINS = ["http://localhost:3000", "http://frontend:3000"]
+_extra_origins = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://frontend:3000"],
+    allow_origins=_DEFAULT_ORIGINS + _extra_origins,
     allow_credentials=True,
     allow_methods=["GET", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
@@ -69,17 +77,22 @@ DB_CONNINFO = (
 
 @contextmanager
 def get_db_connection():
-    """Context manager for database connections."""
-    conn = None
+    """Context manager for database connections.
+
+    Only connect() failures are reported as "connection failed". Query errors
+    raised while the connection is in use propagate to the caller so they surface
+    accurately (e.g. "Database query failed: relation ... does not exist") instead
+    of being mislabeled as a connection failure.
+    """
     try:
         conn = psycopg.connect(DB_CONNINFO)
-        yield conn
     except psycopg.Error as e:
         logger.error(f"Database connection error: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed")
+    try:
+        yield conn
     finally:
-        if conn:
-            conn.close()
+        conn.close()
 
 
 def _validate_paper_mapping_source(source: Optional[str]) -> Optional[str]:
@@ -563,19 +576,25 @@ async def get_datasets(
                 authors_expr = "authors," if "authors" in ds_opt_cols else "NULL::jsonb AS authors,"
                 num_subjects_expr = "num_subjects," if "num_subjects" in ds_opt_cols else "NULL::integer AS num_subjects,"
 
-                secondary_reuse_subquery = """
-                    COALESCE((
-                        SELECT COUNT(DISTINCT citing_paper_doi)::int
-                        FROM dandi_paper_citation_classifications
-                        WHERE dandi_id = d.dataset_id AND classification = 'SECONDARY'
-                    ), 0)
-                    +
-                    COALESCE((
-                        SELECT COUNT(DISTINCT citing_paper_doi)::int
-                        FROM openneuro_paper_citation_classifications
-                        WHERE openneuro_id = d.dataset_id AND classification = 'SECONDARY'
-                    ), 0)
-                """
+                # secondary_reuse_count comes from the per-source citation-classification
+                # tables, which only exist after the paper-mapping DAGs have run. Include
+                # each branch only when its table exists, so the datasets list still works
+                # on a DB that has only the base datasets — otherwise the whole query fails
+                # with UndefinedTable and the endpoint 500s.
+                _reuse_parts = []
+                if _paper_mapping_relation_exists(cursor, "dandi_paper_citation_classifications"):
+                    _reuse_parts.append(
+                        "COALESCE((SELECT COUNT(DISTINCT citing_paper_doi)::int "
+                        "FROM dandi_paper_citation_classifications "
+                        "WHERE dandi_id = d.dataset_id AND classification = 'SECONDARY'), 0)"
+                    )
+                if _paper_mapping_relation_exists(cursor, "openneuro_paper_citation_classifications"):
+                    _reuse_parts.append(
+                        "COALESCE((SELECT COUNT(DISTINCT citing_paper_doi)::int "
+                        "FROM openneuro_paper_citation_classifications "
+                        "WHERE openneuro_id = d.dataset_id AND classification = 'SECONDARY'), 0)"
+                    )
+                secondary_reuse_subquery = " + ".join(_reuse_parts) if _reuse_parts else "0"
 
                 base_select = f"""
                     SELECT
