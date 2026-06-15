@@ -1,10 +1,10 @@
 # Airflow
-logs/
+airflow/logs/
 *.log
 *.pyc
 __pycache__/
 .pytest_cache/
-dags/output/
+airflow/dags/output/
 
 # Environment
 .env

@@ -10,7 +10,7 @@
 #   - Image is pulled from Artifact Registry (${AIRFLOW_IMAGE}), not built here.
 #
 # Values come from the env file the VM startup script writes (/etc/neuro-d3/airflow.env).
-# Run from the repo root as project dir so ./dags etc. resolve:
+# Run from the repo root as project dir so ./airflow/dags etc. resolve:
 #   docker compose --project-directory /opt/neuro-d3 \
 #     --env-file /etc/neuro-d3/airflow.env \
 #     -f /opt/neuro-d3/deploy/gcp/staging/docker-compose.gce.yml up -d
@@ -74,10 +74,10 @@ x-airflow-common:
     CRCNS_PAPER_MAPPING_OUTPUT_DIR: ${CRCNS_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/crcns_paper_mapping}
     SPARC_PAPER_MAPPING_OUTPUT_DIR: ${SPARC_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/sparc_paper_mapping}
   volumes:
-    - ./dags:/opt/airflow/dags
-    - ./logs:/opt/airflow/logs
-    - ./plugins:/opt/airflow/plugins
-    - ./config:/opt/airflow/config
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/plugins:/opt/airflow/plugins
+    - ./airflow/config:/opt/airflow/config
     - airflow-output:/opt/airflow/output # ephemeral; TODO move to GCS (separate PR)
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:

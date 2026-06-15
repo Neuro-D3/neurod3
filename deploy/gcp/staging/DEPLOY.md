@@ -52,7 +52,7 @@ $REPO = "us-west1-docker.pkg.dev/neuro-d3-staging/neuro-d3"
 gcloud auth configure-docker us-west1-docker.pkg.dev
 
 docker build -t "$REPO/api:bootstrap"      ./api      ; docker push "$REPO/api:bootstrap"
-docker build -t "$REPO/airflow:bootstrap"  .          ; docker push "$REPO/airflow:bootstrap"
+docker build -t "$REPO/airflow:bootstrap"  ./airflow  ; docker push "$REPO/airflow:bootstrap"
 docker build -t "$REPO/frontend:bootstrap" ./frontend ; docker push "$REPO/frontend:bootstrap"
 ```
 - Build order doesn't matter — the frontend reads `REACT_APP_API_URL` at *container
