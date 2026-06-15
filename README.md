@@ -157,32 +157,32 @@ If servers don't appear, try refreshing the browser (Ctrl+Shift+R or Cmd+Shift+R
 │   ├── Dockerfile
 │   └── package.json         # Node.js dependencies
 │
-├── dags/                    # Apache Airflow DAGs
-│   ├── dandi_ingestion.py   # DAG for ingesting DANDI datasets
-│   ├── populate_datasets_dag.py  # DAG for populating datasets from multiple sources
-│   ├── database_example_dag.py    # Example DAG demonstrating database operations
-│   ├── example_dag.py       # Basic Airflow example
-│   └── utils/               # Shared utilities for DAGs
-│       ├── database.py      # Database connection and query utilities
-│       └── environment.py   # Environment detection utilities
+├── airflow/                 # Apache Airflow image + DAGs/config/plugins
+│   ├── Dockerfile           # Custom Airflow image with dependencies
+│   ├── requirements.txt     # Python package dependencies (Airflow)
+│   ├── dags/                # Apache Airflow DAGs
+│   │   ├── dandi_ingestion.py        # DAG for ingesting DANDI datasets
+│   │   ├── populate_datasets_dag.py  # DAG for populating datasets from multiple sources
+│   │   ├── database_example_dag.py   # Example DAG demonstrating database operations
+│   │   ├── example_dag.py            # Basic Airflow example
+│   │   └── utils/           # Shared utilities for DAGs
+│   │       ├── database.py            # Database connection and query utilities
+│   │       └── environment.py        # Environment detection utilities
+│   ├── config/              # Airflow configuration files
+│   │   └── airflow.cfg
+│   ├── plugins/             # Custom Airflow plugins
+│   └── logs/                # Airflow logs (auto-created)
 │
 ├── database/                # Database initialization scripts
 │   ├── init-db.sql          # Initial database schema setup
 │   └── pgadmin-servers.json # pgAdmin server configuration
-│
-├── config/                  # Airflow configuration files
-│   └── airflow.cfg
 │
 ├── docs/                    # Documentation
 │   ├── API_USAGE.md         # API usage guide
 │   ├── DATABASE_SETUP.md    # Database setup details
 │   └── data_citation_notes.md
 │
-├── logs/                    # Airflow logs (auto-created)
-├── plugins/                 # Custom Airflow plugins
 ├── docker-compose.yml       # Docker Compose configuration
-├── Dockerfile               # Custom Airflow image with dependencies
-├── requirements.txt         # Python package dependencies
 └── README.md                # This file
 ```
 
@@ -395,7 +395,7 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 
 **DAGs not appearing**:
 - Check the scheduler logs: `docker compose logs -f airflow-scheduler`
-- Ensure your DAG files are in the `dags/` directory
+- Ensure your DAG files are in the `airflow/dags/` directory
 - Verify DAG files don't have syntax errors
 
 **Frontend not loading**:

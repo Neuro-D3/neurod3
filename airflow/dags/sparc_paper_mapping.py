@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Pennsieve returns externalPublications as structured JSON on each dataset, so
 # unlike CRCNS we don't need HTML scraping. Keep this inline rather than its
-# own dags/utils/sparc_paper_resolution.py — it's small enough.
+# own airflow/dags/utils/sparc_paper_resolution.py — it's small enough.
 
 _PENNSIEVE_API = "https://api.pennsieve.io/discover"
 _SPARC_USER_AGENT = "D3-SPARC-PaperMapping/1.0"

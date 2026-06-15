@@ -12,7 +12,7 @@ version: '3.8'
 x-airflow-common:
   &airflow-common
   build:
-    context: .
+    context: ./airflow
     dockerfile: Dockerfile
   environment:
     &airflow-common-env
@@ -39,10 +39,10 @@ x-airflow-common:
     # OpenRouter API key for LLM-based paper reuse classification DAG.
     OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   volumes:
-    - ./dags:/opt/airflow/dags
-    - ./logs:/opt/airflow/logs
-    - ./plugins:/opt/airflow/plugins
-    - ./config:/opt/airflow/config
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/plugins:/opt/airflow/plugins
+    - ./airflow/config:/opt/airflow/config
   networks:
     - pr-network
   # Airflow's image expects to run with GID=0 even when using a non-root UID.

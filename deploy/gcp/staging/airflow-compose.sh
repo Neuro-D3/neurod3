@@ -2,7 +2,7 @@
 # Safe wrapper for the staging Airflow compose stack on the GCE VM.
 #
 # Always targets the GCE compose file with the correct project directory (so
-# ./dags, ./config, ./deploy/... resolve) and the secrets env file the startup
+# ./airflow/dags, ./airflow/config, ./deploy/... resolve) and the secrets env file the startup
 # script wrote. Use this for EVERY manual op on the VM, e.g.:
 #
 #   sudo bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh ps

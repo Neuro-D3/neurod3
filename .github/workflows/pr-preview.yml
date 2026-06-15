@@ -130,7 +130,7 @@ jobs:
     steps:
       - name: Stop PR preview containers (release workspace bind mounts)
         run: |
-          # docker-compose.pr.yml bind-mounts ./dags, ./config, ./plugins, ./logs. Containers
+          # docker-compose.pr.yml bind-mounts ./airflow/{dags,config,plugins,logs}. Containers
           # still running from a prior run keep those paths busy / root-owned and checkout fails
           # with "Permission denied" when git tries to recreate the same files.
           for c in $(docker ps --format '{{.Names}}' | grep -E '^pr-[0-9]+-' || true); do
