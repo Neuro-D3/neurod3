@@ -95,6 +95,24 @@ resource "google_compute_instance_iam_member" "deployer_os_admin_login" {
   member        = "serviceAccount:${google_service_account.deployer.email}"
 }
 
+# gcloud compute ssh additionally needs project-level compute.projects.get (read
+# the project's OS Login config / common metadata). An instance-scoped binding
+# can't satisfy a project-scoped permission, so grant EXACTLY this one read via a
+# minimal custom role — the sudo/login capability stays scoped to the VM above,
+# and this adds no write or cross-VM login access (vs. broad roles/compute.viewer).
+resource "google_project_iam_custom_role" "deployer_ssh" {
+  role_id     = "cicdDeployerSsh"
+  title       = "CI/CD Deployer SSH helper"
+  description = "Minimal project read (compute.projects.get) that gcloud compute ssh requires."
+  permissions = ["compute.projects.get"]
+}
+
+resource "google_project_iam_member" "deployer_ssh" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.deployer_ssh.name
+  member  = "serviceAccount:${google_service_account.deployer.email}"
+}
+
 # ─── actAs the runtime / VM service accounts ────────────────────────────────
 # Deploying a Cloud Run revision runs as the service's runtime SA, and SSHing an
 # instance that has a SA both require serviceAccountUser on that SA.
