@@ -174,8 +174,11 @@ jobs:
             --tunnel-through-iap --quiet --command "
               set -euo pipefail
               sudo sed -i 's#^AIRFLOW_IMAGE=.*#AIRFLOW_IMAGE=${IMAGE}#' /etc/neuro-d3/airflow.env
-              sudo bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh pull
-              sudo bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh up -d
+              # Refresh Docker->Artifact Registry auth into root's config (-H => HOME=/root,
+              # which compose below also uses). The VM's boot-time token has expired.
+              curl -s -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' | jq -r '.access_token' | sudo -H docker login -u oauth2accesstoken --password-stdin https://us-west1-docker.pkg.dev
+              sudo -H bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh pull
+              sudo -H bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh up -d
             "
 
   # ── DAGs / config / VM runtime files → git-sync the VM ─────────────────────
@@ -203,5 +206,8 @@ jobs:
               set -euo pipefail
               sudo git -C /opt/neuro-d3 fetch origin main
               sudo git -C /opt/neuro-d3 checkout -B main origin/main
-              sudo bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh up -d
+              # Refresh Docker->Artifact Registry auth into root's config in case `up`
+              # must pull the airflow image; -H => HOME=/root, matching compose.
+              curl -s -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' | jq -r '.access_token' | sudo -H docker login -u oauth2accesstoken --password-stdin https://us-west1-docker.pkg.dev
+              sudo -H bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh up -d
             "
