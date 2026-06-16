@@ -106,7 +106,8 @@ jobs:
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
       - name: Build & push API image
         run: |
-          docker build -t "${AR_REPO}/api:${{ github.sha }}" -t "${AR_REPO}/api:staging" ./api
+          docker build --build-arg GIT_SHA=${{ github.sha }} \
+            -t "${AR_REPO}/api:${{ github.sha }}" -t "${AR_REPO}/api:staging" ./api
           docker push "${AR_REPO}/api:${{ github.sha }}"
           docker push "${AR_REPO}/api:staging"
       - name: Deploy to Cloud Run
@@ -135,7 +136,8 @@ jobs:
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
       - name: Build & push frontend image
         run: |
-          docker build -t "${AR_REPO}/frontend:${{ github.sha }}" -t "${AR_REPO}/frontend:staging" ./frontend
+          docker build --build-arg GIT_SHA=${{ github.sha }} \
+            -t "${AR_REPO}/frontend:${{ github.sha }}" -t "${AR_REPO}/frontend:staging" ./frontend
           docker push "${AR_REPO}/frontend:${{ github.sha }}"
           docker push "${AR_REPO}/frontend:staging"
       - name: Deploy to Cloud Run
@@ -144,13 +146,17 @@ jobs:
             --image "${AR_REPO}/frontend:${{ github.sha }}" \
             --region "${REGION}" --project "${PROJECT_ID}" --quiet
 
-  # ── Airflow image → Artifact Registry → roll the VM ────────────────────────
-  deploy-airflow-image:
+  # ── Airflow: build image (if changed) + git-sync the VM, in one job ────────
+  # Both halves SSH the same VM and must be sequential, so they live in one job:
+  # one auth, one AR-login refresh, one `up -d` (no inter-job ordering hack).
+  deploy-airflow:
     needs: changes
     if: >-
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository) &&
-      (needs.changes.outputs.airflow_image == 'true' || needs.changes.outputs.deploy_all == 'true')
+      (needs.changes.outputs.airflow_image == 'true' ||
+       needs.changes.outputs.vm_sync == 'true' ||
+       needs.changes.outputs.deploy_all == 'true')
     runs-on: ubuntu-latest
     environment: staging
     steps:
@@ -160,54 +166,34 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SA }}
       - uses: google-github-actions/setup-gcloud@v2
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+      # Build/push only when the Airflow image actually changed.
       - name: Build & push Airflow image
+        if: needs.changes.outputs.airflow_image == 'true' || needs.changes.outputs.deploy_all == 'true'
         run: |
-          docker build -t "${AR_REPO}/airflow:${{ github.sha }}" -t "${AR_REPO}/airflow:staging" ./airflow
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+          docker build --build-arg GIT_SHA=${{ github.sha }} \
+            -t "${AR_REPO}/airflow:${{ github.sha }}" -t "${AR_REPO}/airflow:staging" ./airflow
           docker push "${AR_REPO}/airflow:${{ github.sha }}"
           docker push "${AR_REPO}/airflow:staging"
-      - name: Roll the Airflow VM onto the new image
+      - name: Sync + roll the Airflow VM
         run: |
-          IMAGE="${AR_REPO}/airflow:${{ github.sha }}"
-          gcloud compute ssh "${VM_NAME}" --zone "${VM_ZONE}" --project "${PROJECT_ID}" \
-            --tunnel-through-iap --quiet --command "
-              set -euo pipefail
-              sudo sed -i 's#^AIRFLOW_IMAGE=.*#AIRFLOW_IMAGE=${IMAGE}#' /etc/neuro-d3/airflow.env
-              # Refresh Docker->Artifact Registry auth into root's config (-H => HOME=/root,
-              # which compose below also uses). The VM's boot-time token has expired.
-              curl -s -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' | jq -r '.access_token' | sudo -H docker login -u oauth2accesstoken --password-stdin https://us-west1-docker.pkg.dev
-              sudo -H bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh pull
-              sudo -H bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh up -d
-            "
-
-  # ── DAGs / config / VM runtime files → git-sync the VM ─────────────────────
-  sync-vm:
-    needs: [changes, deploy-airflow-image]
-    # Runs after deploy-airflow-image (when present) to avoid two overlapping
-    # `up -d`. !cancelled() lets it run even when deploy-airflow-image is skipped.
-    if: >-
-      !cancelled() &&
-      (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository) &&
-      (needs.changes.outputs.vm_sync == 'true' || needs.changes.outputs.airflow_image == 'true' || needs.changes.outputs.deploy_all == 'true')
-    runs-on: ubuntu-latest
-    environment: staging
-    steps:
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
-      - uses: google-github-actions/setup-gcloud@v2
-      - name: Pull main onto the VM and recreate the stack
-        run: |
+          # Roll the image only when it changed; otherwise just git-sync DAGs/config.
+          if [ "${{ needs.changes.outputs.airflow_image }}" = "true" ] || [ "${{ needs.changes.outputs.deploy_all }}" = "true" ]; then
+            IMAGE="${AR_REPO}/airflow:${{ github.sha }}"
+          else
+            IMAGE=""
+          fi
           gcloud compute ssh "${VM_NAME}" --zone "${VM_ZONE}" --project "${PROJECT_ID}" \
             --tunnel-through-iap --quiet --command "
               set -euo pipefail
               sudo git -C /opt/neuro-d3 fetch origin main
               sudo git -C /opt/neuro-d3 checkout -B main origin/main
-              # Refresh Docker->Artifact Registry auth into root's config in case `up`
-              # must pull the airflow image; -H => HOME=/root, matching compose.
+              # Refresh Docker->Artifact Registry auth into root's config (-H => HOME=/root,
+              # which compose below also uses). The VM's boot-time token has expired.
               curl -s -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' | jq -r '.access_token' | sudo -H docker login -u oauth2accesstoken --password-stdin https://us-west1-docker.pkg.dev
+              if [ -n '${IMAGE}' ]; then
+                sudo sed -i 's#^AIRFLOW_IMAGE=.*#AIRFLOW_IMAGE=${IMAGE}#' /etc/neuro-d3/airflow.env
+                sudo -H bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh pull
+              fi
               sudo -H bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh up -d
             "

@@ -142,10 +142,13 @@ components to staging — keyless via Workload Identity Federation (no SA key):
 
 - **api/** → build, push, `gcloud run services update neuro-d3-api`
 - **frontend/** → same for `neuro-d3-frontend`
-- **airflow/Dockerfile, airflow/requirements.txt** → build/push the `airflow`
-  image, then roll the VM onto it (SSH over IAP → `airflow-compose.sh pull && up -d`)
-- **airflow/dags, airflow/config, airflow/plugins, this dir's compose/Caddyfile** →
-  git-sync the VM to `origin/main` and recreate
+- **airflow** (one `deploy-airflow` job, SSH over IAP) — rebuilds + pushes the `airflow`
+  image when `airflow/Dockerfile`/`requirements.txt` change, then git-syncs the VM to
+  `origin/main` (DAGs/config/compose/Caddyfile) and recreates the stack in a single
+  `airflow-compose.sh up -d` (image roll only happens when the image changed)
+
+Each image is built with `--build-arg GIT_SHA=<commit>` so the running commit is visible
+in the frontend footer, `/api/health` (`version`), and the Airflow `GIT_SHA` env var.
 
 Only changed components deploy (via `dorny/paths-filter`); a `.github/**` change or a
 manual `workflow_dispatch(deploy_all=true)` deploys everything.
