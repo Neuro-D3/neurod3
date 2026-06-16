@@ -5,6 +5,11 @@ import { datasetDetailPath, fetchDatasets, fetchDatasetStats } from '../services
 import type { Dataset } from '../services/api';
 import { PopulationIcon } from './PopulationIcon';
 
+// Git SHA baked into the image at build time (CI --build-arg GIT_SHA -> Dockerfile
+// ENV REACT_APP_GIT_SHA, inlined by CRA). Defaults to "dev" locally.
+const GIT_SHA = process.env.REACT_APP_GIT_SHA || 'dev';
+const REPO_URL = 'https://github.com/Neuro-D3/neurod3';
+
 // Lightweight icon stand-ins (avoid external deps in preview)
 const IconWrapper: React.FC<{ className?: string; children: React.ReactNode }> = ({
   className,
@@ -1175,6 +1180,48 @@ export default function NeuroDatasetDiscovery() {
             >
               Foresight Institute
             </a>
+            {' | '}
+            <a
+              href="https://catalystneuro.com/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-500 hover:text-blue-400 transition-colors"
+            >
+              Catalyst Neuro
+            </a>
+            {' | '}
+            <a
+              href="https://duralabs.ai"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-500 hover:text-blue-400 transition-colors"
+            >
+              Dura Labs
+            </a>
+            {' | '}
+            <a
+              href="https://linktr.ee/BerkeleyLab"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-500 hover:text-blue-400 transition-colors"
+            >
+              Berkeley Lab
+            </a>
+          </p>
+          <p className="mt-1 text-xs opacity-75">
+            Build:{' '}
+            {GIT_SHA === 'dev' ? (
+              '#dev'
+            ) : (
+              <a
+                href={`${REPO_URL}/commit/${GIT_SHA}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-500 hover:text-blue-400 transition-colors"
+              >
+                #{GIT_SHA.slice(0, 7)}
+              </a>
+            )}
           </p>
         </div>
 

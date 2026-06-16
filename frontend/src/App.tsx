@@ -4,7 +4,6 @@ import './App.css';
 import NeuroDatasetDiscovery from './components/NeuroDatasetDiscovery';
 import PaperMappingDashboard from './pages/PaperMappingDashboard';
 import DatasetDetailPage from './pages/DatasetDetailPage';
-import { BuildFooter } from './components/BuildFooter';
 
 function scrollWindowToTop() {
   window.scrollTo(0, 0);
@@ -82,7 +81,6 @@ function AppLayout() {
         <Route path="/datasets/:source/:datasetId" element={<DatasetDetailPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-      <BuildFooter />
     </div>
   );
 }
