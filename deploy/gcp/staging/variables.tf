@@ -116,3 +116,16 @@ variable "airflow_fernet_key" {
   default     = "REPLACE_ME"
   sensitive   = true
 }
+
+# ─── CI/CD (GitHub Actions → Workload Identity Federation) ───────────────────
+variable "github_repo" {
+  description = "GitHub repository (owner/name) allowed to impersonate the deployer SA via Workload Identity Federation."
+  type        = string
+  default     = "Neuro-D3/neurod3"
+}
+
+variable "wif_lock_to_main" {
+  description = "Rollout toggle. false (Phase 1): any ref in github_repo may deploy — required for PR-trigger testing (PR runs present ref refs/pull/N/merge). true (Phase 2): only refs/heads/main may deploy."
+  type        = bool
+  default     = false
+}

@@ -101,15 +101,16 @@ if [ ! -d "$APP_DIR/.git" ]; then
   git clone --depth 1 "$REPO_URL" "$APP_DIR"
 fi
 
-# Try infra/gcp-staging first (staging deployment), fall back to main/default branch
-if git -C "$APP_DIR" fetch origin infra/gcp-staging 2>/dev/null; then
-  git -C "$APP_DIR" checkout -B infra/gcp-staging FETCH_HEAD 2>/dev/null || true
+# Track main: staging deploys from main (CI git-syncs the VM to origin/main on
+# merge). Fall back to the cloned default branch if the fetch fails.
+if git -C "$APP_DIR" fetch origin main 2>/dev/null; then
+  git -C "$APP_DIR" checkout -B main FETCH_HEAD 2>/dev/null || true
 else
   git -C "$APP_DIR" pull --ff-only 2>/dev/null || true
 fi
 
 if [ -f "$COMPOSE_FILE" ]; then
-  # --project-directory = repo root so ./dags, ./config, ./deploy/... resolve.
+  # --project-directory = repo root so ./airflow/dags, ./airflow/config, ./deploy/... resolve.
   docker compose --project-directory "$APP_DIR" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull || true
   docker compose --project-directory "$APP_DIR" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d
 else
