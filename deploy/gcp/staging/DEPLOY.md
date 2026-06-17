@@ -145,7 +145,10 @@ terraform output -raw airflow_url    # https://<static-ip> — self-signed cert 
   `terraform apply` (Cloud Run redeploys on the changed ref).
 - **Teardown:** `terraform destroy` works cleanly (`db_deletion_protection = false`,
   buckets `force_destroy = true`). It removes only in-project resources, never the
-  platform-owned project/state bucket.
+  platform-owned project/state bucket. Exception: the `find-reuse-cache` bucket is
+  `force_destroy = false` to protect the expensive-to-regenerate cache, so destroy
+  fails while it holds objects. Empty it first (`gcloud storage rm --recursive
+  gs://neuro-d3-staging-find-reuse-cache/\*`) when you genuinely intend to tear it down.
 
 ---
 
