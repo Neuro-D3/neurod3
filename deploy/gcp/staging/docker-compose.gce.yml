@@ -49,6 +49,9 @@ x-airflow-common:
     AIRFLOW__LOGGING__REMOTE_LOGGING: 'true'
     AIRFLOW__LOGGING__REMOTE_LOG_CONN_ID: 'google_cloud_default'
     AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: 'google-cloud-platform://'
+    # find_reuse cache bucket (utils/bucket.py). ADC from the VM service account
+    # via the google_cloud_default conn above; no static keys.
+    FIND_REUSE_BUCKET_URL: gs://neuro-d3-staging-find-reuse-cache
     # App-data DB (the `dag_data` database) used by DAG tasks via utils/database.py.
     # Same Cloud SQL instance as the metadata DB, reached through the proxy sidecar.
     # These are the switch utils/environment.py keys off of (DB_HOST set => hosted).

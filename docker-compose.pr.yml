@@ -38,6 +38,9 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     # OpenRouter API key for LLM-based paper reuse classification DAG.
     OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    # fsspec URL for the find_reuse cache bucket (utils/bucket.py). The seed-init
+    # service reads it; PR envs on GCP authenticate via the VM's ADC.
+    FIND_REUSE_BUCKET_URL: ${FIND_REUSE_BUCKET_URL:-}
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
