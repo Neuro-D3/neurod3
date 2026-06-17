@@ -7,17 +7,14 @@ name: Deploy to Staging
 #   vars.GCP_WIF_PROVIDER  — full WIF provider resource name
 #   vars.GCP_DEPLOY_SA     — deployer SA email
 #
-# Rollout:
-#   Phase 1 (testing)  — trigger is `pull_request` (below). PR runs deploy the
-#                        PR's built images; the VM git-sync targets `main`
-#                        (PR DAG changes are validated by the OCI PR-preview).
-#   Phase 2 (go-live)  — replace the `pull_request:` trigger with:
-#                          push:
-#                            branches: [main]
-#                        and set var.wif_lock_to_main = true (terraform apply).
+# Rollout: LIVE (Phase 2) — runs on merge to `main`. Pair with
+# var.wif_lock_to_main = true (terraform apply) so only refs/heads/main can deploy.
+# To re-open PR testing, swap `push:`/`branches: [main]` back to `pull_request:`
+# and set wif_lock_to_main = false.
 
 on:
-  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       deploy_all:
