@@ -74,6 +74,9 @@ DB_CONNINFO = (
     f"password={os.getenv('DB_PASSWORD', 'airflow')}"
 )
 
+# Build version stamp (git SHA baked at image build), surfaced via /api/health.
+APP_VERSION = os.getenv("APP_VERSION", "dev")
+
 
 @contextmanager
 def get_db_connection():
@@ -488,15 +491,17 @@ async def health_check():
                     cursor.execute("SELECT COUNT(*) FROM unified_datasets")
                     view_count = cursor.fetchone()[0]
                     return {
-                        "status": "healthy", 
+                        "status": "healthy",
                         "database": "connected",
+                        "version": APP_VERSION,
                         "unified_datasets_view": "exists",
                         "view_row_count": view_count
                     }
                 else:
                     return {
-                        "status": "healthy", 
+                        "status": "healthy",
                         "database": "connected",
+                        "version": APP_VERSION,
                         "unified_datasets_view": "missing"
                     }
     except Exception as e:

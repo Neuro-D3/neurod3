@@ -9,6 +9,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Build version stamp (git SHA), surfaced via /api/health. Defaults to "dev" locally.
+ARG GIT_SHA=dev
+ENV APP_VERSION=$GIT_SHA
+
 # Expose port
 EXPOSE 8000
 

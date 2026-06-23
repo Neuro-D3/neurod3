@@ -1,0 +1,196 @@
+name: Deploy to Staging
+
+# Pushes app changes to the GCP staging environment (neuro-d3-staging).
+#
+# Auth: keyless via Workload Identity Federation. Requires two GitHub repo
+# variables (set from `terraform output` after applying deploy/gcp/staging/cicd.tf):
+#   vars.GCP_WIF_PROVIDER  — full WIF provider resource name
+#   vars.GCP_DEPLOY_SA     — deployer SA email
+#
+# Rollout: LIVE (Phase 2) — runs on merge to `main`. Pair with
+# var.wif_lock_to_main = true (terraform apply) so only refs/heads/main can deploy.
+# To re-open PR testing, swap `push:`/`branches: [main]` back to `pull_request:`
+# and set wif_lock_to_main = false.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_all:
+        description: "Deploy every component regardless of changed paths"
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write # mint the OIDC token for WIF
+  contents: read
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false # never interrupt a half-applied VM/Cloud Run deploy
+
+env:
+  PROJECT_ID: neuro-d3-staging
+  REGION: us-west1
+  AR_REPO: us-west1-docker.pkg.dev/neuro-d3-staging/neuro-d3
+  VM_NAME: neuro-d3-airflow
+  VM_ZONE: us-west1-a
+
+jobs:
+  # ── Decide which components changed ────────────────────────────────────────
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      airflow_image: ${{ steps.filter.outputs.airflow_image }}
+      vm_sync: ${{ steps.filter.outputs.vm_sync }}
+      deploy_all: ${{ steps.flags.outputs.deploy_all }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'api/**'
+            frontend:
+              - 'frontend/**'
+            airflow_image:
+              - 'airflow/Dockerfile'
+              - 'airflow/requirements.txt'
+            vm_sync:
+              - 'airflow/dags/**'
+              - 'airflow/config/**'
+              - 'airflow/plugins/**'
+              - 'deploy/gcp/staging/docker-compose.gce.yml'
+              - 'deploy/gcp/staging/Caddyfile'
+              - 'deploy/gcp/staging/airflow-compose.sh'
+            cicd:
+              - '.github/**'
+      - id: flags
+        # Deploy everything when manually requested OR when the pipeline itself
+        # changed (.github/**) so the new pipeline is validated against all components.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.deploy_all }}" = "true" ]; then
+            echo "deploy_all=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.filter.outputs.cicd }}" = "true" ]; then
+            echo "deploy_all=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy_all=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── API → Cloud Run ────────────────────────────────────────────────────────
+  deploy-api:
+    needs: changes
+    # Fork-block: deploy jobs hold the WIF token, so never run them for PRs from
+    # forks (workflow_dispatch/push always pass the first clause).
+    if: >-
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.api == 'true' || needs.changes.outputs.deploy_all == 'true')
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+      - name: Build & push API image
+        run: |
+          docker build --build-arg GIT_SHA=${{ github.sha }} \
+            -t "${AR_REPO}/api:${{ github.sha }}" -t "${AR_REPO}/api:staging" ./api
+          docker push "${AR_REPO}/api:${{ github.sha }}"
+          docker push "${AR_REPO}/api:staging"
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run services update neuro-d3-api \
+            --image "${AR_REPO}/api:${{ github.sha }}" \
+            --region "${REGION}" --project "${PROJECT_ID}" --quiet
+
+  # ── Frontend → Cloud Run ───────────────────────────────────────────────────
+  deploy-frontend:
+    needs: changes
+    if: >-
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.deploy_all == 'true')
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+      - name: Build & push frontend image
+        run: |
+          docker build --build-arg GIT_SHA=${{ github.sha }} \
+            -t "${AR_REPO}/frontend:${{ github.sha }}" -t "${AR_REPO}/frontend:staging" ./frontend
+          docker push "${AR_REPO}/frontend:${{ github.sha }}"
+          docker push "${AR_REPO}/frontend:staging"
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run services update neuro-d3-frontend \
+            --image "${AR_REPO}/frontend:${{ github.sha }}" \
+            --region "${REGION}" --project "${PROJECT_ID}" --quiet
+
+  # ── Airflow: build image (if changed) + git-sync the VM, in one job ────────
+  # Both halves SSH the same VM and must be sequential, so they live in one job:
+  # one auth, one AR-login refresh, one `up -d` (no inter-job ordering hack).
+  deploy-airflow:
+    needs: changes
+    if: >-
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.airflow_image == 'true' ||
+       needs.changes.outputs.vm_sync == 'true' ||
+       needs.changes.outputs.deploy_all == 'true')
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      # Build/push only when the Airflow image actually changed.
+      - name: Build & push Airflow image
+        if: needs.changes.outputs.airflow_image == 'true' || needs.changes.outputs.deploy_all == 'true'
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+          docker build --build-arg GIT_SHA=${{ github.sha }} \
+            -t "${AR_REPO}/airflow:${{ github.sha }}" -t "${AR_REPO}/airflow:staging" ./airflow
+          docker push "${AR_REPO}/airflow:${{ github.sha }}"
+          docker push "${AR_REPO}/airflow:staging"
+      - name: Sync + roll the Airflow VM
+        run: |
+          # Roll the image only when it changed; otherwise just git-sync DAGs/config.
+          if [ "${{ needs.changes.outputs.airflow_image }}" = "true" ] || [ "${{ needs.changes.outputs.deploy_all }}" = "true" ]; then
+            IMAGE="${AR_REPO}/airflow:${{ github.sha }}"
+          else
+            IMAGE=""
+          fi
+          gcloud compute ssh "${VM_NAME}" --zone "${VM_ZONE}" --project "${PROJECT_ID}" \
+            --tunnel-through-iap --quiet --command "
+              set -euo pipefail
+              sudo git -C /opt/neuro-d3 fetch origin main
+              sudo git -C /opt/neuro-d3 checkout -B main origin/main
+              # Refresh Docker->Artifact Registry auth into root's config (-H => HOME=/root,
+              # which compose below also uses). The VM's boot-time token has expired.
+              curl -s -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' | jq -r '.access_token' | sudo -H docker login -u oauth2accesstoken --password-stdin https://us-west1-docker.pkg.dev
+              if [ -n '${IMAGE}' ]; then
+                sudo sed -i 's#^AIRFLOW_IMAGE=.*#AIRFLOW_IMAGE=${IMAGE}#' /etc/neuro-d3/airflow.env
+                sudo -H bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh pull
+              fi
+              sudo -H bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh up -d
+            "

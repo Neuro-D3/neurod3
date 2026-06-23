@@ -35,3 +35,9 @@ allowed_origins = "" # e.g. "https://neuro-d3-frontend-xxxxxxxxxx-uw.a.run.app"
 # as new secret versions (or set them here in a NON-committed terraform.tfvars).
 openrouter_api_key = "REPLACE_ME"
 airflow_fernet_key = "REPLACE_ME" # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# CI/CD (GitHub Actions → WIF)
+github_repo = "Neuro-D3/neurod3"
+# Phase 1 (testing on PRs): false — any ref in github_repo may deploy.
+# Phase 2 (go-live): true — only refs/heads/main may deploy.
+wif_lock_to_main = false

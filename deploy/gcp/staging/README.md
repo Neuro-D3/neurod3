@@ -132,4 +132,49 @@ pipeline write/cache logic and needs a real DAG run to verify.)
   `terraform destroy` works for staging.
 - The Airflow VM defaults to `e2-small` (2 GB). If Airflow OOMs, bump
   `vm_machine_type = "e2-medium"` (one line) — this matches prod's VM size.
-- CI/Workload Identity Federation is intentionally **not** built here yet.
+- CI/CD via GitHub Actions + Workload Identity Federation is defined in `cicd.tf`
+  and `.github/workflows/deploy-staging.yml` — see **CI/CD** below.
+
+## CI/CD (GitHub Actions → staging)
+
+On merge to `main`, `.github/workflows/deploy-staging.yml` pushes changed app
+components to staging — keyless via Workload Identity Federation (no SA key):
+
+- **api/** → build, push, `gcloud run services update neuro-d3-api`
+- **frontend/** → same for `neuro-d3-frontend`
+- **airflow** (one `deploy-airflow` job, SSH over IAP) — rebuilds + pushes the `airflow`
+  image when `airflow/Dockerfile`/`requirements.txt` change, then git-syncs the VM to
+  `origin/main` (DAGs/config/compose/Caddyfile) and recreates the stack in a single
+  `airflow-compose.sh up -d` (image roll only happens when the image changed)
+
+Each image is built with `--build-arg GIT_SHA=<commit>` so the running commit is visible
+in the frontend footer, `/api/health` (`version`), and the Airflow `GIT_SHA` env var.
+
+Only changed components deploy (via `dorny/paths-filter`); a `.github/**` change or a
+manual `workflow_dispatch(deploy_all=true)` deploys everything.
+
+**One-time bootstrap** (run locally, project IAM-admin rights):
+```bash
+terraform apply                                  # creates cicd.tf (WIF pool/provider, deployer SA, IAM)
+gh variable set GCP_WIF_PROVIDER -b "$(terraform output -raw cicd_wif_provider)"
+gh variable set GCP_DEPLOY_SA    -b "$(terraform output -raw cicd_deploy_sa)"
+```
+
+**Security scoping:**
+- WIF provider is pinned to `var.github_repo` (`attribute_condition`), and the
+  deploy jobs **fork-block** (skip for PRs from forks) so untrusted PR code never
+  runs with the deploy token.
+- The deployer SA is least-privilege: AR push, Cloud Run deploy, IAP tunnel, and
+  **OS Login sudo scoped to the Airflow VM instance only** (not every project VM),
+  plus `serviceAccountUser` on just the api/frontend/airflow runtime SAs.
+- Deploy jobs use a GitHub **`staging` Environment** — create it (repo → Settings →
+  Environments → `staging`) and configure protection per phase:
+  - **Phase 1 (testing):** add **required reviewers** so each PR deploy needs
+    approval before it touches staging.
+  - **Phase 2 (go-live):** drop reviewers and set a **deployment branch rule =
+    `main`** so merges auto-deploy but only from `main`.
+
+**Rollout:** the workflow ships triggering on `pull_request` with
+`var.wif_lock_to_main = false` (any ref may deploy) for safe end-to-end testing. At
+go-live, switch the workflow trigger to `push: branches: [main]` and set
+`wif_lock_to_main = true` (`terraform apply`) so only merges to `main` deploy.
