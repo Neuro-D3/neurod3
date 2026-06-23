@@ -1,5 +1,7 @@
 # Ignore utility files - they are not DAGs
 utils/
+# Unit tests live alongside the DAGs but must not be parsed as DAGs.
+tests/
 __pycache__/
 *.pyc
 

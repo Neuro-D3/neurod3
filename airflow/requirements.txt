@@ -8,3 +8,8 @@
 # official constraints file or pin a compatible provider version.
 apache-airflow-providers-google
 
+# fsspec GCS backend for utils/bucket.py (find_reuse cache access). Declared
+# explicitly rather than relying on it arriving transitively via the Google
+# provider, so the bucket module's gs:// reads/writes don't depend on provider
+# packaging. Pulls fsspec as a dependency.
+gcsfs
