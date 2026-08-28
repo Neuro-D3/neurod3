@@ -49,6 +49,18 @@ apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 systemctl enable --now docker
 
+# ─── 2. Google Cloud Ops Agent (host metrics + logs -> Cloud Monitoring) ────
+# The VM service account already carries roles/logging.logWriter +
+# roles/monitoring.metricWriter (service_accounts.tf) and the instance runs with
+# cloud-platform scope, so the agent reports with no extra setup. Install is
+# NON-fatal: observability must never block the Airflow bringup below. Idempotent
+# — installs only if absent (drop the dpkg guard to auto-upgrade on every boot).
+if ! dpkg -s google-cloud-ops-agent >/dev/null 2>&1; then
+  curl -sS https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh -o /tmp/add-ops-agent-repo.sh \
+    && bash /tmp/add-ops-agent-repo.sh --also-install \
+    || echo "WARNING: Ops Agent install failed; continuing without it."
+fi
+
 # ─── 3. Fetch secrets into an env file consumed by compose --env-file ───────
 mkdir -p /etc/neuro-d3
 fetch() {
