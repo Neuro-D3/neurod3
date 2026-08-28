@@ -13,6 +13,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 
 from utils.database import get_db_connection, create_unified_datasets_view
+from utils.contracts import register_source
 
 logger = logging.getLogger(__name__)
 
@@ -663,4 +664,24 @@ verify_data_task = PythonOperator(
 
 # Set task dependencies:
 # create -> fetch -> enrich (current run only) -> insert -> create_view -> verify
-create_dandi_table_task >> fetch_datasets_task >> enrich_dandi_data_task >> insert_datasets_task >> create_view_task >> verify_data_task
+def register_dandi_source(**context):
+    """Validate the produced dandi_dataset table against the dataset_table contract
+    and upsert it into the data_sources registry. Final task — runs only if the
+    upstream ingestion succeeded, so a broken producer never enters the registry."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        register_source(
+            cursor,
+            source_name="DANDI",
+            tables={"dataset_table": "dandi_dataset"},
+        )
+        conn.commit()
+
+
+register_source_task = PythonOperator(
+    task_id='register_dandi_source',
+    python_callable=register_dandi_source,
+    dag=dag,
+)
+
+create_dandi_table_task >> fetch_datasets_task >> enrich_dandi_data_task >> insert_datasets_task >> create_view_task >> verify_data_task >> register_source_task

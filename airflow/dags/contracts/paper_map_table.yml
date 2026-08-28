@@ -1,0 +1,14 @@
+# Data contract: per-source dataset -> primary-paper DOI mapping produced by the
+# *_paper_mapping DAGs. {source}_id and {source}_title are source-prefixed
+# (e.g. dandi_id / dandi_title); register_source substitutes {source} with the
+# source prefix at validation time.
+name: paper_map_table
+description: Per-source dataset->paper DOI mapping produced by *_paper_mapping DAGs.
+columns:
+  - {name: "{source}_id", type: varchar, nullable: false}
+  - {name: "{source}_title", type: text}
+  - {name: paper_doi, type: text, nullable: false}
+  - {name: doi_source, type: text}
+  - {name: relation_type, type: text}
+  - {name: resolved_at, type: timestamptz}
+  - {name: run_id, type: text}

@@ -315,72 +315,66 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
     # Build view SQL based on which tables exist
     selects: List[str] = []
 
-    if dandi_table_exists:
-        fd = _col_or_null("dandi_dataset", "full_description", "text")
-        au = _col_or_null("dandi_dataset", "authors", "jsonb")
-        co = _col_or_null("dandi_dataset", "contributors", "jsonb")
-        li = _col_or_null("dandi_dataset", "license", "text")
-        ns = _col_or_null("dandi_dataset", "num_subjects", "integer")
-        selects.append(f"""
-        SELECT
-            'DANDI'::text AS source,
-            dataset_id, title, modality, papers, url, description,
-            {fd},
-            {au},
-            {co},
-            {li},
-            {ns},
-            created_at, updated_at
-        FROM dandi_dataset
-        """.strip())
+    def _table_exists(table: str) -> bool:
+        cursor.execute(
+            """SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = %s
+            );""",
+            (table,),
+        )
+        return cursor.fetchone()[0]
 
-    if openneuro_table_exists:
-        fd = _col_or_null("openneuro_dataset", "full_description", "text")
-        au = _col_or_null("openneuro_dataset", "authors", "jsonb")
-        co = _col_or_null("openneuro_dataset", "contributors", "jsonb")
-        li = _col_or_null("openneuro_dataset", "license", "text")
-        ns = _col_or_null("openneuro_dataset", "num_subjects", "integer")
-        selects.append(f"""
-        SELECT
-            'OpenNeuro'::text AS source,
-            dataset_id, title, modality, papers, url, description,
-            {fd},
-            {au},
-            {co},
-            {li},
-            {ns},
-            created_at, updated_at
-        FROM openneuro_dataset
-        """.strip())
+    def _registered_dataset_tables():
+        """Sources registered under the dataset_table contract. Returns [] if the
+        registry/contracts module is unavailable, keeping this util importable and
+        behavior-preserving during rollout."""
+        try:
+            try:
+                from utils.contracts import list_registered_sources
+            except (ImportError, ValueError):
+                from .contracts import list_registered_sources
+            return list_registered_sources(cursor, contract_name="dataset_table")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Could not read data_sources registry: %s", exc)
+            return []
 
-    if crcns_table_exists:
-        fd = _col_or_null("crcns_dataset", "full_description", "text")
-        au = _col_or_null("crcns_dataset", "authors", "jsonb")
-        co = _col_or_null("crcns_dataset", "contributors", "jsonb")
-        li = _col_or_null("crcns_dataset", "license", "text")
-        ns = _col_or_null("crcns_dataset", "num_subjects", "integer")
-        selects.append(f"""
-        SELECT
-            'CRCNS'::text AS source,
-            dataset_id, title, modality, papers, url, description,
-            {fd},
-            {au},
-            {co},
-            {li},
-            {ns},
-            created_at, updated_at
-        FROM crcns_dataset
-        """.strip())
+    # The per-source projection is identical across sources, so iterate a candidate
+    # list instead of copy-pasting one SELECT per source. Candidates = the canonical
+    # bootstrap sources (which predate the registry) merged with any sources
+    # registered under the dataset_table contract. Each is gated on its table
+    # actually existing because, during rollout, the registry may be empty/partial
+    # and every ingestion DAG re-creates this view BEFORE registering itself — so
+    # table existence (not registration) is the correct inclusion signal. A NEW
+    # source therefore needs no edit here: registering it adds it to the candidates.
+    canonical_sources = [
+        ("DANDI", "dandi_dataset"),
+        ("OpenNeuro", "openneuro_dataset"),
+        ("CRCNS", "crcns_dataset"),
+        ("SPARC", "sparc_dataset"),
+    ]
+    candidate_sources = list(canonical_sources)
+    seen_tables = {tbl for _, tbl in candidate_sources}
+    for row in _registered_dataset_tables():
+        tbl = row.get("table_name")
+        label = row.get("source_name")
+        if tbl and label and tbl not in seen_tables:
+            candidate_sources.append((label, tbl))
+            seen_tables.add(tbl)
 
-    if sparc_table_exists:
-        fd = _col_or_null("sparc_dataset", "full_description", "text")
-        au = _col_or_null("sparc_dataset", "authors", "jsonb")
-        co = _col_or_null("sparc_dataset", "contributors", "jsonb")
-        li = _col_or_null("sparc_dataset", "license", "text")
-        ns = _col_or_null("sparc_dataset", "num_subjects", "integer")
+    included_labels: List[str] = []
+    for label, table in candidate_sources:
+        if not _table_exists(table):
+            continue
+        fd = _col_or_null(table, "full_description", "text")
+        au = _col_or_null(table, "authors", "jsonb")
+        co = _col_or_null(table, "contributors", "jsonb")
+        li = _col_or_null(table, "license", "text")
+        ns = _col_or_null(table, "num_subjects", "integer")
+        safe_label = label.replace("'", "''")
         selects.append(f"""
         SELECT
-            'SPARC'::text AS source,
+            '{safe_label}'::text AS source,
             dataset_id, title, modality, papers, url, description,
             {fd},
             {au},
@@ -388,19 +382,16 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             {li},
             {ns},
             created_at, updated_at
-        FROM sparc_dataset
+        FROM {table}
         """.strip())
+        included_labels.append(label)
 
     if neuro_table_exists:
-        excluded_sources = ["'DANDI'", "'OpenNeuro'", "'CRCNS'", "'SPARC'"]
-        if not dandi_table_exists:
-            excluded_sources.remove("'DANDI'")
-        if not openneuro_table_exists:
-            excluded_sources.remove("'OpenNeuro'")
-        if not crcns_table_exists:
-            excluded_sources.remove("'CRCNS'")
-        if not sparc_table_exists:
-            excluded_sources.remove("'SPARC'")
+        # Exclude any source already contributed by a per-source table above so a
+        # source isn't double-counted (per-source table + legacy seed row). Mirrors
+        # the previous hardcoded DANDI/OpenNeuro/CRCNS/SPARC exclusion, but driven by
+        # whichever per-source tables were actually included.
+        excluded_sources = ["'" + lbl.replace("'", "''") + "'" for lbl in included_labels]
         if excluded_sources:
             where_clause = f"WHERE source NOT IN ({', '.join(excluded_sources)})"
         else:

@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover
     from airflow.operators.python import PythonOperator  # type: ignore
 
 from utils.database import get_db_connection
+from utils.contracts import register_source
 from utils.cache_keys import paper_cache_key_for_doi
 from utils.find_reuse_core import normalize_doi, Telemetry
 from utils.paper_citations import (
@@ -1474,4 +1475,29 @@ summarize_task = PythonOperator(
 )
 
 create_tables_task >> fetch_ids_task >> build_batches_task >> resolve_and_persist_batch_task
-resolve_and_persist_batch_task >> fetch_and_persist_citations_batch_task >> extract_and_persist_citation_contexts_batch_task >> summarize_task
+def register_crcns_paper_sources(**context):
+    """Validate the CRCNS paper-mapping tables against their data contracts and upsert
+    them into the data_sources registry. Final task — runs only if the upstream
+    mapping succeeded, so broken producers never enter the registry."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        register_source(
+            cursor,
+            source_name="CRCNS",
+            source_prefix="crcns",
+            tables={
+                "paper_map_table": "crcns_paper_map",
+                "paper_citations_table": "crcns_paper_citations",
+                "paper_classifications_table": "crcns_paper_citation_classifications",
+            },
+        )
+        conn.commit()
+
+
+register_source_task = PythonOperator(
+    task_id="register_crcns_paper_sources",
+    python_callable=register_crcns_paper_sources,
+    dag=dag,
+)
+
+resolve_and_persist_batch_task >> fetch_and_persist_citations_batch_task >> extract_and_persist_citation_contexts_batch_task >> summarize_task >> register_source_task

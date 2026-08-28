@@ -19,6 +19,7 @@ from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
 from utils.database import get_db_connection, create_unified_datasets_view
+from utils.contracts import register_source
 
 logger = logging.getLogger(__name__)
 
@@ -508,4 +509,24 @@ verify_data_task = PythonOperator(
     dag=dag,
 )
 
-create_crcns_table_task >> fetch_datasets_task >> enrich_datasets_task >> insert_datasets_task >> create_view_task >> verify_data_task
+def register_crcns_source(**context):
+    """Validate the produced crcns_dataset table against the dataset_table contract
+    and upsert it into the data_sources registry. Final task — runs only if the
+    upstream ingestion succeeded, so a broken producer never enters the registry."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        register_source(
+            cursor,
+            source_name="CRCNS",
+            tables={"dataset_table": "crcns_dataset"},
+        )
+        conn.commit()
+
+
+register_source_task = PythonOperator(
+    task_id='register_crcns_source',
+    python_callable=register_crcns_source,
+    dag=dag,
+)
+
+create_crcns_table_task >> fetch_datasets_task >> enrich_datasets_task >> insert_datasets_task >> create_view_task >> verify_data_task >> register_source_task

@@ -10,6 +10,8 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import os
 import sys
+import time
+import threading
 from pathlib import Path
 from contextlib import contextmanager
 import logging
@@ -101,7 +103,7 @@ def get_db_connection():
 def _validate_paper_mapping_source(source: Optional[str]) -> Optional[str]:
     if source is None:
         return None
-    if source not in ALLOWED_PAPER_MAPPING_SOURCES:
+    if source not in allowed_paper_mapping_sources():
         raise HTTPException(status_code=400, detail=f"Invalid paper mapping source: {source}")
     return source
 
@@ -132,16 +134,101 @@ def _paper_mapping_relation_exists(cursor, relation_name: str, relation_type: st
     return bool(cursor.fetchone()["exists"])
 
 
+def _registered_sources(cursor, contract_name: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Read the data_sources registry via plain SQL.
+
+    The API container may not have the Airflow dags package mounted, so this reads the
+    registry directly instead of importing utils.contracts. Returns [] if the table is
+    absent so every caller degrades to legacy behavior instead of erroring.
+    """
+    if not _paper_mapping_relation_exists(cursor, "data_sources", "table"):
+        return []
+    if contract_name:
+        cursor.execute(
+            "SELECT source_name, contract_name, table_name, source_id_col "
+            "FROM data_sources WHERE contract_name = %s ORDER BY source_name",
+            (contract_name,),
+        )
+    else:
+        cursor.execute(
+            "SELECT source_name, contract_name, table_name, source_id_col "
+            "FROM data_sources ORDER BY source_name, contract_name"
+        )
+    return [dict(r) for r in cursor.fetchall()]
+
+
+# Source allowlists are derived from the registry but cached briefly: they're read on
+# every /api/datasets* request, so a short TTL avoids a round-trip per call (a newly
+# registered source becomes visible within one TTL).
+_ALLOWED_TTL_SECONDS = 60.0
+_allowed_cache: Dict[str, Any] = {"value": None, "expiry": 0.0}
+_allowed_cache_lock = threading.Lock()
+
+
+def _refresh_allowed_sources():
+    """Recompute (allowed_sources, allowed_paper_mapping_sources) from the registry,
+    unioning the legacy static sources (Kaggle/PhysioNet live only in
+    neuroscience_datasets). Falls back to the legacy literals on any error so the API
+    never starts rejecting valid sources."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cursor:
+                ds = {r["source_name"] for r in _registered_sources(cursor, "dataset_table")}
+                pm = {r["source_name"] for r in _registered_sources(cursor, "paper_map_table")}
+                legacy = set()
+                if _paper_mapping_relation_exists(cursor, "neuroscience_datasets", "table"):
+                    cursor.execute("SELECT DISTINCT source FROM neuroscience_datasets")
+                    legacy = {row["source"] for row in cursor.fetchall() if row.get("source")}
+        allowed = (ds | legacy) or set(ALLOWED_SOURCES)
+        pm_allowed = pm or set(ALLOWED_PAPER_MAPPING_SOURCES)
+        return allowed, pm_allowed
+    except Exception as exc:
+        logger.warning("Falling back to legacy source allowlists: %s", exc)
+        return set(ALLOWED_SOURCES), set(ALLOWED_PAPER_MAPPING_SOURCES)
+
+
+def _get_allowed_sources():
+    now = time.monotonic()
+    with _allowed_cache_lock:
+        if _allowed_cache["value"] is None or now >= _allowed_cache["expiry"]:
+            _allowed_cache["value"] = _refresh_allowed_sources()
+            _allowed_cache["expiry"] = now + _ALLOWED_TTL_SECONDS
+        return _allowed_cache["value"]
+
+
+def allowed_sources() -> set:
+    """All valid dataset sources: registry dataset_table sources ∪ legacy seed sources."""
+    return _get_allowed_sources()[0]
+
+
+def allowed_paper_mapping_sources() -> set:
+    """Sources that have paper-mapping tables (registry paper_map_table sources)."""
+    return _get_allowed_sources()[1]
+
+
 def _ensure_paper_mapping_tables(cursor) -> None:
-    required_tables = [
-        "papers",
-        "dandi_paper_map",
-        "openneuro_paper_map",
-        "dandi_paper_citations",
-        "openneuro_paper_citations",
-        "dandi_paper_citation_classifications",
-        "openneuro_paper_citation_classifications",
+    # `papers` is a shared (non-per-source) table and is always required. The per-source
+    # paper tables come from the data_sources registry; if the registry is empty
+    # (pre-registration window) fall back to the original DANDI/OpenNeuro required set
+    # so behavior is unchanged.
+    required_tables = ["papers"]
+    registered = [
+        r["table_name"]
+        for r in _registered_sources(cursor)
+        if r["contract_name"]
+        in ("paper_map_table", "paper_citations_table", "paper_classifications_table")
     ]
+    if registered:
+        required_tables += registered
+    else:
+        required_tables += [
+            "dandi_paper_map",
+            "openneuro_paper_map",
+            "dandi_paper_citations",
+            "openneuro_paper_citations",
+            "dandi_paper_citation_classifications",
+            "openneuro_paper_citation_classifications",
+        ]
     missing = [name for name in required_tables if not _paper_mapping_relation_exists(cursor, name, "table")]
     if missing:
         raise HTTPException(
@@ -161,23 +248,67 @@ def _paper_mapping_ctes(cursor=None) -> str:
     not yet have run on every deployment). When no cursor is supplied we
     omit them to preserve the original DANDI/OpenNeuro-only behavior.
     """
-    has_crcns_dataset = bool(cursor) and _paper_mapping_relation_exists(cursor, "crcns_dataset")
-    has_crcns_map = bool(cursor) and _paper_mapping_relation_exists(cursor, "crcns_paper_map")
-    has_crcns_citations = bool(cursor) and _paper_mapping_relation_exists(cursor, "crcns_paper_citations")
-    has_crcns_classifications = bool(cursor) and _paper_mapping_relation_exists(
-        cursor, "crcns_paper_citation_classifications"
-    )
-    has_sparc_dataset = bool(cursor) and _paper_mapping_relation_exists(cursor, "sparc_dataset")
-    has_sparc_map = bool(cursor) and _paper_mapping_relation_exists(cursor, "sparc_paper_map")
-    has_sparc_citations = bool(cursor) and _paper_mapping_relation_exists(cursor, "sparc_paper_citations")
-    has_sparc_classifications = bool(cursor) and _paper_mapping_relation_exists(
-        cursor, "sparc_paper_citation_classifications"
-    )
+    # Canonical bootstrap sources per CTE: (source_label, table_name, source_id_col).
+    # dataset_base reads the dataset tables (constant dataset_id/title columns) so its
+    # id_col is None; the other three read the source-prefixed paper tables.
+    canon_dataset = [
+        ("DANDI", "dandi_dataset", None),
+        ("OpenNeuro", "openneuro_dataset", None),
+        ("CRCNS", "crcns_dataset", None),
+        ("SPARC", "sparc_dataset", None),
+    ]
+    canon_map = [
+        ("DANDI", "dandi_paper_map", "dandi_id"),
+        ("OpenNeuro", "openneuro_paper_map", "openneuro_id"),
+        ("CRCNS", "crcns_paper_map", "crcns_id"),
+        ("SPARC", "sparc_paper_map", "sparc_id"),
+    ]
+    canon_citations = [
+        ("DANDI", "dandi_paper_citations", "dandi_id"),
+        ("OpenNeuro", "openneuro_paper_citations", "openneuro_id"),
+        ("CRCNS", "crcns_paper_citations", "crcns_id"),
+        ("SPARC", "sparc_paper_citations", "sparc_id"),
+    ]
+    canon_classifications = [
+        ("DANDI", "dandi_paper_citation_classifications", "dandi_id"),
+        ("OpenNeuro", "openneuro_paper_citation_classifications", "openneuro_id"),
+        ("CRCNS", "crcns_paper_citation_classifications", "crcns_id"),
+        ("SPARC", "sparc_paper_citation_classifications", "sparc_id"),
+    ]
 
-    crcns_dataset_branch = """
-        UNION ALL
-        SELECT
-            'CRCNS'::text AS source,
+    # DANDI/OpenNeuro are always emitted (as before); every other source is gated on
+    # its table existing. Order is DANDI/OpenNeuro/CRCNS/SPARC then alphabetical so the
+    # UNION layout is stable across deployments.
+    always_on = {"DANDI", "OpenNeuro"}
+    order = {"DANDI": 0, "OpenNeuro": 1, "CRCNS": 2, "SPARC": 3}
+
+    all_rows = _registered_sources(cursor) if cursor else []
+    by_contract: Dict[str, List[Dict[str, Any]]] = {}
+    for r in all_rows:
+        by_contract.setdefault(r["contract_name"], []).append(r)
+
+    def _candidates(canonical, contract_name):
+        merged = list(canonical)
+        seen = {label for label, _, _ in merged}
+        for row in by_contract.get(contract_name, []):
+            if row["source_name"] not in seen:
+                merged.append((row["source_name"], row["table_name"], row.get("source_id_col")))
+                seen.add(row["source_name"])
+        return sorted(merged, key=lambda t: (order.get(t[0], 99), t[0]))
+
+    def _exists(table):
+        return bool(cursor) and _paper_mapping_relation_exists(cursor, table, "table")
+
+    def _assemble(candidates, part_fn):
+        branches = []
+        for label, table, id_col in candidates:
+            if label in always_on or _exists(table):
+                branches.append(part_fn(label, table, id_col).strip())
+        return "\n        UNION ALL\n        ".join(branches)
+
+    def _dataset_base_part(label, table, _id_col):
+        return f"""SELECT
+            '{label}'::text AS source,
             d.dataset_id::text AS dataset_id,
             d.title AS dataset_title,
             d.description AS dataset_description,
@@ -186,28 +317,25 @@ def _paper_mapping_ctes(cursor=None) -> str:
             d.created_at,
             d.updated_at,
             d.url
-        FROM crcns_dataset d
-    """ if has_crcns_dataset else ""
+        FROM {table} d"""
 
-    crcns_map_branch = """
-        UNION ALL
-        SELECT
-            'CRCNS'::text AS source,
-            m.crcns_id::text AS dataset_id,
-            m.crcns_title AS dataset_title,
+    def _dataset_map_part(label, table, id_col):
+        title_col = f"{id_col[:-3]}_title"
+        return f"""SELECT
+            '{label}'::text AS source,
+            m.{id_col}::text AS dataset_id,
+            m.{title_col} AS dataset_title,
             m.paper_doi,
             m.doi_source,
             m.relation_type,
             m.resolved_at,
             m.run_id
-        FROM crcns_paper_map m
-    """ if has_crcns_map else ""
+        FROM {table} m"""
 
-    crcns_citations_branch = """
-        UNION ALL
-        SELECT
-            'CRCNS'::text AS source,
-            c.crcns_id::text AS dataset_id,
+    def _citation_edges_part(label, table, id_col):
+        return f"""SELECT
+            '{label}'::text AS source,
+            c.{id_col}::text AS dataset_id,
             c.primary_paper_doi,
             c.citing_paper_doi,
             c.matched_primary_paper_doi,
@@ -218,14 +346,12 @@ def _paper_mapping_ctes(cursor=None) -> str:
             c.contexts_extracted_at,
             c.resolved_at,
             c.run_id
-        FROM crcns_paper_citations c
-    """ if has_crcns_citations else ""
+        FROM {table} c"""
 
-    crcns_classifications_branch = """
-        UNION ALL
-        SELECT
-            'CRCNS'::text AS source,
-            c.crcns_id::text AS dataset_id,
+    def _citation_classifications_part(label, table, id_col):
+        return f"""SELECT
+            '{label}'::text AS source,
+            c.{id_col}::text AS dataset_id,
             c.primary_paper_doi,
             c.citing_paper_doi,
             c.classification,
@@ -238,198 +364,30 @@ def _paper_mapping_ctes(cursor=None) -> str:
             c.classification_model,
             c.classified_at,
             c.run_id
-        FROM crcns_paper_citation_classifications c
-    """ if has_crcns_classifications else ""
+        FROM {table} c"""
 
-    sparc_dataset_branch = """
-        UNION ALL
-        SELECT
-            'SPARC'::text AS source,
-            d.dataset_id::text AS dataset_id,
-            d.title AS dataset_title,
-            d.description AS dataset_description,
-            d.modality AS modality,
-            d.papers AS papers_count,
-            d.created_at,
-            d.updated_at,
-            d.url
-        FROM sparc_dataset d
-    """ if has_sparc_dataset else ""
-
-    sparc_map_branch = """
-        UNION ALL
-        SELECT
-            'SPARC'::text AS source,
-            m.sparc_id::text AS dataset_id,
-            m.sparc_title AS dataset_title,
-            m.paper_doi,
-            m.doi_source,
-            m.relation_type,
-            m.resolved_at,
-            m.run_id
-        FROM sparc_paper_map m
-    """ if has_sparc_map else ""
-
-    sparc_citations_branch = """
-        UNION ALL
-        SELECT
-            'SPARC'::text AS source,
-            c.sparc_id::text AS dataset_id,
-            c.primary_paper_doi,
-            c.citing_paper_doi,
-            c.matched_primary_paper_doi,
-            c.matched_primary_openalex_id,
-            c.citation_source,
-            c.citing_publication_date,
-            c.citation_contexts,
-            c.contexts_extracted_at,
-            c.resolved_at,
-            c.run_id
-        FROM sparc_paper_citations c
-    """ if has_sparc_citations else ""
-
-    sparc_classifications_branch = """
-        UNION ALL
-        SELECT
-            'SPARC'::text AS source,
-            c.sparc_id::text AS dataset_id,
-            c.primary_paper_doi,
-            c.citing_paper_doi,
-            c.classification,
-            c.same_lab,
-            c.confidence,
-            c.status,
-            c.same_lab_confidence,
-            c.source_archive,
-            c.reasoning,
-            c.classification_model,
-            c.classified_at,
-            c.run_id
-        FROM sparc_paper_citation_classifications c
-    """ if has_sparc_classifications else ""
+    dataset_base = _assemble(_candidates(canon_dataset, "dataset_table"), _dataset_base_part)
+    dataset_map = _assemble(_candidates(canon_map, "paper_map_table"), _dataset_map_part)
+    citation_edges = _assemble(
+        _candidates(canon_citations, "paper_citations_table"), _citation_edges_part
+    )
+    citation_classifications = _assemble(
+        _candidates(canon_classifications, "paper_classifications_table"),
+        _citation_classifications_part,
+    )
 
     return f"""
     WITH dataset_base AS (
-        SELECT
-            'DANDI'::text AS source,
-            d.dataset_id::text AS dataset_id,
-            d.title AS dataset_title,
-            d.description AS dataset_description,
-            d.modality AS modality,
-            d.papers AS papers_count,
-            d.created_at,
-            d.updated_at,
-            d.url
-        FROM dandi_dataset d
-        UNION ALL
-        SELECT
-            'OpenNeuro'::text AS source,
-            d.dataset_id::text AS dataset_id,
-            d.title AS dataset_title,
-            d.description AS dataset_description,
-            d.modality AS modality,
-            d.papers AS papers_count,
-            d.created_at,
-            d.updated_at,
-            d.url
-        FROM openneuro_dataset d
-        {crcns_dataset_branch}
-        {sparc_dataset_branch}
+        {dataset_base}
     ),
     dataset_map AS (
-        SELECT
-            'DANDI'::text AS source,
-            m.dandi_id::text AS dataset_id,
-            m.dandi_title AS dataset_title,
-            m.paper_doi,
-            m.doi_source,
-            m.relation_type,
-            m.resolved_at,
-            m.run_id
-        FROM dandi_paper_map m
-        UNION ALL
-        SELECT
-            'OpenNeuro'::text AS source,
-            m.openneuro_id::text AS dataset_id,
-            m.openneuro_title AS dataset_title,
-            m.paper_doi,
-            m.doi_source,
-            m.relation_type,
-            m.resolved_at,
-            m.run_id
-        FROM openneuro_paper_map m
-        {crcns_map_branch}
-        {sparc_map_branch}
+        {dataset_map}
     ),
     citation_edges AS (
-        SELECT
-            'DANDI'::text AS source,
-            c.dandi_id::text AS dataset_id,
-            c.primary_paper_doi,
-            c.citing_paper_doi,
-            c.matched_primary_paper_doi,
-            c.matched_primary_openalex_id,
-            c.citation_source,
-            c.citing_publication_date,
-            c.citation_contexts,
-            c.contexts_extracted_at,
-            c.resolved_at,
-            c.run_id
-        FROM dandi_paper_citations c
-        UNION ALL
-        SELECT
-            'OpenNeuro'::text AS source,
-            c.openneuro_id::text AS dataset_id,
-            c.primary_paper_doi,
-            c.citing_paper_doi,
-            c.matched_primary_paper_doi,
-            c.matched_primary_openalex_id,
-            c.citation_source,
-            c.citing_publication_date,
-            c.citation_contexts,
-            c.contexts_extracted_at,
-            c.resolved_at,
-            c.run_id
-        FROM openneuro_paper_citations c
-        {crcns_citations_branch}
-        {sparc_citations_branch}
+        {citation_edges}
     ),
     citation_classifications AS (
-        SELECT
-            'DANDI'::text AS source,
-            c.dandi_id::text AS dataset_id,
-            c.primary_paper_doi,
-            c.citing_paper_doi,
-            c.classification,
-            c.same_lab,
-            c.confidence,
-            c.status,
-            c.same_lab_confidence,
-            c.source_archive,
-            c.reasoning,
-            c.classification_model,
-            c.classified_at,
-            c.run_id
-        FROM dandi_paper_citation_classifications c
-        UNION ALL
-        SELECT
-            'OpenNeuro'::text AS source,
-            c.openneuro_id::text AS dataset_id,
-            c.primary_paper_doi,
-            c.citing_paper_doi,
-            c.classification,
-            c.same_lab,
-            c.confidence,
-            c.status,
-            c.same_lab_confidence,
-            c.source_archive,
-            c.reasoning,
-            c.classification_model,
-            c.classified_at,
-            c.run_id
-        FROM openneuro_paper_citation_classifications c
-        {crcns_classifications_branch}
-        {sparc_classifications_branch}
+        {citation_classifications}
     )
     """
 
@@ -623,7 +581,7 @@ async def get_datasets(
                 params = []
 
                 if source:
-                    if source not in ALLOWED_SOURCES:
+                    if source not in allowed_sources():
                         raise HTTPException(status_code=400, detail=f"Invalid source: {source}")
                     filters.append("d.source = %s")
                     params.append(source)
@@ -805,7 +763,7 @@ async def get_dataset_stats(
                 table_identifier = sql.Identifier(table_name)
                 
                 # Parse/validate incoming filters (used for facets/total)
-                if source and source not in ALLOWED_SOURCES:
+                if source and source not in allowed_sources():
                     raise HTTPException(status_code=400, detail=f"Invalid source: {source}")
                 modalities = []
                 if modality:
@@ -929,7 +887,7 @@ async def get_dataset_detail(source: str, dataset_id: str):
     dataset_id) pair is unique, so this resolves the dataset unambiguously.
     """
     # Normalize the URL source (lowercase) to the canonical stored form.
-    canonical_source = {s.lower(): s for s in ALLOWED_SOURCES}.get(source.lower())
+    canonical_source = {s.lower(): s for s in allowed_sources()}.get(source.lower())
     if canonical_source is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
     try:
@@ -1119,49 +1077,61 @@ async def get_paper_mapping_summary(
                         **map_row, **cit_row, **cls_row,
                     }
 
-                # CRCNS and SPARC paper-mapping tables are optional (their
-                # mapping DAGs may not have run on every deployment). Include
-                # each only when its three tables exist, mirroring
-                # _paper_mapping_ctes.
-                crcns_tables_exist = (
-                    _paper_mapping_relation_exists(cursor, "crcns_paper_map")
-                    and _paper_mapping_relation_exists(cursor, "crcns_paper_citations")
-                    and _paper_mapping_relation_exists(cursor, "crcns_paper_citation_classifications")
-                )
-                sparc_tables_exist = (
-                    _paper_mapping_relation_exists(cursor, "sparc_paper_map")
-                    and _paper_mapping_relation_exists(cursor, "sparc_paper_citations")
-                    and _paper_mapping_relation_exists(cursor, "sparc_paper_citation_classifications")
-                )
+                # Per-source paper-mapping config (label, map_tbl, id_col, cit_tbl,
+                # cls_tbl) driven by the data_sources registry, merged with the
+                # canonical bootstrap sources. DANDI/OpenNeuro are always included
+                # (when they match the source filter); every other source is included
+                # only when its three tables exist — mirroring _paper_mapping_ctes.
+                canonical_cfgs = [
+                    ("DANDI", "dandi_paper_map", "dandi_id",
+                     "dandi_paper_citations", "dandi_paper_citation_classifications"),
+                    ("OpenNeuro", "openneuro_paper_map", "openneuro_id",
+                     "openneuro_paper_citations", "openneuro_paper_citation_classifications"),
+                    ("CRCNS", "crcns_paper_map", "crcns_id",
+                     "crcns_paper_citations", "crcns_paper_citation_classifications"),
+                    ("SPARC", "sparc_paper_map", "sparc_id",
+                     "sparc_paper_citations", "sparc_paper_citation_classifications"),
+                ]
+                cfgs_by_label = {c[0]: c for c in canonical_cfgs}
+                registry_by_src: Dict[str, Dict[str, Any]] = {}
+                for r in _registered_sources(cursor):
+                    registry_by_src.setdefault(r["source_name"], {})[r["contract_name"]] = r
+                for src_name, contracts in registry_by_src.items():
+                    pm = contracts.get("paper_map_table")
+                    pc = contracts.get("paper_citations_table")
+                    pcl = contracts.get("paper_classifications_table")
+                    if pm and pc and pcl and src_name not in cfgs_by_label:
+                        cfgs_by_label[src_name] = (
+                            src_name, pm["table_name"], pm["source_id_col"],
+                            pc["table_name"], pcl["table_name"],
+                        )
+                pm_order = {"DANDI": 0, "OpenNeuro": 1, "CRCNS": 2, "SPARC": 3}
+                always_on = {"DANDI", "OpenNeuro"}
+
+                def _cfg_tables_exist(cfg) -> bool:
+                    _, map_tbl, _id, cit_tbl, cls_tbl = cfg
+                    return (
+                        _paper_mapping_relation_exists(cursor, map_tbl)
+                        and _paper_mapping_relation_exists(cursor, cit_tbl)
+                        and _paper_mapping_relation_exists(cursor, cls_tbl)
+                    )
 
                 source_configs = []
-                if not source or source == "DANDI":
-                    source_configs.append(("DANDI", "dandi_paper_map", "dandi_id",
-                                           "dandi_paper_citations", "dandi_paper_citation_classifications"))
-                if not source or source == "OpenNeuro":
-                    source_configs.append(("OpenNeuro", "openneuro_paper_map", "openneuro_id",
-                                           "openneuro_paper_citations", "openneuro_paper_citation_classifications"))
-                if (not source or source == "CRCNS") and crcns_tables_exist:
-                    source_configs.append(("CRCNS", "crcns_paper_map", "crcns_id",
-                                           "crcns_paper_citations", "crcns_paper_citation_classifications"))
-                if (not source or source == "SPARC") and sparc_tables_exist:
-                    source_configs.append(("SPARC", "sparc_paper_map", "sparc_id",
-                                           "sparc_paper_citations", "sparc_paper_citation_classifications"))
+                for cfg in sorted(cfgs_by_label.values(), key=lambda c: (pm_order.get(c[0], 99), c[0])):
+                    label = cfg[0]
+                    if source and source != label:
+                        continue
+                    if label in always_on or _cfg_tables_exist(cfg):
+                        source_configs.append(cfg)
 
                 by_source = [_per_source_summary(*cfg) for cfg in source_configs]
 
                 # Build overall summary by summing per-source values.
                 # distinct_mapped_primary_papers needs dedup across sources
                 # (a DOI could appear in multiple maps).
-                all_dois_parts = []
-                if not source or source == "DANDI":
-                    all_dois_parts.append("SELECT DISTINCT paper_doi FROM dandi_paper_map")
-                if not source or source == "OpenNeuro":
-                    all_dois_parts.append("SELECT DISTINCT paper_doi FROM openneuro_paper_map")
-                if (not source or source == "CRCNS") and crcns_tables_exist:
-                    all_dois_parts.append("SELECT DISTINCT paper_doi FROM crcns_paper_map")
-                if (not source or source == "SPARC") and sparc_tables_exist:
-                    all_dois_parts.append("SELECT DISTINCT paper_doi FROM sparc_paper_map")
+                all_dois_parts = [
+                    f"SELECT DISTINCT paper_doi FROM {cfg[1]}" for cfg in source_configs
+                ]
                 if all_dois_parts:
                     cursor.execute(f"SELECT COUNT(DISTINCT paper_doi)::int AS n FROM ({' UNION ALL '.join(all_dois_parts)}) t;")
                     distinct_papers = (cursor.fetchone() or {}).get("n", 0)
@@ -1179,27 +1149,13 @@ async def get_paper_mapping_summary(
                 }
 
                 # Classification bucket breakdown
-                cls_parts = []
-                if not source or source == "DANDI":
-                    cls_parts.append("""
+                cls_parts = [
+                    f"""
                         SELECT COALESCE(NULLIF(classification, ''), status, 'unclassified') AS bucket
-                        FROM dandi_paper_citation_classifications
-                    """)
-                if not source or source == "OpenNeuro":
-                    cls_parts.append("""
-                        SELECT COALESCE(NULLIF(classification, ''), status, 'unclassified') AS bucket
-                        FROM openneuro_paper_citation_classifications
-                    """)
-                if (not source or source == "CRCNS") and crcns_tables_exist:
-                    cls_parts.append("""
-                        SELECT COALESCE(NULLIF(classification, ''), status, 'unclassified') AS bucket
-                        FROM crcns_paper_citation_classifications
-                    """)
-                if (not source or source == "SPARC") and sparc_tables_exist:
-                    cls_parts.append("""
-                        SELECT COALESCE(NULLIF(classification, ''), status, 'unclassified') AS bucket
-                        FROM sparc_paper_citation_classifications
-                    """)
+                        FROM {cfg[4]}
+                    """
+                    for cfg in source_configs
+                ]
                 by_classification: Dict[str, int] = {}
                 if cls_parts:
                     cursor.execute(f"""

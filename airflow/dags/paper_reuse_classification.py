@@ -78,6 +78,49 @@ _OPENNEURO_ROW = ("openneuro", "openneuro_paper_citations", "openneuro_paper_cit
 _CRCNS_ROW = ("crcns", "crcns_paper_citations", "crcns_paper_citation_classifications", "crcns_id")
 _SPARC_ROW = ("sparc", "sparc_paper_citations", "sparc_paper_citation_classifications", "sparc_id")
 
+# Canonical fallback rows, identical to what the registry contains once the paper-mapping
+# DAGs have registered. Used when data_sources is absent/empty so behavior is unchanged
+# before producers register.
+_CANONICAL_SOURCE_ROWS = (_DANDI_ROW, _OPENNEURO_ROW, _CRCNS_ROW, _SPARC_ROW)
+_SOURCE_ROW_ORDER = {"dandi": 0, "openneuro": 1, "crcns": 2, "sparc": 3}
+
+
+def _resolve_source_rows(cursor) -> List[Tuple[str, str, str, str]]:
+    """Per-source (internal_key, citations_table, classifications_table, id_col) rows,
+    read from the data_sources registry by joining the paper_citations_table and
+    paper_classifications_table contracts. Falls back to the canonical
+    DANDI/OpenNeuro/CRCNS/SPARC rows when the registry is absent or empty, so behavior is
+    unchanged before producers register.
+
+    internal_key is the lowercase source prefix (= source_id_col without the trailing
+    '_id'), matching the edge['source'] values produced upstream.
+    """
+    if not _public_table_exists(cursor, "data_sources"):
+        return list(_CANONICAL_SOURCE_ROWS)
+    cursor.execute(
+        """
+        SELECT pc.source_id_col, pc.table_name, pcl.table_name
+        FROM data_sources pc
+        JOIN data_sources pcl
+          ON pcl.source_name = pc.source_name
+         AND pcl.contract_name = 'paper_classifications_table'
+        WHERE pc.contract_name = 'paper_citations_table'
+        """
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        return list(_CANONICAL_SOURCE_ROWS)
+    resolved: List[Tuple[str, str, str, str]] = []
+    for source_id_col, cit_table, cls_table in rows:
+        key = (
+            source_id_col[:-3]
+            if source_id_col and source_id_col.endswith("_id")
+            else (source_id_col or "")
+        )
+        resolved.append((key, cit_table, cls_table, source_id_col))
+    resolved.sort(key=lambda t: (_SOURCE_ROW_ORDER.get(t[0], 99), t[0]))
+    return resolved
+
 
 def _normalize_repository_filter(raw: Any) -> str:
     """Map param value to canonical repository name or 'all'."""
@@ -105,19 +148,15 @@ def _normalize_repository_filter(raw: Any) -> str:
     return "all"
 
 
-def _citation_table_sources_for_filter(canonical: str) -> List[Tuple[str, str, str, str]]:
-    """Repositories that have paper citation + classification tables (subset of DATASET_REPOSITORY_SOURCES)."""
+def _citation_table_sources_for_filter(canonical: str, cursor) -> List[Tuple[str, str, str, str]]:
+    """Repositories that have paper citation + classification tables, resolved from the
+    data_sources registry (falling back to the canonical rows). Returns all registered
+    sources for 'all', otherwise the single source matching the canonical label."""
+    rows = _resolve_source_rows(cursor)
     if canonical == "all":
-        return [_DANDI_ROW, _OPENNEURO_ROW, _CRCNS_ROW, _SPARC_ROW]
-    if canonical == "DANDI":
-        return [_DANDI_ROW]
-    if canonical == "OpenNeuro":
-        return [_OPENNEURO_ROW]
-    if canonical == "CRCNS":
-        return [_CRCNS_ROW]
-    if canonical == "SPARC":
-        return [_SPARC_ROW]
-    return []
+        return rows
+    target = canonical.lower()
+    return [row for row in rows if row[0] == target]
 
 
 def _public_table_exists(cursor, table_name: str) -> bool:
@@ -177,17 +216,17 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
 
     edges: List[Dict[str, Any]] = []
 
-    sources = _citation_table_sources_for_filter(repo)
-    if not sources:
-        logger.info(
-            "source_filter=%s: no paper citation / classification tables for this repository "
-            "(classification is only wired for DANDI, OpenNeuro, CRCNS, and SPARC). Returning 0 edges.",
-            repo,
-        )
-        return []
-
     with get_db_connection() as conn:
         cursor = conn.cursor()
+
+        sources = _citation_table_sources_for_filter(repo, cursor)
+        if not sources:
+            logger.info(
+                "source_filter=%s: no paper citation / classification tables for this repository "
+                "(classification is only wired for DANDI, OpenNeuro, CRCNS, and SPARC). Returning 0 edges.",
+                repo,
+            )
+            return []
 
         if repo == "all":
             sources = _drop_sources_with_missing_tables(cursor, sources)
@@ -383,22 +422,14 @@ def _fetch_full_edge_data(
 
     results: List[Dict[str, Any]] = []
 
+    # internal_key -> (citations_table, id_col), resolved once from the registry.
+    source_map = {row[0]: (row[1], row[3]) for row in _resolve_source_rows(cursor)}
+
     for (source, edge_type), keys in groups.items():
-        if source == "dandi":
-            cit_table = "dandi_paper_citations"
-            id_col = "dandi_id"
-        elif source == "openneuro":
-            cit_table = "openneuro_paper_citations"
-            id_col = "openneuro_id"
-        elif source == "crcns":
-            cit_table = "crcns_paper_citations"
-            id_col = "crcns_id"
-        elif source == "sparc":
-            cit_table = "sparc_paper_citations"
-            id_col = "sparc_id"
-        else:
+        if source not in source_map:
             logger.warning("_fetch_full_edge_data: unknown source %r, skipping %d keys", source, len(keys))
             continue
+        cit_table, id_col = source_map[source]
 
         if edge_type == "citation_edge":
             tuples = [
@@ -526,6 +557,8 @@ def classify_and_persist_batch(*, batch_edge_keys: List[Dict[str, Any]], batch_i
 
         # Re-fetch full edge data (contexts, paper metadata) from DB for this batch.
         batch_edges = _fetch_full_edge_data(cursor, batch_edge_keys)
+        # Resolve once here so _upsert_classification doesn't re-query per edge.
+        upsert_source_map = {row[0]: (row[2], row[3]) for row in _resolve_source_rows(cursor)}
 
         for idx, edge in enumerate(batch_edges):
             dataset_id = edge["dataset_id"]
@@ -613,6 +646,7 @@ def classify_and_persist_batch(*, batch_edge_keys: List[Dict[str, Any]], batch_i
             _upsert_classification(
                 cursor, source, dataset_id, primary_doi, citing_doi,
                 classification, confidence, reasoning, model, status, run_id,
+                source_map=upsert_source_map,
             )
 
             cat = classification
@@ -671,23 +705,13 @@ def _extract_author_names(authors_raw: Any) -> List[str]:
 def _upsert_classification(
     cursor, source, dataset_id, primary_doi, citing_doi,
     classification, confidence, reasoning, model, status, run_id,
+    source_map: dict,
 ):
     """UPSERT a row into the source-appropriate classification table."""
-    if source == "dandi":
-        table = "dandi_paper_citation_classifications"
-        id_col = "dandi_id"
-    elif source == "openneuro":
-        table = "openneuro_paper_citation_classifications"
-        id_col = "openneuro_id"
-    elif source == "crcns":
-        table = "crcns_paper_citation_classifications"
-        id_col = "crcns_id"
-    elif source == "sparc":
-        table = "sparc_paper_citation_classifications"
-        id_col = "sparc_id"
-    else:
+    if source not in source_map:
         logger.error("Unknown source %r, cannot upsert classification", source)
         return
+    table, id_col = source_map[source]
 
     sql = f"""
         INSERT INTO {table} (

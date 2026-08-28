@@ -1,0 +1,18 @@
+# Data contract: per-source LLM classifications of citation edges, produced by
+# the paper_reuse_classification DAG. {source}_id is source-prefixed.
+name: paper_classifications_table
+description: Per-source citation-edge classifications produced by paper_reuse_classification.
+columns:
+  - {name: "{source}_id", type: varchar, nullable: false}
+  - {name: primary_paper_doi, type: text, nullable: false}
+  - {name: citing_paper_doi, type: text, nullable: false}
+  - {name: classification, type: text}
+  - {name: confidence, type: integer}
+  - {name: same_lab, type: boolean}
+  - {name: same_lab_confidence, type: integer}
+  - {name: source_archive, type: text}
+  - {name: reasoning, type: text}
+  - {name: classification_model, type: text}
+  - {name: classified_at, type: timestamptz}
+  - {name: status, type: text}
+  - {name: run_id, type: text}

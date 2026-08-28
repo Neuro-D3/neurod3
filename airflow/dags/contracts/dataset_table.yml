@@ -1,0 +1,23 @@
+# Data contract: per-source dataset table produced by the *_ingestion DAGs.
+#
+# Contracts describe the MINIMUM required column set that downstream consumers
+# (the unified_datasets view, the API) depend on. Per-source extra columns
+# (doi, n_files, public/downloads/views, citations, version, ...) are allowed
+# and ignored. dataset_id / title are constant names here, so this contract has
+# no {source} placeholder.
+name: dataset_table
+description: Per-source dataset table produced by *_ingestion DAGs.
+columns:
+  - {name: dataset_id, type: varchar, nullable: false}
+  - {name: title, type: text}
+  - {name: modality, type: text}
+  - {name: papers, type: integer}
+  - {name: url, type: text}
+  - {name: description, type: text}
+  - {name: full_description, type: text}
+  - {name: authors, type: jsonb}
+  - {name: contributors, type: jsonb}
+  - {name: license, type: text}
+  - {name: num_subjects, type: integer}
+  - {name: created_at, type: timestamp}
+  - {name: updated_at, type: timestamp}

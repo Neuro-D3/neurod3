@@ -31,6 +31,22 @@ CREATE INDEX IF NOT EXISTS idx_datasets_source ON neuroscience_datasets(source);
 CREATE INDEX IF NOT EXISTS idx_datasets_modality ON neuroscience_datasets(modality);
 CREATE INDEX IF NOT EXISTS idx_datasets_papers ON neuroscience_datasets(papers DESC);
 
+-- Data-source registry: producer DAGs upsert one row per (source_name, contract_name)
+-- after validating their produced tables against the data contracts in
+-- airflow/dags/contracts/. Consumers (unified_datasets view, API, classifier) iterate
+-- this registry instead of hardcoding per-source table names.
+-- Canonical definition: update this file AND utils/contracts.ensure_registry_table
+-- if the schema changes. The runtime function creates this table idempotently on
+-- first DAG run, so existing databases self-heal without re-running this script.
+CREATE TABLE IF NOT EXISTS data_sources (
+    source_name   TEXT NOT NULL,
+    contract_name TEXT NOT NULL,
+    table_name    TEXT NOT NULL,
+    source_id_col TEXT,
+    registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source_name, contract_name)
+);
+
 -- Grant permissions to airflow user
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO airflow;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO airflow;

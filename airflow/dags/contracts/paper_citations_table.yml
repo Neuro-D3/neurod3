@@ -1,0 +1,18 @@
+# Data contract: per-source citation edges (primary paper -> citing paper)
+# produced by the *_paper_mapping DAGs. {source}_id is source-prefixed.
+# Optional ALTER-added columns (citing_journal, citing_senior_author_country)
+# are intentionally not required.
+name: paper_citations_table
+description: Per-source citation edges produced by *_paper_mapping DAGs.
+columns:
+  - {name: "{source}_id", type: varchar, nullable: false}
+  - {name: primary_paper_doi, type: text, nullable: false}
+  - {name: citing_paper_doi, type: text, nullable: false}
+  - {name: matched_primary_paper_doi, type: text}
+  - {name: matched_primary_openalex_id, type: text}
+  - {name: citation_source, type: text}
+  - {name: citing_publication_date, type: text}
+  - {name: citation_contexts, type: jsonb}
+  - {name: contexts_extracted_at, type: timestamptz}
+  - {name: resolved_at, type: timestamptz}
+  - {name: run_id, type: text}
