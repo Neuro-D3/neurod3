@@ -165,7 +165,13 @@ If servers don't appear, try refreshing the browser (Ctrl+Shift+R or Cmd+Shift+R
 │   │   ├── populate_datasets_dag.py  # DAG for populating datasets from multiple sources
 │   │   ├── database_example_dag.py   # Example DAG demonstrating database operations
 │   │   ├── example_dag.py            # Basic Airflow example
+│   │   ├── contracts/       # Data contracts (one YAML per shared table shape)
+│   │   │   ├── dataset_table.yml
+│   │   │   ├── paper_map_table.yml
+│   │   │   ├── paper_citations_table.yml
+│   │   │   └── paper_classifications_table.yml
 │   │   └── utils/           # Shared utilities for DAGs
+│   │       ├── contracts.py           # Contract validation + source registration
 │   │       ├── database.py            # Database connection and query utilities
 │   │       └── environment.py        # Environment detection utilities
 │   ├── config/              # Airflow configuration files
@@ -180,6 +186,7 @@ If servers don't appear, try refreshing the browser (Ctrl+Shift+R or Cmd+Shift+R
 ├── docs/                    # Documentation
 │   ├── API_USAGE.md         # API usage guide
 │   ├── DATABASE_SETUP.md    # Database setup details
+│   ├── DATA_CONTRACTS.md    # Data contracts and the source registry
 │   └── data_citation_notes.md
 │
 ├── docker-compose.yml       # Docker Compose configuration
@@ -237,21 +244,50 @@ Stores datasets from multiple sources (Kaggle, OpenNeuro, PhysioNet).
 - `idx_datasets_modality` - Index on modality column
 - `idx_datasets_citations` - Index on citations (DESC) for sorting
 
+#### 3. `data_sources`
+The source registry. Holds one row per (source, contract) pair describing which
+table a given source produces for a given data contract. Consumers — the
+`unified_datasets` view builder, the paper-reuse classifier, and the API — read
+this registry instead of hardcoding per-source table names.
+
+**Created by**: `database/init-db.sql` on a fresh database, and idempotently at
+runtime by `utils.contracts.ensure_registry_table` so existing databases
+self-heal. **Populated by**: the `register_*` task at the end of every ingestion
+and paper-mapping DAG.
+
+**Columns**:
+- `source_name` (TEXT) - Display label, e.g. "DANDI", "OpenNeuro"
+- `contract_name` (TEXT) - Which contract the table satisfies
+- `table_name` (TEXT) - The actual table, e.g. `dandi_paper_map`
+- `source_id_col` (TEXT) - Source-prefixed id column, e.g. `dandi_id` (NULL for `dataset_table`)
+- `registered_at` (TIMESTAMPTZ) - Last successful registration
+
+**Primary key**: `(source_name, contract_name)`
+
+Registration validates the produced table against its contract first, so a
+source only enters the registry if its schema is actually usable downstream.
+See [docs/DATA_CONTRACTS.md](docs/DATA_CONTRACTS.md) for the full mechanism and
+for how to add a new source without editing any consumer.
+
 ### Views
 
 #### `unified_datasets` (VIEW)
-A SQL view that combines data from both `dandi_dataset` and `neuroscience_datasets` tables using a UNION ALL operation.
+A SQL view that combines every per-source dataset table with `neuroscience_datasets` using a UNION ALL operation.
 
 **Purpose**: Provides a unified interface to query all datasets regardless of their source, making it easy for the API and frontend to access all datasets with a single query.
 
 **How it works**:
-- Combines data from `dandi_dataset` (marked as source "DANDI") and `neuroscience_datasets` (with their respective sources)
-- Standardizes column names and types across both tables
+- Emits one branch per source: the canonical sources (`dandi_dataset`, `openneuro_dataset`, `crcns_dataset`, `sparc_dataset`) plus anything registered in `data_sources` under the `dataset_table` contract
+- Each branch is gated on its table actually existing, so a partially deployed environment still gets a working view
+- Adds `neuroscience_datasets` for sources that have no per-source table (Kaggle, PhysioNet), excluding any source already contributed above so nothing is double-counted
+- Standardizes column names and types across all branches
 - The API uses this view by default (falls back to `neuroscience_datasets` table if view doesn't exist)
+
+Because the source list is read from the registry, **a newly registered source appears in the view with no code change**.
 
 **Auto-creation**: The view is automatically created/updated when:
 - The `populate_neuroscience_datasets` DAG runs (after table creation)
-- The `dandi_ingestion` DAG runs (after DANDI data insertion)
+- Any `*_ingestion` DAG runs (after that source's data insertion)
 
 **Manual refresh**: You can manually create or refresh the view using:
 - API endpoint: `POST http://localhost:8000/api/refresh-view`
@@ -307,7 +343,10 @@ The FastAPI backend provides REST endpoints for accessing neuroscience datasets.
 ### Query Parameters
 
 **`GET /api/datasets`** supports:
-- `source` - Filter by source (DANDI, Kaggle, OpenNeuro, PhysioNet)
+- `source` - Filter by source. The valid set is derived at runtime from the
+  `data_sources` registry plus the legacy sources present in
+  `neuroscience_datasets` — so it grows automatically as new sources register.
+  Currently: DANDI, OpenNeuro, CRCNS, SPARC, Kaggle, PhysioNet.
 - `modality` - Filter by modality (fMRI, EEG, Electrophysiology, etc.)
 - `search` - Search in title and description (case-insensitive)
 
@@ -336,6 +375,21 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 3. **`database_example_dag`** - Demonstrates database operations with environment detection
 
 4. **`example_dag`** - Basic Airflow example for learning
+
+### Source registration
+
+Every `*_ingestion` and `*_paper_mapping` DAG ends with a `register_*` task that
+validates the tables it just produced against their data contracts and upserts
+them into the `data_sources` registry. It runs last, so a source only registers
+if its run actually succeeded.
+
+If a `register_*` task fails, the message names the offending table and columns —
+usually a producer's DDL drifting from its contract. Fix one side or the other;
+the rest of the DAG's output is already committed. Downstream consumers fall back
+to the canonical source list, so a failed registration degrades rather than
+breaks.
+
+See [docs/DATA_CONTRACTS.md](docs/DATA_CONTRACTS.md) for details.
 
 ### Running DAGs
 
@@ -440,6 +494,7 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 
 - [API Usage Guide](docs/API_USAGE.md) - Detailed API documentation and examples
 - [Database Setup](docs/DATABASE_SETUP.md) - Database configuration details
+- [Data Contracts](docs/DATA_CONTRACTS.md) - Contracts, the `data_sources` registry, and how to add a new source
 - [Data Citation Notes](docs/data_citation_notes.md) - Notes on data citation research
 
 ---

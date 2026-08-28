@@ -101,7 +101,20 @@ curl http://localhost:8000/api/datasets
 curl "http://localhost:8000/api/datasets?source=DANDI"
 ```
 
-Available sources: `DANDI`, `Kaggle`, `OpenNeuro`, `PhysioNet`
+Currently available sources: `DANDI`, `OpenNeuro`, `CRCNS`, `SPARC`, `Kaggle`, `PhysioNet`
+
+This list is not fixed. The API derives it at runtime from the `data_sources`
+registry plus whatever sources exist in `neuroscience_datasets`, so a newly
+registered source becomes a valid filter value without an API change (within a
+60-second cache window). An unknown value returns an error rather than an empty
+result set. To see the live set:
+
+```bash
+curl -s "http://localhost:8000/api/datasets/stats" | python -m json.tool
+```
+
+`by_source` in that response lists every source currently carrying data. See
+[DATA_CONTRACTS.md](DATA_CONTRACTS.md) for how sources get registered.
 
 ### Filter by Modality
 

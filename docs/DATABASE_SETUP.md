@@ -46,6 +46,15 @@ DB_PASSWORD=airflow
 - Columns: source, dataset_id, title, modality, citations, url, description
 - Unique constraint on (source, dataset_id)
 
+**Table**: `data_sources` (source registry)
+- Columns: source_name, contract_name, table_name, source_id_col, registered_at
+- Primary key on (source_name, contract_name)
+- Created by `init-db.sql` on a fresh database, and recreated idempotently at
+  runtime if missing. Populated by each DAG's final `register_*` task.
+- The API and the `unified_datasets` view read this to discover which per-source
+  tables exist, instead of hardcoding them. See
+  [DATA_CONTRACTS.md](DATA_CONTRACTS.md).
+
 ## Database Management with pgAdmin
 
 pgAdmin is available at http://localhost:5050 for visual database management.
@@ -107,6 +116,17 @@ docker-compose restart api frontend
 # Trigger DAG in Airflow UI, or:
 docker-compose exec postgres psql -U airflow -d dag_data -c "SELECT COUNT(*) FROM neuroscience_datasets;"
 ```
+
+### A source is missing from the API or the unified view
+Check whether the source registered. With all eight DAGs run you should see 16
+rows — four sources times four contracts:
+```bash
+docker-compose exec postgres psql -U airflow -d dag_data -c "SELECT * FROM data_sources ORDER BY source_name, contract_name;"
+```
+A missing row means that source's `register_*` task did not succeed; check its
+task log in Airflow. Note the API caches the valid-source list for 60 seconds,
+so a fresh registration takes up to a minute to be accepted as a `?source=`
+filter value.
 
 ### API not responding
 ```bash
