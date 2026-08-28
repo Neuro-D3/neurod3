@@ -1,0 +1,16 @@
+# Files that are executed or consumed on Linux MUST use LF line endings.
+# CRLF breaks shebangs when a script is rendered into GCE VM metadata and run
+# there (the kernel/env looks for an interpreter named `bash\r`). This bit the
+# staging Airflow startup script on the first `terraform apply` from a Windows
+# checkout; force LF so it can't recur regardless of who checks the repo out.
+*.sh        text eol=lf
+*.bash      text eol=lf
+*.tftpl     text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Caddyfile   text eol=lf
+
+# Windows-native scripts stay CRLF.
+*.ps1       text eol=crlf
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
