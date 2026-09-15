@@ -13,6 +13,12 @@
 # We wire ONLY frontend -> api.uri (no cycle; the API's CORS origin is an app-code
 # change handled separately). startup_cpu_boost + 1Gi give the dev-server compile
 # enough headroom to bind the port before Cloud Run's startup deadline.
+#
+# Scaling: min_instance_count is 0 to match the API and keep staging cheap. The
+# tradeoff is real — because this image runs the CRA dev server, every cold start
+# pays a full webpack compile, so the first request after idle is slow. Serving a
+# static production build (the "later optimization" noted above) is what makes
+# scale-to-zero cheap AND fast; until then, expect slow first hits in staging.
 
 resource "google_cloud_run_v2_service" "frontend" {
   name     = "neuro-d3-frontend"
@@ -23,7 +29,7 @@ resource "google_cloud_run_v2_service" "frontend" {
     service_account = google_service_account.frontend.email
 
     scaling {
-      min_instance_count = 1
+      min_instance_count = 0 # scale to zero (staging cost)
       max_instance_count = var.cloudrun_max_instances
     }
 
