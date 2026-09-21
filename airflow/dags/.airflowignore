@@ -3,3 +3,8 @@ utils/
 __pycache__/
 *.pyc
 
+# DAG run artifacts written by the *_paper_mapping DAGs. Not DAGs, and large:
+# a populated output/ is thousands of files, which makes every DagBag scan walk
+# them. On a bind mount that scan can exceed the processor's interval, so DAGs
+# never finish parsing and none appear in the UI.
+output/
