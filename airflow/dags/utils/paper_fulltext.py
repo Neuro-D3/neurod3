@@ -231,6 +231,10 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 FETCHER_TOOL_NAME = "neurod3"
+# DOI prefixes routed to the fetcher's bioRxiv/medRxiv Chromium path.
+# 10.1101 is the historical bioRxiv/medRxiv prefix; 10.64898 is bioRxiv's
+# prefix for deposits from 2026 on (see D3PaperFetcher in get_paper_fetcher).
+PREPRINT_DOI_PREFIXES = ("10.1101/", "10.64898/")
 TEXT_STATUS_FULL = "full_text"
 TEXT_STATUS_METADATA = "metadata_only"
 TEXT_STATUS_UNAVAILABLE = "unavailable"
@@ -309,12 +313,27 @@ def get_paper_fetcher(cache_dir: Optional[Path] = None):
             _fetcher_import_warned = True
         return None
 
+    class D3PaperFetcher(PaperFetcher):
+        """
+        paper-text-fetcher with D3's preprint-prefix fix.
+
+        The package routes only ``10.1101/`` DOIs to its bioRxiv/medRxiv
+        Chromium path. bioRxiv moved new deposits to the ``10.64898/`` prefix
+        in 2026; those DOIs otherwise fall through to the journal sources and
+        22 of 37 recent ones came back without a body. The page URL is built
+        from the DOI, so the same path works for both prefixes.
+        """
+
+        @staticmethod
+        def is_preprint_doi(doi: str) -> bool:
+            return doi.startswith(PREPRINT_DOI_PREFIXES)
+
     wanted = Path(cache_dir) if cache_dir else fetcher_cache_dir()
     fetcher = getattr(_fetcher_local, "fetcher", None)
     if fetcher is None or getattr(_fetcher_local, "cache_dir", None) != wanted:
         wanted.mkdir(parents=True, exist_ok=True)
         contact = os.getenv("PAPER_FETCHER_CONTACT_EMAIL", "").strip() or None
-        fetcher = PaperFetcher(
+        fetcher = D3PaperFetcher(
             cache_dir=wanted,
             contact_email=contact,
             tool_name=FETCHER_TOOL_NAME,

@@ -549,6 +549,27 @@ WHERE text_status IS NULL
 """
 
 
+def backfill_papers_text_status(cursor) -> int:
+    """
+    Fill papers.text_status where the mapping DAGs' own columns already say it.
+
+    fulltext_available means an article body was stored; the
+    "metadata_only: ..." / "unavailable: ..." prefixes are written into
+    fulltext_reason by utils.paper_fulltext.fetch_fulltext_oa when it
+    delegates to paper-text-fetcher. Legacy "no_oa_fulltext_found" rows stay
+    NULL: the wider fetcher may still find them. Called at the start of the
+    classification DAG and at the end of every paper-mapping run (the mapping
+    DAGs' paper upsert does not write text_status itself). Returns rows set.
+    """
+    if not _table_exists(cursor, "papers"):
+        return 0
+    cursor.execute("SELECT 1 FROM information_schema.columns WHERE table_name = 'papers' AND column_name = 'text_status';")
+    if cursor.fetchone() is None:
+        return 0
+    cursor.execute(PAPERS_TEXT_STATUS_BACKFILL_SQL)
+    return cursor.rowcount if cursor.rowcount is not None and cursor.rowcount >= 0 else 0
+
+
 def _table_exists(cursor, table_name: str) -> bool:
     cursor.execute("SELECT to_regclass(%s) IS NOT NULL;", (f"public.{table_name}",))
     row = cursor.fetchone()
@@ -579,13 +600,7 @@ def ensure_paper_reuse_classification_columns(cursor) -> Dict[str, Any]:
             cursor.execute(
                 f"ALTER TABLE papers ADD COLUMN IF NOT EXISTS {column} {col_type};"
             )
-        # Backfill text_status from what the mapping DAGs already recorded.
-        # fulltext_available means the legacy path got an article body; the
-        # "metadata_only: ..." / "unavailable: ..." prefixes are written into
-        # fulltext_reason by utils.paper_fulltext.fetch_fulltext_oa once it
-        # delegates to paper-text-fetcher. Legacy "no_oa_fulltext_found" rows
-        # stay NULL: the wider fetcher may still find them.
-        cursor.execute(PAPERS_TEXT_STATUS_BACKFILL_SQL)
+        backfill_papers_text_status(cursor)
         touched.append("papers")
 
     cursor.execute(PAPER_REUSE_CLASSIFICATION_RUNS_DDL)

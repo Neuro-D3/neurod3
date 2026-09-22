@@ -75,6 +75,9 @@ DB_PASSWORD="$(fetch d3-staging-db-master-password)"
   echo "_AIRFLOW_WWW_USER_USERNAME=airflow"
   echo "_AIRFLOW_WWW_USER_PASSWORD=$(fetch d3-staging-airflow-admin-password)"
   echo "OPENROUTER_API_KEY=$(fetch d3-staging-openrouter-api-key)"
+  # paper-text-fetcher identifies itself to NCBI, CrossRef and Unpaywall with this
+  # address; Unpaywall (open-access PDFs) is skipped without one. Not a secret.
+  echo "PAPER_FETCHER_CONTACT_EMAIL=nathaniel@duralabs.ai"
   # Reserved for the future GCS paper-mapping PR (artifacts are local for now).
   echo "DATA_BUCKET=$DATA_BUCKET"
   # Native GCS remote logging target (provider baked into the image).

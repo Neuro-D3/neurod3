@@ -34,7 +34,11 @@ try:
 except Exception:  # pragma: no cover
     XComArg = None  # type: ignore
 
-from utils.database import get_db_connection, ensure_paper_reuse_classification_columns
+from utils.database import (
+    get_db_connection,
+    ensure_paper_reuse_classification_columns,
+    backfill_papers_text_status,
+)
 from utils.cache_keys import paper_cache_key_for_doi
 from utils.find_reuse_core import normalize_doi, Telemetry
 from utils.paper_citations import (
@@ -1400,6 +1404,9 @@ def summarize_run(**context) -> None:
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
+            # papers fetched during this run: derive text_status from the
+            # fetcher result stored in fulltext_available / fulltext_reason.
+            backfill_papers_text_status(cursor)
             cursor.execute(
                 """
                 UPDATE openneuro_paper_resolution_runs

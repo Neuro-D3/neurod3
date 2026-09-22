@@ -299,3 +299,26 @@ class TestFetchFulltextOaDelegation:
         fetcher = install_fake_fetcher(monkeypatch, FakeFetcher(tmp_path, result={}))
         assert P.fetch_fulltext_oa(None, "nope", telemetry=P.Telemetry()) == (None, "none", False, "invalid_doi")
         assert fetcher.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# The real fetcher subclass (only where paper-text-fetcher is installed)
+# --------------------------------------------------------------------------- #
+
+class TestD3PaperFetcher:
+    def test_new_biorxiv_prefix_is_treated_as_a_preprint(self, monkeypatch, tmp_path):
+        pytest.importorskip("paper_text_fetcher")
+        monkeypatch.setenv("PAPER_FETCHER_CACHE_DIR", str(tmp_path / "ptf"))
+        monkeypatch.setenv("PAPER_FETCHER_CONTACT_EMAIL", "tests@example.org")
+        fetcher = P.get_paper_fetcher()
+        assert fetcher is not None
+        assert fetcher.is_preprint_doi("10.1101/2024.01.01.573000") is True
+        assert fetcher.is_preprint_doi("10.64898/2026.07.06.732916") is True
+        assert fetcher.is_preprint_doi("10.1016/j.cub.2026.07.028") is False
+        assert fetcher.contact_email == "tests@example.org"
+        assert str(fetcher.cache.cache_dir) == str(tmp_path / "ptf")
+
+    def test_same_thread_reuses_one_instance(self, monkeypatch, tmp_path):
+        pytest.importorskip("paper_text_fetcher")
+        monkeypatch.setenv("PAPER_FETCHER_CACHE_DIR", str(tmp_path / "ptf"))
+        assert P.get_paper_fetcher() is P.get_paper_fetcher()
