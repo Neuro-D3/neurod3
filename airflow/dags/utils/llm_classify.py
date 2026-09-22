@@ -4,7 +4,13 @@ llm_classify.py - LLM-based paper reuse classification via OpenRouter.
 Provides prompt construction, API calling with retries, and response parsing
 for classifying citation edges as PRIMARY / SECONDARY / NEITHER / UNKNOWN.
 
-Adapted from _tmp_find_reuse_friend/llm_utils.py for production Airflow use.
+Adapted from find_reuse llm_utils.py (root-level, March 2026) for production Airflow use.
+
+NOTE: the prompt builders, VALID_CLASSIFICATIONS and parse_classification_response
+here implement the retired PRIMARY/SECONDARY/NEITHER/UNKNOWN excerpt scheme. The
+live classifier is utils/classify_fulltext_reuse.py (whole paper, REUSE/MENTION/
+NEITHER + PRIMARY in direct mode). Only get_openrouter_api_key,
+validate_openrouter_api_key and normalize_openrouter_model remain in active use.
 """
 
 from __future__ import annotations

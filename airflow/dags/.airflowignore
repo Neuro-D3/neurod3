@@ -8,3 +8,6 @@ __pycache__/
 # them. On a bind mount that scan can exceed the processor's interval, so DAGs
 # never finish parsing and none appear in the UI.
 output/
+
+# Unit tests for dags/utils (pytest), not DAG files.
+tests/

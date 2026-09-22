@@ -1,5 +1,5 @@
 """
-OA-only full text fetching (Option B).
+OA-only full text fetching (Option B), plus paper-text-fetcher helpers.
 
 Sources:
 - Europe PMC REST API (best effort)
@@ -184,3 +184,250 @@ def fetch_fulltext_oa(
 
     return None, "none", False, "no_oa_fulltext_found"
 
+
+
+# ---------------------------------------------------------------------------
+# paper-text-fetcher integration
+# ---------------------------------------------------------------------------
+#
+# The upstream find_reuse project moved DOI -> full-text retrieval into a
+# standalone package, ``paper-text-fetcher`` (catalystneuro/paper-text-fetcher).
+# It tries Europe PMC, NCBI PMC, CrossRef, Elsevier, Unpaywall PDFs, publisher
+# HTML and a headless browser, and it reports a three-way status so a title +
+# abstract is never mistaken for a paper body:
+#
+#     full_text      the article body was retrieved (>= MIN_FULL_TEXT_CHARS)
+#     metadata_only  title/abstract/references only (closed access)
+#     unavailable    nothing came back
+#
+# ``fetch_fulltext_oa`` above keeps its Europe PMC / NCBI-only implementation
+# for now; the helpers below are additive and are what the classification DAG
+# uses. The package is optional at import time so DAG parsing never depends on
+# it having been installed into the image.
+
+import os
+import threading
+from pathlib import Path
+from typing import Any, Dict, List
+
+FETCHER_TOOL_NAME = "neurod3"
+TEXT_STATUS_FULL = "full_text"
+TEXT_STATUS_METADATA = "metadata_only"
+TEXT_STATUS_UNAVAILABLE = "unavailable"
+
+# (env var, default directory under airflow/dags/output/) for each paper-mapping
+# DAG's ``_get_output_root``. ``papers.fulltext_cache_key`` is relative to
+# whichever of these wrote it, and ``papers.source`` does not say which, so the
+# loader probes them in order.
+MAPPING_OUTPUT_ROOTS = (
+    ("DANDI_PAPER_MAPPING_OUTPUT_DIR", "dandi_paper_mapping"),
+    ("OPENNEURO_PAPER_MAPPING_OUTPUT_DIR", "openneuro_paper_mapping"),
+    ("CRCNS_PAPER_MAPPING_OUTPUT_DIR", "crcns_paper_mapping"),
+    ("SPARC_PAPER_MAPPING_OUTPUT_DIR", "sparc_paper_mapping"),
+)
+
+_fetcher_local = threading.local()
+_fetcher_import_warned = False
+
+
+def _dags_dir() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def fetcher_cache_dir() -> Path:
+    """Where paper-text-fetcher keeps its JSON-per-DOI cache."""
+    env = os.getenv("PAPER_FETCHER_CACHE_DIR", "").strip()
+    if env:
+        return Path(env)
+    return _dags_dir() / "output" / "paper_text_fetcher"
+
+
+def mapping_output_roots() -> List[Path]:
+    """The four paper-mapping DAGs' output roots, in probe order."""
+    roots: List[Path] = []
+    for env_name, default_dir in MAPPING_OUTPUT_ROOTS:
+        env = os.getenv(env_name, "").strip()
+        roots.append(Path(env) if env else _dags_dir() / "output" / default_dir)
+    return roots
+
+
+def _fetcher_api_keys() -> Dict[str, str]:
+    key = (os.getenv("ELSEVIER_API_KEY") or os.getenv("SCOPUS_API_KEY") or "").strip()
+    return {"elsevier": key} if key else {}
+
+
+def get_paper_fetcher(cache_dir: Optional[Path] = None):
+    """
+    Return this thread's ``PaperFetcher``, or None if the package is missing.
+
+    One instance per thread: the fetcher holds a requests.Session and, with the
+    browser extra, a Playwright context, neither of which is thread-safe.
+    """
+    global _fetcher_import_warned
+    try:
+        from paper_text_fetcher import PaperFetcher
+    except ImportError:
+        if not _fetcher_import_warned:
+            logger.warning(
+                "paper_text_fetcher is not installed; full-text fetching is limited to "
+                "the Europe PMC / NCBI PMC path. Rebuild the Airflow image to pick up "
+                "airflow/requirements.txt."
+            )
+            _fetcher_import_warned = True
+        return None
+
+    wanted = Path(cache_dir) if cache_dir else fetcher_cache_dir()
+    fetcher = getattr(_fetcher_local, "fetcher", None)
+    if fetcher is None or getattr(_fetcher_local, "cache_dir", None) != wanted:
+        wanted.mkdir(parents=True, exist_ok=True)
+        contact = os.getenv("PAPER_FETCHER_CONTACT_EMAIL", "").strip() or None
+        fetcher = PaperFetcher(
+            cache_dir=wanted,
+            contact_email=contact,
+            tool_name=FETCHER_TOOL_NAME,
+            api_keys=_fetcher_api_keys(),
+            use_cache=True,
+            verbose=False,
+        )
+        _fetcher_local.fetcher = fetcher
+        _fetcher_local.cache_dir = wanted
+    return fetcher
+
+
+def _unavailable(reason: str) -> Dict[str, Any]:
+    return {
+        "text": None,
+        "source": None,
+        "status": TEXT_STATUS_UNAVAILABLE,
+        "has_full_text": False,
+        "reason": reason,
+        "from_cache": False,
+    }
+
+
+def fetch_fulltext_detailed(
+    doi: str,
+    *,
+    telemetry: Optional[Telemetry] = None,
+    cache_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Fetch a paper through paper-text-fetcher and return its detailed result.
+
+    Always returns the same six keys the package does:
+    ``text, source, status, has_full_text, reason, from_cache``. When the
+    package is not installed or the DOI is malformed, ``status`` is
+    ``unavailable`` and ``reason`` says why, so callers never need a special
+    case for "fetcher missing".
+    """
+    doi_norm = normalize_doi(doi)
+    if not doi_norm:
+        return _unavailable("invalid_doi")
+    fetcher = get_paper_fetcher(cache_dir)
+    if fetcher is None:
+        return _unavailable("paper_text_fetcher_not_installed")
+
+    if telemetry is not None:
+        telemetry.total_requests += 1
+    try:
+        info = fetcher.get_paper_text_detailed(doi_norm) or {}
+    except Exception as exc:
+        logger.warning("paper-text-fetcher failed doi=%s err=%s", doi_norm, exc)
+        if telemetry is not None:
+            telemetry.api_retry_count += 1
+        return _unavailable(f"fetch_error: {exc}")
+
+    status = info.get("status") or (
+        TEXT_STATUS_FULL if info.get("has_full_text") else TEXT_STATUS_UNAVAILABLE
+    )
+    text = info.get("text") if status == TEXT_STATUS_FULL else None
+    return {
+        "text": text,
+        "source": info.get("source") or None,
+        "status": status,
+        "has_full_text": status == TEXT_STATUS_FULL,
+        "reason": info.get("reason"),
+        "from_cache": bool(info.get("from_cache")),
+    }
+
+
+def fetcher_cache_key(doi: str, cache_dir: Optional[Path] = None) -> Optional[str]:
+    """Path of the fetcher's cache file for ``doi``, relative to the cache dir."""
+    doi_norm = normalize_doi(doi)
+    fetcher = get_paper_fetcher(cache_dir) if doi_norm else None
+    if fetcher is None:
+        return None
+    try:
+        path = Path(fetcher.cache.path_for(doi_norm))
+        return str(path.relative_to(Path(fetcher.cache.cache_dir)))
+    except Exception:
+        return None
+
+
+def _read_cache_payload_text(path: Path) -> Optional[str]:
+    """Read the ``full_text`` (or legacy ``text``) field of a mapping-DAG cache file."""
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        logger.debug("Failed reading cached paper text at %s", path, exc_info=True)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    for key in ("full_text", "text"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def load_cached_paper_text(
+    cursor: Any,
+    paper_doi: str,
+    *,
+    cache_dir: Optional[Path] = None,
+) -> Optional[str]:
+    """
+    Return already-cached full text for a paper, or None. Never hits the network.
+
+    Looks, in order, at
+      1. the paper-mapping DAGs' JSON cache, via ``papers.fulltext_cache_key``
+         probed under each DAG's output root (``mapping_output_roots``);
+      2. paper-text-fetcher's own cache, but only entries it recorded as full
+         text (a cached abstract is not a paper).
+    """
+    doi_norm = normalize_doi(paper_doi)
+    if not doi_norm:
+        return None
+
+    cache_key: Optional[str] = None
+    try:
+        cursor.execute(
+            "SELECT fulltext_cache_key FROM papers WHERE paper_doi = %s LIMIT 1;",
+            (doi_norm,),
+        )
+        row = cursor.fetchone()
+        if row:
+            cache_key = row[0] if not isinstance(row, dict) else row.get("fulltext_cache_key")
+    except Exception:
+        logger.debug("papers lookup failed for %s", doi_norm, exc_info=True)
+
+    if isinstance(cache_key, str) and cache_key.strip():
+        for root in mapping_output_roots():
+            text = _read_cache_payload_text(root / cache_key)
+            if text:
+                return text
+
+    fetcher = get_paper_fetcher(cache_dir)
+    if fetcher is not None:
+        try:
+            cached = fetcher.cache.get(doi_norm)
+        except Exception:
+            cached = None
+        if cached:
+            text, _source, has_full_text = cached
+            if has_full_text and isinstance(text, str) and text.strip():
+                return text
+    return None

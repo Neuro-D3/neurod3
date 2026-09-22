@@ -22,6 +22,10 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     # OpenRouter API key for LLM-based paper reuse classification DAG.
     OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    # paper-text-fetcher settings (utils/paper_fulltext.py). See .env.example.
+    PAPER_FETCHER_CONTACT_EMAIL: ${PAPER_FETCHER_CONTACT_EMAIL:-}
+    ELSEVIER_API_KEY: ${ELSEVIER_API_KEY:-}
+    PAPER_FETCHER_CACHE_DIR: ${PAPER_FETCHER_CACHE_DIR:-}
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs

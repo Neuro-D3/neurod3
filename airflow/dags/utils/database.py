@@ -470,3 +470,107 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         "sparc_table_exists": sparc_table_exists,
         "neuro_table_exists": neuro_table_exists,
     }
+
+
+
+# ---------------------------------------------------------------------------
+# Paper reuse classification schema (shared by the four *_paper_mapping DAGs
+# and paper_reuse_classification)
+# ---------------------------------------------------------------------------
+
+# Per-source citation-classification tables, with their dataset id column.
+PAPER_CITATION_CLASSIFICATION_TABLES = (
+    ("dandi_paper_citation_classifications", "dandi_id"),
+    ("openneuro_paper_citation_classifications", "openneuro_id"),
+    ("crcns_paper_citation_classifications", "crcns_id"),
+    ("sparc_paper_citation_classifications", "sparc_id"),
+)
+
+# Columns the whole-paper classifier (utils/classify_fulltext_reuse.py) writes
+# beyond the original classification/confidence/reasoning/model/status set.
+# ``same_lab``, ``same_lab_confidence`` and ``source_archive`` already exist on
+# these tables and are reused. All nullable, all added with IF NOT EXISTS, so
+# this is safe to run on every DAG start.
+PAPER_CITATION_CLASSIFICATION_COLUMNS = (
+    ("prompt_version", "INTEGER"),          # classify_fulltext_reuse.PROMPT_VERSION
+    ("mode", "TEXT"),                       # 'citing' | 'direct'
+    ("reuse_type", "TEXT"),                 # one of REUSE_TYPES, REUSE rows only
+    ("reuse_type_other", "TEXT"),           # write-in when reuse_type = 'OTHER'
+    ("reused_modalities", "JSONB"),         # list of MODALITIES
+    ("reused_dandi_hosted", "BOOLEAN"),
+    ("reused_neurophysiology", "BOOLEAN"),
+    ("evidence_quotes", "JSONB"),           # verified quote records
+    ("source_quotes", "JSONB"),
+    ("quote_warnings", "JSONB"),
+    ("hallucinated_quote_count", "INTEGER"),
+    ("error_kind", "TEXT"),                 # set when status = 'error'
+    ("usage", "JSONB"),                     # raw provider usage / cost
+    ("input_chars", "INTEGER"),
+    ("truncation", "JSONB"),
+    ("provider", "TEXT"),
+)
+
+# Full-text provenance recorded by paper-text-fetcher (utils/paper_fulltext.py).
+# Kept apart from the legacy fulltext_* columns, whose source vocabulary differs.
+PAPERS_FULLTEXT_FETCHER_COLUMNS = (
+    ("text_status", "TEXT"),                # 'full_text' | 'metadata_only' | 'unavailable'
+    ("fulltext_fetcher_cache_key", "TEXT"),
+    ("fulltext_fetcher_source", "TEXT"),
+    ("fulltext_fetcher_fetched_at", "TIMESTAMPTZ"),
+)
+
+PAPER_REUSE_CLASSIFICATION_RUNS_DDL = """
+CREATE TABLE IF NOT EXISTS paper_reuse_classification_runs (
+    id SERIAL PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    dag_run_id TEXT,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ DEFAULT NOW(),
+    model TEXT,
+    prompt_version INTEGER,
+    classification_scope TEXT,
+    params JSONB,
+    summary JSONB
+);
+"""
+
+
+def _table_exists(cursor, table_name: str) -> bool:
+    cursor.execute("SELECT to_regclass(%s) IS NOT NULL;", (f"public.{table_name}",))
+    row = cursor.fetchone()
+    return bool(row and row[0])
+
+
+def ensure_paper_reuse_classification_columns(cursor) -> Dict[str, Any]:
+    """
+    Add the whole-paper classification columns and the runs table.
+
+    Idempotent: every statement is ``IF NOT EXISTS``. Tables that do not exist
+    yet (a source whose mapping DAG has never run) are skipped; their own DAG
+    creates them and calls this again. Returns which tables were touched.
+    """
+    touched: List[str] = []
+
+    for table, _id_col in PAPER_CITATION_CLASSIFICATION_TABLES:
+        if not _table_exists(cursor, table):
+            continue
+        for column, col_type in PAPER_CITATION_CLASSIFICATION_COLUMNS:
+            cursor.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type};"
+            )
+        touched.append(table)
+
+    if _table_exists(cursor, "papers"):
+        for column, col_type in PAPERS_FULLTEXT_FETCHER_COLUMNS:
+            cursor.execute(
+                f"ALTER TABLE papers ADD COLUMN IF NOT EXISTS {column} {col_type};"
+            )
+        touched.append("papers")
+
+    cursor.execute(PAPER_REUSE_CLASSIFICATION_RUNS_DDL)
+    touched.append("paper_reuse_classification_runs")
+
+    import logging
+    logging.getLogger(__name__).info(
+        "ensure_paper_reuse_classification_columns touched: %s", touched)
+    return {"tables": touched}

@@ -8,3 +8,13 @@
 # official constraints file or pin a compatible provider version.
 apache-airflow-providers-google
 
+
+# DOI -> full text retrieval for paper reuse classification (paper_reuse_classification
+# DAG and the *_paper_mapping DAGs via utils/paper_fulltext.py). Same package the
+# upstream find_reuse project uses. Not on PyPI, so pinned to a commit on GitHub.
+# [all] pulls PyMuPDF (Unpaywall PDFs) and playwright (preprint/publisher pages);
+# the Dockerfile installs the chromium browser playwright needs.
+paper-text-fetcher[all] @ git+https://github.com/catalystneuro/paper-text-fetcher.git@e2bb97b36c896e3f418949db4e0b7b643c09709c
+
+# Unit tests for dags/utils: `docker compose exec airflow-scheduler pytest /opt/airflow/dags/tests`
+pytest
