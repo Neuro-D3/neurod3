@@ -14,7 +14,8 @@ Labels by mode (``classification_scope`` param):
 
 Row statuses: ``classified``, ``error`` (transport/parse failure; never
 overwrites a good row), ``no_full_text`` (body not retrievable yet; retried on
-a later run), ``dry_run``, ``placeholder`` (created by the mapping DAGs).
+a later run), ``placeholder`` (created by the mapping DAGs). A ``dry_run``
+writes no rows at all; it only logs prompt sizes and text availability.
 
 Results go to ``<src>_paper_citation_classifications``; every run writes one
 row to ``paper_reuse_classification_runs``. Trigger manually from the Airflow
@@ -692,6 +693,9 @@ def classify_and_persist_batch(*, batch_paper_groups: List[List[Dict[str, Any]]]
                 mode = _mode_for_edge_type(edge.get("edge_type", "citation_edge"))
 
                 if not text:
+                    if dry_run:
+                        stats["no_full_text"] += 1
+                        continue
                     row = _result_to_row(
                         {"classification": "ERROR", "error_kind": STATUS_NO_FULL_TEXT,
                          "error": "article body not available", "mode": mode},
@@ -704,17 +708,14 @@ def classify_and_persist_batch(*, batch_paper_groups: List[List[Dict[str, Any]]]
                 dataset_name, dataset_description = datasets.get(source, dataset_id)
 
                 if dry_run:
+                    # Build the prompt (exercises the text load and the dataset
+                    # lookup) but write nothing: a dry run must leave the tables
+                    # and the dashboard's label breakdown exactly as they were.
                     prompt = build_prompt(text, dataset_id=dataset_id, dataset_name=dataset_name,
                                           dataset_description=dataset_description,
                                           primary_paper_doi=primary_doi, mode=mode)
                     logger.info("[DRY RUN] batch=%d %s/%s -> %s mode=%s prompt_chars=%d paper_chars=%d",
                                 batch_index, source, dataset_id, citing_doi, mode, len(prompt), len(text))
-                    row = _result_to_row(
-                        {"classification": None, "confidence": None, "mode": mode,
-                         "reasoning": "dry_run: no API call made", "input_chars": len(text)},
-                        STATUS_DRY_RUN, model, mode)
-                    if _upsert_classification(cursor, source, dataset_id, primary_doi, citing_doi, row, run_id) == 0:
-                        stats["guarded"] += 1
                     stats["dry_run"] += 1
                     continue
 
