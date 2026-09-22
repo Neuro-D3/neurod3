@@ -11,6 +11,15 @@ import {
   PaperMappingDatasetRow,
   PaperMappingSummary,
 } from '../services/api';
+import {
+  confidenceShort,
+  modalityLabel,
+  primaryQuote,
+  reuseTypeLabel,
+  reusedModalities,
+  statusBadgeClass,
+  statusLabel,
+} from '../utils/classification';
 
 type SourceFilter = 'all' | 'CRCNS' | 'DANDI' | 'OpenNeuro' | 'SPARC';
 type SortKey =
@@ -39,25 +48,6 @@ function truncate(text?: string | null, max = 160): string {
   if (!text) return '';
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1)}…`;
-}
-
-function statusBadgeClass(status?: string | null): string {
-  const normalized = (status || '').toLowerCase();
-  if (normalized === 'secondary') return 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30';
-  if (normalized === 'primary') return 'bg-blue-500/15 text-blue-700 ring-blue-500/30';
-  if (normalized === 'neither') return 'bg-slate-500/10 text-slate-600 ring-slate-400/30';
-  if (normalized === 'unknown') return 'bg-amber-500/15 text-amber-700 ring-amber-500/30';
-  if (normalized.includes('reuse')) return 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30';
-  if (normalized.includes('mention')) return 'bg-sky-500/15 text-sky-700 ring-sky-500/30';
-  if (normalized.includes('placeholder')) return 'bg-amber-500/15 text-amber-700 ring-amber-500/30';
-  return 'bg-slate-500/10 text-slate-700 ring-slate-400/30';
-}
-
-function confidenceLabel(value?: number | null): { text: string; color: string } {
-  if (value === 3) return { text: 'High', color: 'text-emerald-600' };
-  if (value === 2) return { text: 'Medium', color: 'text-amber-600' };
-  if (value === 1) return { text: 'Low', color: 'text-red-500' };
-  return { text: '—', color: 'text-slate-400' };
 }
 
 const PAGE_SIZE = 20;
@@ -182,7 +172,7 @@ export default function PaperMappingDashboard() {
         <div className="mb-6">
           <h1 className="text-3xl font-semibold tracking-tight">Internal Paper Mapping Dashboard</h1>
           <p className="mt-2 max-w-3xl text-sm text-slate-600">
-            Review mapped primary papers, citation enrichment coverage, and placeholder classification state across DANDI, OpenNeuro, CRCNS, and SPARC.
+            Review mapped primary papers, citation enrichment coverage, and whole-paper reuse classifications (REUSE / MENTION / NEITHER, with verified quotes) across DANDI, OpenNeuro, CRCNS, and SPARC.
           </p>
         </div>
 
@@ -369,13 +359,16 @@ export default function PaperMappingDashboard() {
                             : 'bg-slate-50 hover:bg-slate-100'
                         }`}
                       >
-                        <span className="capitalize text-slate-700">{bucket.replace(/_/g, ' ')}</span>
+                        <span className="flex items-center gap-2 text-slate-700">
+                          <span className={`inline-block h-2.5 w-2.5 rounded-full ring-1 ${statusBadgeClass(bucket)}`} aria-hidden="true" />
+                          {statusLabel(bucket)}
+                        </span>
                         <span className="font-medium text-slate-900">{formatNumber(count)}</span>
                       </button>
                     );
                   })
                 ) : (
-                  <p className="text-slate-500">No classification rows yet. Placeholder schema is ready for the future LLM DAG.</p>
+                  <p className="text-slate-500">No classification rows yet. Run the paper_reuse_classification DAG after paper mapping.</p>
                 )}
               </div>
             </section>
@@ -488,7 +481,11 @@ export default function PaperMappingDashboard() {
                     <div className="space-y-3">
                       {citationsPreview.map((citation) => {
                         const firstContext = citation.citation_contexts?.[0]?.context;
-                        const conf = confidenceLabel(citation.confidence);
+                        const conf = confidenceShort(citation.confidence);
+                        const typeLabel = reuseTypeLabel(citation.reuse_type, citation.reuse_type_other);
+                        const modalities = reusedModalities(citation.reused_modalities);
+                        const quote = primaryQuote(citation.evidence_quotes);
+                        const hallucinated = (citation.hallucinated_quote_count ?? 0) > 0;
                         return (
                           <div key={`${citation.primary_paper_doi}:${citation.citing_paper_doi}`} className="rounded-xl border border-slate-200 p-4">
                             <div className="flex flex-wrap items-start justify-between gap-2">
@@ -497,32 +494,74 @@ export default function PaperMappingDashboard() {
                                 <div className="mt-1 font-mono text-xs text-slate-500">{citation.citing_paper_doi}</div>
                               </div>
                               <div className="flex items-center gap-2">
-                                <span className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${statusBadgeClass(citation.classification_status)}`}>
-                                  {citation.classification_status || 'unclassified'}
+                                <span
+                                  className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${statusBadgeClass(citation.classification_status)}`}
+                                  title={citation.mode ? `${citation.mode} mode, prompt v${citation.prompt_version ?? '?'}` : undefined}
+                                >
+                                  {statusLabel(citation.classification_status)}
                                 </span>
-                                {citation.confidence != null && (
+                                {citation.confidence != null && citation.confidence > 0 && (
                                   <span className={`text-xs font-medium ${conf.color}`}>
                                     {conf.text}
                                   </span>
                                 )}
                               </div>
                             </div>
+                            {(typeLabel || modalities.length > 0 || citation.same_lab === true || citation.source_archive) && (
+                              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                                {typeLabel && (
+                                  <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-violet-700 ring-1 ring-violet-200">
+                                    {typeLabel}
+                                  </span>
+                                )}
+                                {modalities.map((m) => (
+                                  <span key={m} className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-blue-100">
+                                    {modalityLabel(m)}
+                                  </span>
+                                ))}
+                                {citation.same_lab === true && (
+                                  <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-200">
+                                    Same lab
+                                  </span>
+                                )}
+                                {citation.source_archive && (
+                                  <span className="text-[11px] text-slate-400">via {citation.source_archive}</span>
+                                )}
+                              </div>
+                            )}
                             <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-slate-600">
                               <span>Primary paper</span>
                               <span className="text-right">{truncate(citation.primary_paper_title || citation.primary_paper_doi, 36)}</span>
                               <span>Citation date</span>
                               <span className="text-right">{formatDate(citation.citing_publication_date || citation.citing_publication_date_from_papers)}</span>
+                              <span>Full text</span>
+                              <span className="text-right">{citation.citing_text_status ? statusLabel(citation.citing_text_status) : '—'}</span>
                               <span>Contexts found</span>
                               <span className="text-right">{formatNumber(citation.citation_contexts?.length || 0)}</span>
                             </div>
+                            {quote && (
+                              <blockquote
+                                className="mt-3 border-l-2 border-slate-300 pl-3 text-sm text-slate-700"
+                                title={quote.match_type ? `Verified against the paper text (${quote.match_type})` : undefined}
+                              >
+                                “{truncate(quote.quote, 320)}”
+                              </blockquote>
+                            )}
                             {citation.reasoning && (
                               <div className="mt-2 text-xs text-slate-500 italic">
-                                {truncate(citation.reasoning, 200)}
+                                {truncate(citation.reasoning, 240)}
                               </div>
                             )}
-                            <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
-                              {firstContext ? truncate(firstContext, 280) : 'No extracted citation context stored yet.'}
-                            </div>
+                            {hallucinated && (
+                              <div className="mt-1 text-xs text-rose-600">
+                                {citation.hallucinated_quote_count} quote{citation.hallucinated_quote_count === 1 ? '' : 's'} not found in the paper text
+                              </div>
+                            )}
+                            {!quote && (
+                              <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+                                {firstContext ? truncate(firstContext, 280) : 'No extracted citation context stored yet.'}
+                              </div>
+                            )}
                           </div>
                         );
                       })}

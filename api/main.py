@@ -1662,6 +1662,11 @@ async def get_paper_mapping_citations(
                 cursor.execute(count_query, params)
                 total = cursor.fetchone()["total"]
 
+                c_text_status = (
+                    "p_citing.text_status AS citing_text_status,"
+                    if "text_status" in _table_columns(cursor, "papers")
+                    else "NULL::text AS citing_text_status,"
+                )
                 query = f"""
                     {_paper_mapping_ctes(cursor)}
                     SELECT
@@ -1671,6 +1676,7 @@ async def get_paper_mapping_citations(
                         p_primary.title AS primary_paper_title,
                         ce.citing_paper_doi,
                         p_citing.title AS citing_paper_title,
+                        {c_text_status}
                         ce.citing_publication_date,
                         ce.citation_source,
                         ce.citation_contexts,
