@@ -412,7 +412,7 @@ This is being delivered in phases, each its own pull request:
 | 1 | Shared helpers: vendored classifier, fetcher wrapper, schema helper, image with Chromium, tests | done |
 | 2 | `paper_reuse_classification` DAG switched to whole-paper input and the labels above | done |
 | 3 | Paper-mapping DAGs adopt the fetcher and the new `papers` columns; cache moved out of the DAG folder | done |
-| 4 | API: `reuse_count`, new fields on citations | pending |
+| 4 | API: `reuse_count`, new fields on citations | done |
 | 5 | Site: evidence quotes, modality chips, same-lab badge, new badges | pending |
 
 Until phase 4 ships, the API and site still count the retired `SECONDARY` label from the previous excerpt-based classifier.

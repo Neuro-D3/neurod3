@@ -4,3 +4,6 @@ psycopg[binary]==3.3.1
 psycopg2-binary==2.9.10
 sqlalchemy==2.0.36
 python-dotenv==1.2.1
+
+# Unit tests: `docker compose exec api python -m pytest /app/tests`
+pytest
