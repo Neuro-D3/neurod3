@@ -353,14 +353,25 @@ def _read_key(name: str) -> Optional[str]:
     (``openrouter_api_key`` / ``deepseek_api_key``, rotatable from the UI), then
     the process environment (docker-compose ``.env``).
     """
-    try:
-        from airflow.models import Variable
-        value = (Variable.get(name.lower(), default_var="") or "").strip()
-        if value:
-            return value
-    except Exception:  # Airflow not importable (tests) or metadata DB unreachable
-        pass
+    value = _airflow_variable(name.lower())
+    if value:
+        return value
     value = (os.environ.get(name) or "").strip()
+    return value or None
+
+
+def _airflow_variable(key: str) -> Optional[str]:
+    """Read an Airflow Variable, or None when Airflow is absent or has no such key."""
+    try:  # Airflow 3 task SDK
+        from airflow.sdk import Variable
+        value = Variable.get(key, default=None)
+    except Exception:
+        try:  # Airflow 2.x / metadata-DB access outside a task
+            from airflow.models import Variable
+            value = Variable.get(key, default_var=None)
+        except Exception:  # Airflow not importable (tests) or DB unreachable
+            return None
+    value = (value or "").strip() if isinstance(value, str) else None
     return value or None
 
 

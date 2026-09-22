@@ -54,11 +54,15 @@ def get_openrouter_api_key() -> str:
     Raises ValueError if neither source provides a non-empty key.
     """
     api_key = ""
-    try:
-        from airflow.models import Variable
-        api_key = Variable.get("openrouter_api_key", default_var="").strip()
-    except Exception as exc:
-        logger.debug("Airflow Variable not available, falling back to env var: %s", exc)
+    try:  # Airflow 3 task SDK
+        from airflow.sdk import Variable
+        api_key = (Variable.get("openrouter_api_key", default=None) or "").strip()
+    except Exception:
+        try:  # Airflow 2.x / metadata-DB access outside a task
+            from airflow.models import Variable
+            api_key = (Variable.get("openrouter_api_key", default_var=None) or "").strip()
+        except Exception as exc:
+            logger.debug("Airflow Variable not available, falling back to env var: %s", exc)
     if not api_key:
         api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:

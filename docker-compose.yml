@@ -203,6 +203,18 @@ services:
         if [[ "$$pool_ok" -ne 1 ]]; then
           echo "WARNING: Could not ensure pool dandi_paper_api_pool after retries; continuing anyway."
         fi
+
+        echo "Ensuring Airflow pool paper_reuse_classification_pool exists:"
+        PAPER_REUSE_CLASSIFICATION_POOL_SLOTS="$${PAPER_REUSE_CLASSIFICATION_POOL_SLOTS:-2}"
+        pool_ok=0
+        for i in {1..30}; do
+          /entrypoint airflow pools set paper_reuse_classification_pool "$$PAPER_REUSE_CLASSIFICATION_POOL_SLOTS" "Limit concurrent whole-paper LLM classification batches" && pool_ok=1 && break
+          echo "Pool creation failed; retrying in 2s ($$i/30)..."
+          sleep 2
+        done
+        if [[ "$$pool_ok" -ne 1 ]]; then
+          echo "WARNING: Could not ensure pool paper_reuse_classification_pool after retries; continuing anyway."
+        fi
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'
@@ -211,6 +223,7 @@ services:
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
       _PIP_ADDITIONAL_REQUIREMENTS: ''
       DANDI_PAPER_API_POOL_SLOTS: ${DANDI_PAPER_API_POOL_SLOTS:-2}
+      PAPER_REUSE_CLASSIFICATION_POOL_SLOTS: ${PAPER_REUSE_CLASSIFICATION_POOL_SLOTS:-2}
     user: "0:0"
 
   pgadmin:
