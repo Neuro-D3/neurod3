@@ -34,6 +34,10 @@ x-airflow-common:
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
     AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
     PYTHONPATH: /opt/airflow/dags
+    # paper-text-fetcher settings (utils/paper_fulltext.py). See .env.example.
+    PAPER_FETCHER_CONTACT_EMAIL: ${PAPER_FETCHER_CONTACT_EMAIL:-}
+    ELSEVIER_API_KEY: ${ELSEVIER_API_KEY:-}
+    PAPER_FETCHER_CACHE_DIR: ${PAPER_FETCHER_CACHE_DIR:-/opt/airflow/output/paper_text_fetcher}
     # Public base URL for the api-server's absolute links. Staging serves the UI
     # over PLAIN HTTP (Caddy :80 — see ./deploy/gcp/staging/Caddyfile), so this MUST
     # be http://: an https base URL makes Airflow emit https links / set Secure
@@ -178,6 +182,18 @@ services:
         if [[ "$$pool_ok" -ne 1 ]]; then
           echo "WARNING: Could not ensure pool dandi_paper_api_pool after retries; continuing anyway."
         fi
+
+        echo "Ensuring Airflow pool paper_reuse_classification_pool exists:"
+        PAPER_REUSE_CLASSIFICATION_POOL_SLOTS="$${PAPER_REUSE_CLASSIFICATION_POOL_SLOTS:-2}"
+        pool_ok=0
+        for i in {1..30}; do
+          /entrypoint airflow pools set paper_reuse_classification_pool "$$PAPER_REUSE_CLASSIFICATION_POOL_SLOTS" "Limit concurrent whole-paper LLM classification batches" && pool_ok=1 && break
+          echo "Pool creation failed; retrying in 2s ($$i/30)..."
+          sleep 2
+        done
+        if [[ "$$pool_ok" -ne 1 ]]; then
+          echo "WARNING: Could not ensure pool paper_reuse_classification_pool after retries; continuing anyway."
+        fi
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'
@@ -187,6 +203,7 @@ services:
       # --env-file-less run would seed an airflow/airflow admin on whatever DB it hit.
       _PIP_ADDITIONAL_REQUIREMENTS: ''
       DANDI_PAPER_API_POOL_SLOTS: ${DANDI_PAPER_API_POOL_SLOTS:-2}
+      PAPER_REUSE_CLASSIFICATION_POOL_SLOTS: ${PAPER_REUSE_CLASSIFICATION_POOL_SLOTS:-2}
     user: "0:0"
 
   # TLS terminator + reverse proxy. Self-signed (tls internal) for staging.

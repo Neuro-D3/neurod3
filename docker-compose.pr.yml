@@ -43,6 +43,7 @@ x-airflow-common:
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
     - ./airflow/config:/opt/airflow/config
+    - airflow-output:/opt/airflow/output
   networks:
     - pr-network
   # Airflow's image expects to run with GID=0 even when using a non-root UID.
@@ -189,7 +190,8 @@ services:
         echo
         echo "Change ownership of files in shared volumes to ${AIRFLOW_UID}:0"
         echo
-        chown -v -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins,config}
+        mkdir -p /opt/airflow/output
+        chown -v -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins,config,output}
         echo
         echo "Files in shared volumes:"
         echo
@@ -208,6 +210,18 @@ services:
         if [[ "$$pool_ok" -ne 1 ]]; then
           echo "WARNING: Could not ensure pool dandi_paper_api_pool after retries; continuing anyway."
         fi
+
+        echo "Ensuring Airflow pool paper_reuse_classification_pool exists:"
+        PAPER_REUSE_CLASSIFICATION_POOL_SLOTS="$${PAPER_REUSE_CLASSIFICATION_POOL_SLOTS:-2}"
+        pool_ok=0
+        for i in {1..30}; do
+          /entrypoint airflow pools set paper_reuse_classification_pool "$$PAPER_REUSE_CLASSIFICATION_POOL_SLOTS" "Limit concurrent whole-paper LLM classification batches" && pool_ok=1 && break
+          echo "Pool creation failed; retrying in 2s ($$i/30)..."
+          sleep 2
+        done
+        if [[ "$$pool_ok" -ne 1 ]]; then
+          echo "WARNING: Could not ensure pool paper_reuse_classification_pool after retries; continuing anyway."
+        fi
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'
@@ -218,6 +232,7 @@ services:
       # Used by the init script; keep aligned with the UID we run Airflow containers as.
       AIRFLOW_UID: ${UID:-50000}
       DANDI_PAPER_API_POOL_SLOTS: ${DANDI_PAPER_API_POOL_SLOTS:-2}
+      PAPER_REUSE_CLASSIFICATION_POOL_SLOTS: ${PAPER_REUSE_CLASSIFICATION_POOL_SLOTS:-2}
     user: "0:0"
     networks:
       - pr-network
@@ -290,6 +305,8 @@ networks:
 
 volumes:
   postgres-db-volume:
+    # Volume name will be prefixed with project name (pr-<NUMBER>)
+  airflow-output:
     # Volume name will be prefixed with project name (pr-<NUMBER>)
   pgadmin-data:
     # Volume name will be prefixed with project name (pr-<NUMBER>)

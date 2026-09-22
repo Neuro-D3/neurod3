@@ -361,7 +361,7 @@ The method follows the [catalystneuro/find_reuse](https://github.com/catalystneu
 
 ### How a paper gets classified
 
-1. **Ingestion** (`dandi_paper_mapping`, `openneuro_paper_mapping`, `crcns_paper_mapping`, `sparc_paper_mapping`). Each DAG resolves a dataset's primary papers from the archive's metadata, asks OpenAlex which papers cite them, fetches each citing paper's full text, and records the `dataset ↔ primary paper ↔ citing paper` triple in `<src>_paper_citations`. Full text is cached as one JSON file per paper under `airflow/dags/output/`, and `papers.text_status` records whether the article body was actually retrieved.
+1. **Ingestion** (`dandi_paper_mapping`, `openneuro_paper_mapping`, `crcns_paper_mapping`, `sparc_paper_mapping`). Each DAG resolves a dataset's primary papers from the archive's metadata, asks OpenAlex which papers cite them, fetches each citing paper's full text, and records the `dataset ↔ primary paper ↔ citing paper` triple in `<src>_paper_citations`. Full text is cached as one JSON file per paper under `airflow/output/` (mounted at `/opt/airflow/output`; kept out of the DAG folder so the DAG processor never has to walk thousands of cached papers), and `papers.text_status` records whether the article body was actually retrieved.
 2. **Candidate selection** (`paper_reuse_classification`, manual trigger). A pair is picked up when it has never been classified, its last attempt errored, or it was classified with an older prompt version or a different model. Pairs are grouped by citing paper so one paper's text is sent once and reused from the provider's prompt cache for its other datasets.
 3. **Full text**. The DAG reads the cached text. If none exists it fetches on demand through the source chain below. A paper whose body cannot be retrieved is marked `no_full_text` and retried on a later run; abstracts are never classified, because reuse is described in Methods and Data Availability sections.
 4. **Classification**. The prompt contains the full paper plus the dataset's identifier, name and description. The model (`openai/gpt-5.6-luna` on OpenRouter, maximum reasoning effort, temperature 0) returns a label, a 1–10 confidence, reasoning, and verbatim evidence quotes. Transport or parsing failures become `status = error` and never overwrite an earlier good result; a spent or revoked API key aborts the run.
@@ -393,9 +393,15 @@ Two of the sources need configuration; none needs an account:
 |---|---|
 | `PAPER_FETCHER_CONTACT_EMAIL` | Sent to NCBI, CrossRef and **Unpaywall** so they can contact you about traffic. Unpaywall's free API refuses requests without one, so that source (open-access PDFs, extracted with PyMuPDF) is skipped when this is unset. |
 | `ELSEVIER_API_KEY` | Optional. Enables the ScienceDirect full-text API for `10.1016/` DOIs. Requires a free Elsevier developer key. |
-| `PAPER_FETCHER_CACHE_DIR` | Optional. Where the fetcher keeps its JSON-per-DOI cache. Defaults to `airflow/dags/output/paper_text_fetcher`. |
+| `PAPER_FETCHER_CACHE_DIR` | Optional. Where the fetcher keeps its JSON-per-DOI cache. Defaults to `/opt/airflow/output/paper_text_fetcher` in the containers (`airflow/output/` on the host). |
 
 Preprints (bioRxiv, medRxiv) and some publisher pages only render their text with JavaScript, so the Airflow image ships **headless Chromium via Playwright** (`playwright install --with-deps chromium` in `airflow/Dockerfile`). It is used only where the diagram shows it; the PMC and Unpaywall paths are plain HTTP.
+
+**Existing checkouts:** the cache used to live at `airflow/dags/output/`. Move it once so nothing is re-fetched:
+
+```bash
+mkdir -p airflow/output && mv airflow/dags/output/* airflow/output/ && rmdir airflow/dags/output
+```
 
 ### Rollout status
 
@@ -404,8 +410,8 @@ This is being delivered in phases, each its own pull request:
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Shared helpers: vendored classifier, fetcher wrapper, schema helper, image with Chromium, tests | done |
-| 2 | `paper_reuse_classification` DAG switched to whole-paper input and the labels above | pending |
-| 3 | Paper-mapping DAGs adopt the fetcher and the new `papers` columns | pending |
+| 2 | `paper_reuse_classification` DAG switched to whole-paper input and the labels above | done |
+| 3 | Paper-mapping DAGs adopt the fetcher and the new `papers` columns; cache moved out of the DAG folder | done |
 | 4 | API: `reuse_count`, new fields on citations | pending |
 | 5 | Site: evidence quotes, modality chips, same-lab badge, new badges | pending |
 

@@ -121,10 +121,30 @@ def fetch_fulltext_oa(
 ) -> Tuple[Optional[str], str, bool, str]:
     """
     Returns: (full_text, source, available, reason)
+
+    Delegates to paper-text-fetcher when it is installed (see the helpers at
+    the bottom of this module). ``available`` is True only when the article
+    BODY was retrieved; ``reason`` is ``"ok"`` then, and otherwise carries the
+    fetcher's three-way status as a prefix (``"metadata_only: ..."`` or
+    ``"unavailable: ..."``) so callers that store it, such as the paper-mapping
+    DAGs' ``papers.fulltext_reason``, keep the distinction. Without the package
+    the original Europe PMC / NCBI PMC path below runs unchanged.
     """
     doi_norm = normalize_doi(doi)
     if not doi_norm:
         return None, "none", False, "invalid_doi"
+
+    if get_paper_fetcher() is not None:
+        detailed = fetch_fulltext_detailed(doi_norm, telemetry=telemetry)
+        if detailed["reason"] != "paper_text_fetcher_not_installed":
+            if min_interval_seconds > 0 and not detailed["from_cache"]:
+                time.sleep(min_interval_seconds)
+            source = detailed["source"] or "none"
+            if detailed["status"] == TEXT_STATUS_FULL and detailed["text"]:
+                return detailed["text"], source, True, "ok"
+            return None, source, False, f"{detailed['status']}: {detailed.get('reason') or 'no text'}"
+
+    # ---- legacy OA-only path (Europe PMC, then NCBI PMC) -------------------
 
     # 1) Europe PMC -> fullTextXML (requires PMCID)
     pmcid = _europe_pmc_find_pmcid(session, doi_norm)
@@ -215,7 +235,7 @@ TEXT_STATUS_FULL = "full_text"
 TEXT_STATUS_METADATA = "metadata_only"
 TEXT_STATUS_UNAVAILABLE = "unavailable"
 
-# (env var, default directory under airflow/dags/output/) for each paper-mapping
+# (env var, default directory under <airflow home>/output/) for each paper-mapping
 # DAG's ``_get_output_root``. ``papers.fulltext_cache_key`` is relative to
 # whichever of these wrote it, and ``papers.source`` does not say which, so the
 # loader probes them in order.
@@ -234,12 +254,17 @@ def _dags_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _airflow_home() -> Path:
+    """Parent of the DAG folder: /opt/airflow in the containers, airflow/ in the repo."""
+    return _dags_dir().parent
+
+
 def fetcher_cache_dir() -> Path:
     """Where paper-text-fetcher keeps its JSON-per-DOI cache."""
     env = os.getenv("PAPER_FETCHER_CACHE_DIR", "").strip()
     if env:
         return Path(env)
-    return _dags_dir() / "output" / "paper_text_fetcher"
+    return _airflow_home() / "output" / "paper_text_fetcher"
 
 
 def mapping_output_roots() -> List[Path]:
@@ -247,7 +272,7 @@ def mapping_output_roots() -> List[Path]:
     roots: List[Path] = []
     for env_name, default_dir in MAPPING_OUTPUT_ROOTS:
         env = os.getenv(env_name, "").strip()
-        roots.append(Path(env) if env else _dags_dir() / "output" / default_dir)
+        roots.append(Path(env) if env else _airflow_home() / "output" / default_dir)
     return roots
 
 
@@ -266,6 +291,14 @@ def get_paper_fetcher(cache_dir: Optional[Path] = None):
     global _fetcher_import_warned
     try:
         from paper_text_fetcher import PaperFetcher
+        try:
+            # The package parses some XML responses with the HTML parser on
+            # purpose; bs4 warns about it on every call, which floods task logs.
+            import warnings
+            from bs4 import XMLParsedAsHTMLWarning
+            warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+        except Exception:
+            pass
     except ImportError:
         if not _fetcher_import_warned:
             logger.warning(

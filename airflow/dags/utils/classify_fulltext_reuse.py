@@ -13,7 +13,9 @@ diff against that commit:
     the same hard-coded fallback upstream ships for standalone use;
   - ``openrouter_credit_remaining`` is carried over from upstream's batch
     runner ``src/shared/run_fulltext_classification.py`` so the DAG can
-    preflight the key's balance.
+    preflight the key's balance;
+  - OpenRouter requests carry ``usage: {include: true}`` so the response's
+    ``usage.cost`` is populated for the DAG's run ledger.
 
 Everything else (labels, prompt, ``PROMPT_VERSION``, quote verification,
 parsing) is upstream's verbatim. Bump nothing here without bumping it upstream
@@ -1004,6 +1006,9 @@ def classify_paper_reuse(
     if uses_openrouter(model):
         api_url = OPENROUTER_API_URL
         headers['HTTP-Referer'] = 'https://github.com/catalystneuro/find_reuse'
+        # D3 addition: ask OpenRouter to report the request's cost in `usage`,
+        # so the DAG's run ledger can total dollars, not just tokens.
+        payload['usage'] = {'include': True}
         provider = provider or provider_for(model)
         if provider:
             # Without this OpenRouter picks a provider per request. Consecutive

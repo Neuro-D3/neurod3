@@ -535,6 +535,20 @@ CREATE TABLE IF NOT EXISTS paper_reuse_classification_runs (
 """
 
 
+PAPERS_TEXT_STATUS_BACKFILL_SQL = """
+UPDATE papers
+SET text_status = CASE
+        WHEN fulltext_available THEN 'full_text'
+        WHEN fulltext_reason LIKE 'metadata_only:%' THEN 'metadata_only'
+        WHEN fulltext_reason LIKE 'unavailable:%' THEN 'unavailable'
+    END
+WHERE text_status IS NULL
+  AND (fulltext_available
+       OR fulltext_reason LIKE 'metadata_only:%'
+       OR fulltext_reason LIKE 'unavailable:%');
+"""
+
+
 def _table_exists(cursor, table_name: str) -> bool:
     cursor.execute("SELECT to_regclass(%s) IS NOT NULL;", (f"public.{table_name}",))
     row = cursor.fetchone()
@@ -565,6 +579,13 @@ def ensure_paper_reuse_classification_columns(cursor) -> Dict[str, Any]:
             cursor.execute(
                 f"ALTER TABLE papers ADD COLUMN IF NOT EXISTS {column} {col_type};"
             )
+        # Backfill text_status from what the mapping DAGs already recorded.
+        # fulltext_available means the legacy path got an article body; the
+        # "metadata_only: ..." / "unavailable: ..." prefixes are written into
+        # fulltext_reason by utils.paper_fulltext.fetch_fulltext_oa once it
+        # delegates to paper-text-fetcher. Legacy "no_oa_fulltext_found" rows
+        # stay NULL: the wider fetcher may still find them.
+        cursor.execute(PAPERS_TEXT_STATUS_BACKFILL_SQL)
         touched.append("papers")
 
     cursor.execute(PAPER_REUSE_CLASSIFICATION_RUNS_DDL)

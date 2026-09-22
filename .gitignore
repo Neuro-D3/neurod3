@@ -5,6 +5,8 @@ airflow/logs/
 __pycache__/
 .pytest_cache/
 airflow/dags/output/
+# Paper-mapping artifacts + full-text cache (mounted at /opt/airflow/output).
+airflow/output/
 
 # Environment
 .env

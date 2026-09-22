@@ -203,11 +203,14 @@ class TestConfiguration:
         monkeypatch.setenv("PAPER_FETCHER_CACHE_DIR", str(tmp_path / "custom"))
         assert P.fetcher_cache_dir() == tmp_path / "custom"
 
-    def test_cache_dir_default_lives_under_dags_output(self, monkeypatch):
+    def test_cache_dir_default_lives_outside_the_dag_folder(self, monkeypatch):
+        # The DAG processor walks everything under dags/; a paper cache there
+        # stalls it, so the default is <airflow home>/output, next to dags/.
         monkeypatch.delenv("PAPER_FETCHER_CACHE_DIR", raising=False)
         path = P.fetcher_cache_dir()
         assert path.parts[-2:] == ("output", "paper_text_fetcher")
-        assert path.parent.parent == P._dags_dir()
+        assert path.parent.parent == P._airflow_home() == P._dags_dir().parent
+        assert P._dags_dir() not in path.parents
 
     def test_mapping_roots_follow_each_dags_env_var(self, monkeypatch, tmp_path):
         for env_name, _default in P.MAPPING_OUTPUT_ROOTS:
@@ -217,7 +220,7 @@ class TestConfiguration:
         roots = P.mapping_output_roots()
         assert len(roots) == 4
         assert roots[2] == tmp_path / "crcns_out"
-        assert roots[0] == P._dags_dir() / "output" / "dandi_paper_mapping"
+        assert roots[0] == P._airflow_home() / "output" / "dandi_paper_mapping"
 
     def test_elsevier_key_is_passed_only_when_set(self, monkeypatch):
         monkeypatch.delenv("ELSEVIER_API_KEY", raising=False)
@@ -240,3 +243,59 @@ class TestConfiguration:
             assert P.get_paper_fetcher() is None
             assert P.get_paper_fetcher() is None
         assert sum("paper_text_fetcher is not installed" in r.message for r in caplog.records) == 1
+
+
+# --------------------------------------------------------------------------- #
+# fetch_fulltext_oa: the mapping DAGs' 4-tuple entry point now delegates
+# --------------------------------------------------------------------------- #
+
+class TestFetchFulltextOaDelegation:
+    def test_full_text_comes_back_as_available_ok(self, monkeypatch, tmp_path):
+        install_fake_fetcher(monkeypatch, FakeFetcher(tmp_path, result={
+            "text": "body " * 2000, "source": "europe_pmc+crossref", "status": "full_text",
+            "has_full_text": True, "reason": None, "from_cache": True,
+        }))
+        text, source, available, reason = P.fetch_fulltext_oa(None, "10.1000/abc", telemetry=P.Telemetry())
+        assert text.startswith("body")
+        assert source == "europe_pmc+crossref"
+        assert available is True
+        assert reason == "ok"
+
+    def test_metadata_only_keeps_the_status_in_reason(self, monkeypatch, tmp_path):
+        install_fake_fetcher(monkeypatch, FakeFetcher(tmp_path, result={
+            "text": "abstract", "source": "crossref", "status": "metadata_only",
+            "has_full_text": False, "reason": "closed access", "from_cache": True,
+        }))
+        text, source, available, reason = P.fetch_fulltext_oa(None, "10.1000/abc", telemetry=P.Telemetry())
+        assert text is None
+        assert source == "crossref"
+        assert available is False
+        assert reason == "metadata_only: closed access"
+
+    def test_unavailable_keeps_the_status_in_reason(self, monkeypatch, tmp_path):
+        install_fake_fetcher(monkeypatch, FakeFetcher(tmp_path, result={
+            "text": None, "source": "", "status": "unavailable",
+            "has_full_text": False, "reason": "nothing", "from_cache": True,
+        }))
+        text, source, available, reason = P.fetch_fulltext_oa(None, "10.1000/abc", telemetry=P.Telemetry())
+        assert (text, source, available) == (None, "none", False)
+        assert reason == "unavailable: nothing"
+
+    def test_without_the_package_the_legacy_path_runs(self, monkeypatch):
+        monkeypatch.setattr(P, "get_paper_fetcher", lambda cache_dir=None: None)
+        called = {}
+
+        def fake_pmcid(session, doi):
+            called["doi"] = doi
+            return None  # no PMCID -> legacy path falls through to NCBI, stubbed below
+
+        monkeypatch.setattr(P, "_europe_pmc_find_pmcid", fake_pmcid)
+        monkeypatch.setattr(P, "_get_text_with_retries", lambda *a, **k: None)
+        text, source, available, reason = P.fetch_fulltext_oa(None, "10.1000/abc", telemetry=P.Telemetry())
+        assert called["doi"] == "10.1000/abc"
+        assert (text, source, available, reason) == (None, "none", False, "no_oa_fulltext_found")
+
+    def test_invalid_doi_short_circuits_before_any_fetch(self, monkeypatch, tmp_path):
+        fetcher = install_fake_fetcher(monkeypatch, FakeFetcher(tmp_path, result={}))
+        assert P.fetch_fulltext_oa(None, "nope", telemetry=P.Telemetry()) == (None, "none", False, "invalid_doi")
+        assert fetcher.calls == []

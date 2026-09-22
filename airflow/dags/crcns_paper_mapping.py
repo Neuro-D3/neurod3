@@ -33,7 +33,7 @@ try:
 except Exception:  # pragma: no cover
     from airflow.operators.python import PythonOperator  # type: ignore
 
-from utils.database import get_db_connection
+from utils.database import get_db_connection, ensure_paper_reuse_classification_columns
 from utils.cache_keys import paper_cache_key_for_doi
 from utils.find_reuse_core import normalize_doi, Telemetry
 from utils.paper_citations import (
@@ -79,7 +79,7 @@ def _get_output_root() -> Path:
     env = os.getenv("CRCNS_PAPER_MAPPING_OUTPUT_DIR", "").strip()
     if env:
         return Path(env)
-    return Path(__file__).parent / "output" / "crcns_paper_mapping"
+    return Path(__file__).parent.parent / "output" / "crcns_paper_mapping"
 
 
 def _parse_max_datasets_per_run(value: Any) -> Optional[int]:
@@ -264,6 +264,9 @@ def create_crcns_paper_mapping_tables(**_context) -> None:
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(ddl)
+            # Whole-paper classification columns + runs table (utils/database.py);
+            # idempotent, shared with the paper_reuse_classification DAG.
+            ensure_paper_reuse_classification_columns(cursor)
         conn.commit()
     logger.info("Ensured CRCNS paper mapping tables/views exist.")
 

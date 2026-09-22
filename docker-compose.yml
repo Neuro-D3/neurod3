@@ -25,12 +25,20 @@ x-airflow-common:
     # paper-text-fetcher settings (utils/paper_fulltext.py). See .env.example.
     PAPER_FETCHER_CONTACT_EMAIL: ${PAPER_FETCHER_CONTACT_EMAIL:-}
     ELSEVIER_API_KEY: ${ELSEVIER_API_KEY:-}
-    PAPER_FETCHER_CACHE_DIR: ${PAPER_FETCHER_CACHE_DIR:-}
+    PAPER_FETCHER_CACHE_DIR: ${PAPER_FETCHER_CACHE_DIR:-/opt/airflow/output/paper_text_fetcher}
+    # Paper-mapping artifacts + full-text cache live OUTSIDE the DAG folder: the
+    # DAG processor walks everything under dags/, and thousands of cached papers
+    # on a bind mount stall it. Same layout as deploy/gcp/staging.
+    DANDI_PAPER_MAPPING_OUTPUT_DIR: ${DANDI_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/dandi_paper_mapping}
+    OPENNEURO_PAPER_MAPPING_OUTPUT_DIR: ${OPENNEURO_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/openneuro_paper_mapping}
+    CRCNS_PAPER_MAPPING_OUTPUT_DIR: ${CRCNS_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/crcns_paper_mapping}
+    SPARC_PAPER_MAPPING_OUTPUT_DIR: ${SPARC_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/sparc_paper_mapping}
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
     - ./airflow/config:/opt/airflow/config
+    - ./airflow/output:/opt/airflow/output
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -184,7 +192,8 @@ services:
         echo
         echo "Change ownership of files in shared volumes to ${AIRFLOW_UID}:0"
         echo
-        chown -v -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins,config}
+        mkdir -p /opt/airflow/output
+        chown -v -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins,config,output}
         echo
         echo "Files in shared volumes:"
         echo

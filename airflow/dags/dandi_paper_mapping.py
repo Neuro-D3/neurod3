@@ -44,7 +44,7 @@ except Exception:  # pragma: no cover
 # is currently present in Postgres.
 #
 
-from utils.database import get_db_connection
+from utils.database import get_db_connection, ensure_paper_reuse_classification_columns
 from utils.cache_keys import paper_cache_key_for_doi
 from utils.find_reuse_core import normalize_doi, Telemetry
 from utils.paper_citations import (
@@ -89,12 +89,13 @@ def _sanitize_run_id(run_id: str) -> str:
 
 
 def _get_output_root() -> Path:
-    # Keep output under the DAGs volume by default (works in docker-compose).
+    # Default: <airflow home>/output/<dag> (= /opt/airflow/output in the containers),
+    # OUTSIDE the DAG folder so the DAG processor never walks the paper cache.
     # This will eventually be replaced by cloud storage; keep a single env var switch.
     env = os.getenv("DANDI_PAPER_MAPPING_OUTPUT_DIR", "").strip()
     if env:
         return Path(env)
-    return Path(__file__).parent / "output" / "dandi_paper_mapping"
+    return Path(__file__).parent.parent / "output" / "dandi_paper_mapping"
 
 
 def _parse_max_datasets_per_run(value: Any) -> Optional[int]:
@@ -334,6 +335,9 @@ def create_paper_mapping_tables(**context) -> None:
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(ddl)
+            # Whole-paper classification columns + runs table (utils/database.py);
+            # idempotent, shared with the paper_reuse_classification DAG.
+            ensure_paper_reuse_classification_columns(cursor)
         conn.commit()
     logger.info("Ensured paper mapping tables/views exist.")
 
