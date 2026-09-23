@@ -27,8 +27,19 @@ logger = logging.getLogger(__name__)
 
 
 # DOI pattern adapted from ../find_reuse/dandi_primary_papers.py.
-# Matches `10.xxxx/...` and stops at whitespace or common punctuation that typically terminates a DOI.
-DOI_REGEX = re.compile(r'10\.\d{4,}/[^\s\]\)>"\',;]+', flags=re.IGNORECASE)
+# Matches `10.xxxx/...` and stops at whitespace or common punctuation that
+# typically terminates a DOI, including `<` so a DOI pasted into HTML
+# (`10.1038/nature14178</a>`) does not carry the tag along.
+DOI_REGEX = re.compile(r'10\.\d{4,}/[^\s\]\)<>"\',;]+', flags=re.IGNORECASE)
+
+# Suffixes that follow a DOI in free text but are not part of it: Zenodo badge
+# images, and rendered-page extensions.
+_DOI_JUNK_SUFFIX = re.compile(r"\.(?:svg|png|jpe?g|gif|html?)$", flags=re.IGNORECASE)
+
+# Preprint servers whose DOIs are quoted with a version suffix (`...v2`) that
+# the registries do not know. 10.1101 is bioRxiv/medRxiv; 10.64898 is bioRxiv's
+# prefix for deposits from 2026 on.
+_PREPRINT_PREFIXES = ("10.1101/", "10.64898/")
 
 
 def strip_nul(text: Optional[str]) -> Optional[str]:
@@ -58,16 +69,22 @@ def normalize_doi(doi: str) -> Optional[str]:
             d = d[len(prefix) :].strip()
     if "doi.org/" in d:
         d = d.split("doi.org/")[-1].strip()
+    # A DOI pasted into HTML or markdown drags the closing tag / entity along
+    # (`10.1038/nature14178</a>`, `10.3389/fphys.2016.00425<br>`, `...&lt;`).
+    for cut in ("<", "&lt;", "&gt;", "&amp;"):
+        if cut in d:
+            d = d.split(cut, 1)[0]
+    d = _DOI_JUNK_SUFFIX.sub("", d)
     # Trim trailing punctuation
-    d = d.rstrip(" .;,)")
-    d = d.lstrip("(")
+    d = d.rstrip(" .;,)]>")
+    d = d.lstrip("([")
     if not d.lower().startswith("10."):
         return None
 
     # Canonicalize common preprint DOI variants.
     # bioRxiv / medRxiv commonly appear with a trailing version suffix like `v1` which is NOT part of the DOI.
     # Example: `10.1101/2024.04.23.590673v1` -> `10.1101/2024.04.23.590673`
-    if d.lower().startswith("10.1101/"):
+    if d.lower().startswith(_PREPRINT_PREFIXES):
         # Strip common suffixes that appear in free text but are not part of the DOI.
         # Examples:
         # - `...v1` -> `...`
@@ -76,9 +93,12 @@ def normalize_doi(doi: str) -> Optional[str]:
         d = re.sub(r"(?:v\d+)(?:\.(?:abstract|full|pdf))?$", "", d, flags=re.IGNORECASE)
         d = re.sub(r"\.(?:abstract|full|pdf)$", "", d, flags=re.IGNORECASE)
         # Guard against obviously incomplete year-only extractions.
-        if re.fullmatch(r"10\.1101/\d{4}", d, flags=re.IGNORECASE):
+        if re.fullmatch(r"10\.(?:1101|64898)/\d{4}", d, flags=re.IGNORECASE):
             return None
 
+    # A DOI needs a suffix; `10.1093/` alone is a fragment, not a paper.
+    if "/" not in d or not d.split("/", 1)[1]:
+        return None
     return d
 
 

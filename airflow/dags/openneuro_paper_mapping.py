@@ -283,7 +283,7 @@ def fetch_unmapped_openneuro_ids(**context) -> Dict[str, Any]:
     # Read today's OpenAlex budget from its X-RateLimit headers; abort below the floor.
     check_openalex_budget(params)
     include_already_mapped = bool(params.get("include_already_mapped", False))
-    backfill_missing_paper_titles = bool(params.get("backfill_missing_paper_titles", True))
+    backfill_missing_paper_titles = bool(params.get("backfill_missing_paper_titles", False))
     max_cap = _parse_max_datasets_per_run(params.get("max_datasets_per_run", 50))
     batch_size = _parse_batch_size(params.get("batch_size", 25), default=25)
     prioritize_doi_signals = bool(params.get("prioritize_doi_signals", True))
@@ -301,7 +301,9 @@ def fetch_unmapped_openneuro_ids(**context) -> Dict[str, Any]:
         )
         """
     elif backfill_missing_paper_titles:
-        # Backfill mode: focus only on datasets whose existing mappings have missing paper titles
+        # Opt-in backfill mode (off by default so include_already_mapped=True means
+        # "every dataset", as it does in the other paper-mapping DAGs):
+        # focus only on datasets whose existing mappings have missing paper titles
         # or non-canonical preprint DOI variants (e.g. `10.1101/...v1`, `...v2.abstract`).
         base_where = """
         WHERE EXISTS (
@@ -1494,7 +1496,7 @@ dag = DAG(
         "batch_size": 25,
         "include_already_mapped": False,
         "prioritize_doi_signals": True,
-        "backfill_missing_paper_titles": True,
+        "backfill_missing_paper_titles": False,
         "min_api_interval_seconds": 0.2,
         "max_retries": 6,
         "backoff_seconds": 2.0,

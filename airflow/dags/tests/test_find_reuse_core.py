@@ -164,6 +164,36 @@ class TestQuotaExhaustion:
         assert F.MAX_RETRY_AFTER_SECONDS == 300.0
 
 
+class TestNormalizeDoi:
+    """Junk seen in real OpenNeuro/DANDI descriptions must not become 'papers'."""
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("10.1038/nature14178</a>", "10.1038/nature14178"),
+        ("10.3389/fphys.2016.00425<br>", "10.3389/fphys.2016.00425"),
+        ("10.7554/eLife.18834&lt;/a&gt;", "10.7554/eLife.18834"),
+        ("10.5281/zenodo.3524401.svg", "10.5281/zenodo.3524401"),
+        ("10.3906/elk-1603-33.", "10.3906/elk-1603-33"),
+        ("https://doi.org/10.1523/JNEUROSCI.5680-12.2013)", "10.1523/JNEUROSCI.5680-12.2013"),
+        ("doi:10.1101/2024.04.23.590673v2", "10.1101/2024.04.23.590673"),
+        ("10.64898/2026.06.05.730421v1", "10.64898/2026.06.05.730421"),
+        ("10.64898/2026.06.05.730421v1.full", "10.64898/2026.06.05.730421"),
+    ])
+    def test_cleans_html_badges_versions_and_punctuation(self, raw, expected):
+        assert F.normalize_doi(raw) == expected
+
+    @pytest.mark.parametrize("raw", ["10.1093/", "10.1093", "10.1101/2024", "10.64898/2026", "", None, "not a doi"])
+    def test_fragments_are_rejected(self, raw):
+        assert F.normalize_doi(raw) is None
+
+    def test_legitimate_dois_are_untouched(self):
+        for doi in ("10.7554/eLife.06619.001", "10.1016/j.neuron.2019.09.045", "10.5281/zenodo.3854034"):
+            assert F.normalize_doi(doi) == doi
+
+    def test_extraction_stops_at_html_tags(self):
+        text = 'See <a href="https://doi.org/10.1038/nature14178">10.1038/nature14178</a> and 10.3389/fnsys.2018.00065<br>'
+        assert F.extract_dois_from_text(text) == ["10.1038/nature14178", "10.3389/fnsys.2018.00065"]
+
+
 class TestStripNul:
     def test_removes_nul_only(self):
         assert F.strip_nul("a\x00b\x00c") == "abc"
