@@ -14,7 +14,7 @@ By default, it only processes 50 datasets per run to validate behavior.
 Production-scale notes:
 - To process ALL *unmapped* DANDI datasets, set `max_datasets_per_run` to "all" (or 0/None) in DAG params.
 - This DAG uses Airflow dynamic task mapping at *batch* granularity.
-- To limit parallel API pressure, configure an Airflow pool named `dandi_paper_api_pool` with a small slot count
+- To limit parallel API pressure, configure an Airflow pool named `paper_mapping_api_pool` (shared by all four paper-mapping DAGs) with a small slot count
   (e.g., 1–3) and keep the mapped task assigned to that pool.
 """
 
@@ -2359,7 +2359,7 @@ resolve_and_persist_batch_task = (
     PythonOperator.partial(
         task_id="resolve_and_persist_batch",
         python_callable=resolve_and_persist_batch,
-        pool="dandi_paper_api_pool",
+        pool="paper_mapping_api_pool",
         dag=dag,
     ).expand(op_kwargs=XComArg(build_batches_task))
 )
@@ -2368,7 +2368,7 @@ fetch_and_persist_citations_batch_task = (
     PythonOperator.partial(
         task_id="fetch_and_persist_citations_batch",
         python_callable=fetch_and_persist_citations_batch,
-        pool="dandi_paper_api_pool",
+        pool="paper_mapping_api_pool",
         dag=dag,
     ).expand(op_kwargs=XComArg(build_batches_task))
 )

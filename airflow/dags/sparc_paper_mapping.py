@@ -1645,7 +1645,7 @@ resolve_and_persist_batch_task = (
     PythonOperator.partial(
         task_id="resolve_and_persist_batch",
         python_callable=resolve_and_persist_batch,
-        pool="dandi_paper_api_pool",
+        pool="paper_mapping_api_pool",
         dag=dag,
     ).expand(op_kwargs=XComArg(build_batches_task))
 )
@@ -1654,7 +1654,7 @@ fetch_and_persist_citations_batch_task = (
     PythonOperator.partial(
         task_id="fetch_and_persist_citations_batch",
         python_callable=fetch_and_persist_citations_batch,
-        pool="dandi_paper_api_pool",
+        pool="paper_mapping_api_pool",
         dag=dag,
     ).expand(op_kwargs=XComArg(build_batches_task))
 )

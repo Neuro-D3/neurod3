@@ -171,16 +171,16 @@ services:
         /entrypoint airflow config list >/dev/null
         chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/
 
-        echo "Ensuring Airflow pool dandi_paper_api_pool exists:"
-        DANDI_PAPER_API_POOL_SLOTS="$${DANDI_PAPER_API_POOL_SLOTS:-2}"
+        echo "Ensuring Airflow pool paper_mapping_api_pool exists:"
+        PAPER_MAPPING_API_POOL_SLOTS="$${PAPER_MAPPING_API_POOL_SLOTS:-2}"
         pool_ok=0
         for i in {1..30}; do
-          /entrypoint airflow pools set dandi_paper_api_pool "$$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency" && pool_ok=1 && break
+          /entrypoint airflow pools set paper_mapping_api_pool "$$PAPER_MAPPING_API_POOL_SLOTS" "Limit paper-mapping API concurrency across all archives" && pool_ok=1 && break
           echo "Pool creation failed; retrying in 2s ($$i/30)..."
           sleep 2
         done
         if [[ "$$pool_ok" -ne 1 ]]; then
-          echo "WARNING: Could not ensure pool dandi_paper_api_pool after retries; continuing anyway."
+          echo "WARNING: Could not ensure pool paper_mapping_api_pool after retries; continuing anyway."
         fi
 
         echo "Ensuring Airflow pool paper_reuse_classification_pool exists:"
@@ -202,7 +202,7 @@ services:
       # d3-staging-airflow-admin-password secret). Don't default them here, or a
       # --env-file-less run would seed an airflow/airflow admin on whatever DB it hit.
       _PIP_ADDITIONAL_REQUIREMENTS: ''
-      DANDI_PAPER_API_POOL_SLOTS: ${DANDI_PAPER_API_POOL_SLOTS:-2}
+      PAPER_MAPPING_API_POOL_SLOTS: ${PAPER_MAPPING_API_POOL_SLOTS:-2}
       PAPER_REUSE_CLASSIFICATION_POOL_SLOTS: ${PAPER_REUSE_CLASSIFICATION_POOL_SLOTS:-2}
     user: "0:0"
 
