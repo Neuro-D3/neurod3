@@ -38,6 +38,9 @@ x-airflow-common:
     PAPER_FETCHER_CONTACT_EMAIL: ${PAPER_FETCHER_CONTACT_EMAIL:-}
     ELSEVIER_API_KEY: ${ELSEVIER_API_KEY:-}
     PAPER_FETCHER_CACHE_DIR: ${PAPER_FETCHER_CACHE_DIR:-/opt/airflow/output/paper_text_fetcher}
+    # OpenAlex API key (free). Without one, requests draw on a small daily budget
+    # shared by every caller on this IP and stop at midnight UTC once spent.
+    OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
     # Public base URL for the api-server's absolute links. Staging serves the UI
     # over PLAIN HTTP (Caddy :80 — see ./deploy/gcp/staging/Caddyfile), so this MUST
     # be http://: an https base URL makes Airflow emit https links / set Secure

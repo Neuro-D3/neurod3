@@ -23,6 +23,13 @@ x-airflow-common:
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     # Ensure `from utils...` imports work for DAG parse + task runtime.
     PYTHONPATH: /opt/airflow/dags
+    # paper-text-fetcher settings (utils/paper_fulltext.py). See .env.example.
+    PAPER_FETCHER_CONTACT_EMAIL: ${PAPER_FETCHER_CONTACT_EMAIL:-}
+    ELSEVIER_API_KEY: ${ELSEVIER_API_KEY:-}
+    PAPER_FETCHER_CACHE_DIR: ${PAPER_FETCHER_CACHE_DIR:-/opt/airflow/output/paper_text_fetcher}
+    # OpenAlex API key (free). Without one, requests draw on a small daily budget
+    # shared by every caller on this IP and stop at midnight UTC once spent.
+    OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-9m9C9yN7OYMva9n-1kO-Y8I4JVXu2fLG3gNsYch0eK0=}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'

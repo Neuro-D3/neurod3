@@ -198,6 +198,7 @@ def resolve_zenodo_metadata(
 @dataclass
 class Telemetry:
     api_429_count: int = 0
+    api_quota_exhausted_count: int = 0
     api_5xx_count: int = 0
     api_retry_count: int = 0
     throttled_count: int = 0
@@ -207,6 +208,7 @@ class Telemetry:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "api_429_count": self.api_429_count,
+            "api_quota_exhausted_count": self.api_quota_exhausted_count,
             "api_5xx_count": self.api_5xx_count,
             "api_retry_count": self.api_retry_count,
             "throttled_count": self.throttled_count,
@@ -236,6 +238,35 @@ def _throttle(min_interval_seconds: float, telemetry: Telemetry) -> None:
 
 OPENALEX_HOST = "api.openalex.org"
 
+# A 429/503 whose Retry-After exceeds this is treated as an exhausted quota
+# (see ApiQuotaExhausted) rather than slept through. Five minutes comfortably
+# covers real burst limits; a spent OpenAlex daily allowance asks for hours.
+MAX_RETRY_AFTER_SECONDS = 300.0
+
+
+class ApiQuotaExhausted(RuntimeError):
+    """
+    An API refused the request and asked us to come back much later.
+
+    Raised instead of sleeping so the task fails fast, releases its pool slot,
+    and can be re-run after the reset; and so callers never mistake the
+    refusal for an empty result. ``retry_after_seconds`` is the API's own
+    figure; ``resets_at`` is the corresponding UTC time.
+    """
+
+    def __init__(self, url: str, retry_after_seconds: float, status: int):
+        from datetime import datetime, timedelta, timezone
+        self.url = url
+        self.retry_after_seconds = float(retry_after_seconds)
+        self.status = status
+        self.resets_at = datetime.now(timezone.utc) + timedelta(seconds=self.retry_after_seconds)
+        host = urlsplit(url).netloc or url
+        super().__init__(
+            f"{host} returned HTTP {status} with Retry-After={int(self.retry_after_seconds)}s "
+            f"(quota resets about {self.resets_at:%Y-%m-%d %H:%M} UTC). "
+            "Re-run this task after the reset, or spread the run over more time."
+        )
+
 
 def contact_email() -> Optional[str]:
     """
@@ -250,6 +281,33 @@ def contact_email() -> Optional[str]:
         if value and "@" in value:
             return value
     return None
+
+
+def openalex_api_key() -> Optional[str]:
+    """
+    OPENALEX_API_KEY from the environment, or None.
+
+    Since 2026 OpenAlex meters requests: calls without a key draw on a small
+    free daily budget shared by every caller on the same public IP, and once
+    it is spent every request is refused until midnight UTC. A key is free
+    (https://help.openalex.org/api/authentication/) and carries its own
+    budget, so the DAGs should always run with one.
+    """
+    import os
+    value = (os.environ.get("OPENALEX_API_KEY") or "").strip()
+    return value or None
+
+
+def openalex_request_headers(url: str) -> Dict[str, str]:
+    """``Authorization: Bearer`` for OpenAlex URLs when a key is configured."""
+    try:
+        host = urlsplit(url).netloc.lower()
+    except ValueError:
+        return {}
+    if host != OPENALEX_HOST:
+        return {}
+    key = openalex_api_key()
+    return {"Authorization": f"Bearer {key}"} if key else {}
 
 
 def openalex_polite_url(url: str, email: Optional[str] = None) -> str:
@@ -295,13 +353,14 @@ def http_get_json(
     """
     tel = telemetry or Telemetry()
     url = openalex_polite_url(url)
+    headers = openalex_request_headers(url)
 
     last_exc: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
         _throttle(min_interval_seconds=min_interval_seconds, telemetry=tel)
         tel.total_requests += 1
         try:
-            resp = session.get(url, timeout=timeout)
+            resp = session.get(url, timeout=timeout, headers=headers or None)
             status = resp.status_code
 
             if status in (429, 502, 503, 504):
@@ -318,6 +377,14 @@ def http_get_json(
                         wait = float(retry_after)
                     except ValueError:
                         wait = None
+                if wait is not None and wait > MAX_RETRY_AFTER_SECONDS:
+                    # A Retry-After of hours is not a burst limit but a quota
+                    # (OpenAlex answers a spent daily allowance with the seconds
+                    # until midnight UTC). Sleeping through it would hold a pool
+                    # slot for the rest of the day, and returning None would let
+                    # callers record "no results" as if the API had answered.
+                    tel.api_quota_exhausted_count += 1
+                    raise ApiQuotaExhausted(url, wait, status)
                 if wait is None:
                     wait = min(backoff_seconds * (2 ** (attempt - 1)), 60.0)
 

@@ -75,6 +75,13 @@ DB_PASSWORD="$(fetch d3-staging-db-master-password)"
   echo "_AIRFLOW_WWW_USER_USERNAME=airflow"
   echo "_AIRFLOW_WWW_USER_PASSWORD=$(fetch d3-staging-airflow-admin-password)"
   echo "OPENROUTER_API_KEY=$(fetch d3-staging-openrouter-api-key)"
+  # OpenAlex API key: optional but strongly recommended (see .env.example). The
+  # secret starts as a placeholder; only export it once a real value is set, since
+  # a bogus bearer token would make OpenAlex reject every request outright.
+  OPENALEX_API_KEY="$(fetch d3-staging-openalex-api-key || true)"
+  if [[ -n "$${OPENALEX_API_KEY}" && "$${OPENALEX_API_KEY}" != "REPLACE_ME" ]]; then
+    echo "OPENALEX_API_KEY=$${OPENALEX_API_KEY}"
+  fi
   # paper-text-fetcher identifies itself to NCBI, CrossRef and Unpaywall with this
   # address; Unpaywall (open-access PDFs) is skipped without one. Not a secret.
   echo "PAPER_FETCHER_CONTACT_EMAIL=nathaniel@duralabs.ai"
