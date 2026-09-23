@@ -403,6 +403,34 @@ Preprints (bioRxiv, medRxiv) and some publisher pages only render their text wit
 mkdir -p airflow/output && mv airflow/dags/output/* airflow/output/ && rmdir airflow/dags/output
 ```
 
+### Benchmark (sanity test)
+
+`reuse_classification_benchmark_test` (in `airflow/dags/reuse_classification_benchmark_test/`) checks that the classifier still finds reuse. It runs the production fetcher, prompt and model over a fixed answer key of **161 (paper, dandiset) pairs that find_reuse's reviewers judged by hand**, and compares the labels with their calls:
+
+- **110 confirmed reuse.** The share labelled REUSE is `reuse_recall`.
+- **51 rejected.** find_reuse's classifier called each of these REUSE and a reviewer disagreed, so they are hard cases. The share labelled REUSE is `false_reuse_rate`.
+
+| Pair set | Pairs | Default where |
+|---|---|---|
+| `smoke` | 20 fixed (10 + 10) | everywhere, unless overridden |
+| `full` | all 161 | staging (`REUSE_BENCHMARK_PAIR_SET=full` in `docker-compose.gce.yml`) |
+
+A run fails when `reuse_recall` drops below `min_reuse_recall` (default 0.8), `false_reuse_rate` rises above `max_false_reuse_rate` (0.5), or fewer than `min_text_coverage` (0.8) of the pairs got full text, which would make the result inconclusive. The thresholds are provisional until a few full runs set a baseline. Each run writes a summary row to `reuse_benchmark_runs` and one row per pair to `reuse_benchmark_results`; production classification tables are never touched. The score task's log lists every disagreement with the model's reasoning, plus `mapping_coverage`: how many answer-key pairs D3's own mapping DAGs produced at all. `dry_run=true` fetches text and builds prompts without any LLM calls.
+
+The staging deploy workflow triggers it after every Airflow deploy. Locally, trigger it from the Airflow UI or:
+
+```bash
+docker compose exec airflow-scheduler airflow dags trigger reuse_classification_benchmark_test
+```
+
+The answer key (`benchmark_pairs.json`) is generated from a find_reuse checkout; rebuild it when their reviewers have judged more pairs:
+
+```bash
+python airflow/dags/reuse_classification_benchmark_test/build_benchmark_pairs.py --find-reuse-dir <path-to-find_reuse>
+```
+
+Unit tests: `docker compose exec airflow-scheduler python -m pytest /opt/airflow/dags/reuse_classification_benchmark_test`.
+
 ### Rollout status
 
 This is being delivered in phases, each its own pull request:

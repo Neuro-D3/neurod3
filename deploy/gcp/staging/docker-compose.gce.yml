@@ -41,6 +41,9 @@ x-airflow-common:
     # OpenAlex API key (free). Without one, requests draw on a small daily budget
     # shared by every caller on this IP and stop at midnight UTC once spent.
     OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
+    # reuse_classification_benchmark_test runs all 161 answer-key pairs on
+    # staging (the smoke set of 20 is the default everywhere else).
+    REUSE_BENCHMARK_PAIR_SET: ${REUSE_BENCHMARK_PAIR_SET:-full}
     # Public base URL for the api-server's absolute links. Staging serves the UI
     # over PLAIN HTTP (Caddy :80 — see ./deploy/gcp/staging/Caddyfile), so this MUST
     # be http://: an https base URL makes Airflow emit https links / set Secure

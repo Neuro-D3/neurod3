@@ -194,3 +194,26 @@ jobs:
               fi
               sudo -H bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh up -d
             "
+      # Sanity test of the reuse classifier against find_reuse's human-reviewed
+      # pairs. The DAG runs all 161 pairs on staging (REUSE_BENCHMARK_PAIR_SET=full
+      # in docker-compose.gce.yml) and takes a while, so this only triggers it: the
+      # result is the DAG run's state in the Airflow UI (red = regression) and a
+      # row in reuse_benchmark_runs. It cannot hold back this deploy, which has
+      # already rolled by the time the benchmark finishes.
+      - name: Trigger reuse classification benchmark
+        continue-on-error: true
+        run: |
+          gcloud compute ssh "${VM_NAME}" --zone "${VM_ZONE}" --project "${PROJECT_ID}" \
+            --tunnel-through-iap --quiet --command "
+              set -euo pipefail
+              AC='sudo -H bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh'
+              # The DAG processor has to parse the synced file before it can be triggered.
+              for i in \$(seq 1 30); do
+                if \$AC exec -T airflow-scheduler airflow dags details reuse_classification_benchmark_test >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 10
+              done
+              \$AC exec -T airflow-scheduler airflow dags trigger reuse_classification_benchmark_test \
+                --run-id 'deploy__${{ github.sha }}__${{ github.run_attempt }}'
+            "
