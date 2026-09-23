@@ -31,6 +31,21 @@ logger = logging.getLogger(__name__)
 DOI_REGEX = re.compile(r'10\.\d{4,}/[^\s\]\)>"\',;]+', flags=re.IGNORECASE)
 
 
+def strip_nul(text: Optional[str]) -> Optional[str]:
+    """
+    Remove NUL characters from paper text.
+
+    PDF and HTML extraction (paper-text-fetcher) can leave U+0000 in the text.
+    PostgreSQL rejects it in text and jsonb columns ("unsupported Unicode
+    escape sequence"), so anything headed for citation_contexts or a prompt
+    goes through here first. Other control characters are left alone; they
+    are legal and harmless.
+    """
+    if not isinstance(text, str) or "\x00" not in text:
+        return text
+    return text.replace("\x00", "")
+
+
 def normalize_doi(doi: str) -> Optional[str]:
     if not doi or not isinstance(doi, str):
         return None

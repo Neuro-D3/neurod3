@@ -24,6 +24,7 @@ from utils.find_reuse_core import (
     http_get_json,
     normalize_doi,
     publication_year_from_date,
+    strip_nul,
 )
 
 logger = logging.getLogger(__name__)
@@ -744,7 +745,8 @@ def extract_context(text: str, position: int, context_chars: int = 500) -> Dict[
             end = end + sent_end + 1
 
     return {
-        "context": text[start:end].strip(),
+        # NUL-free: this lands in a jsonb column, which rejects U+0000.
+        "context": (strip_nul(text[start:end]) or "").strip(),
         "start": start,
         "end": end,
         "citation_position": position,

@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 import json
 import requests
 
-from utils.find_reuse_core import Telemetry, normalize_doi
+from utils.find_reuse_core import Telemetry, normalize_doi, strip_nul
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def fetch_fulltext_oa(
                 time.sleep(min_interval_seconds)
             source = detailed["source"] or "none"
             if detailed["status"] == TEXT_STATUS_FULL and detailed["text"]:
-                return detailed["text"], source, True, "ok"
+                return strip_nul(detailed["text"]), source, True, "ok"
             return None, source, False, f"{detailed['status']}: {detailed.get('reason') or 'no text'}"
 
     # ---- legacy OA-only path (Europe PMC, then NCBI PMC) -------------------
@@ -392,7 +392,7 @@ def fetch_fulltext_detailed(
     status = info.get("status") or (
         TEXT_STATUS_FULL if info.get("has_full_text") else TEXT_STATUS_UNAVAILABLE
     )
-    text = info.get("text") if status == TEXT_STATUS_FULL else None
+    text = strip_nul(info.get("text")) if status == TEXT_STATUS_FULL else None
     return {
         "text": text,
         "source": info.get("source") or None,
@@ -470,7 +470,7 @@ def load_cached_paper_text(
         for root in mapping_output_roots():
             text = _read_cache_payload_text(root / cache_key)
             if text:
-                return text
+                return strip_nul(text)
 
     fetcher = get_paper_fetcher(cache_dir)
     if fetcher is not None:
@@ -481,5 +481,5 @@ def load_cached_paper_text(
         if cached:
             text, _source, has_full_text = cached
             if has_full_text and isinstance(text, str) and text.strip():
-                return text
+                return strip_nul(text)
     return None

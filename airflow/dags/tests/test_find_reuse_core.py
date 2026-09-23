@@ -164,6 +164,18 @@ class TestQuotaExhaustion:
         assert F.MAX_RETRY_AFTER_SECONDS == 300.0
 
 
+class TestStripNul:
+    def test_removes_nul_only(self):
+        assert F.strip_nul("a\x00b\x00c") == "abc"
+        assert F.strip_nul("tabs\tand\nnewlines\r stay") == "tabs\tand\nnewlines\r stay"
+
+    def test_passthrough_for_clean_or_non_strings(self):
+        s = "clean"
+        assert F.strip_nul(s) is s
+        assert F.strip_nul(None) is None
+        assert F.strip_nul("") == ""
+
+
 class TestHttpGetJsonUsesIt:
     def test_openalex_request_carries_the_mailto(self, monkeypatch, no_email):
         monkeypatch.setenv("PAPER_FETCHER_CONTACT_EMAIL", "me@example.org")

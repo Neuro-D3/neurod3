@@ -301,6 +301,37 @@ class TestFetchFulltextOaDelegation:
         assert fetcher.calls == []
 
 
+class TestNulCharactersNeverLeaveTheHelper:
+    """PDF/HTML extraction can leave U+0000 in text; Postgres jsonb rejects it."""
+
+    NUL_TEXT = "intro \x00 methods \x00\x00 data availability " * 300
+
+    def test_fetch_fulltext_detailed_strips_nul(self, monkeypatch, tmp_path):
+        install_fake_fetcher(monkeypatch, FakeFetcher(tmp_path, result={
+            "text": self.NUL_TEXT, "source": "unpaywall", "status": "full_text",
+            "has_full_text": True, "reason": None, "from_cache": False,
+        }))
+        out = P.fetch_fulltext_detailed("10.1000/abc")
+        assert "\x00" not in out["text"] and "methods" in out["text"]
+
+    def test_fetch_fulltext_oa_strips_nul(self, monkeypatch, tmp_path):
+        install_fake_fetcher(monkeypatch, FakeFetcher(tmp_path, result={
+            "text": self.NUL_TEXT, "source": "unpaywall", "status": "full_text",
+            "has_full_text": True, "reason": None, "from_cache": True,
+        }))
+        text, _s, available, reason = P.fetch_fulltext_oa(None, "10.1000/abc", telemetry=P.Telemetry())
+        assert available and reason == "ok" and "\x00" not in text
+
+    def test_cached_text_is_cleaned_on_read(self, monkeypatch, tmp_path):
+        roots = [tmp_path / "dandi"]
+        monkeypatch.setattr(P, "mapping_output_roots", lambda: roots)
+        fetcher = FakeFetcher(tmp_path / "ptf", entries={"10.1000/ptf": ("from \x00 fetcher", "pmc", True)})
+        install_fake_fetcher(monkeypatch, fetcher)
+        write_mapping_cache(roots[0], "papers/x/latest.json", {"full_text": "from \x00 mapping cache"})
+        assert P.load_cached_paper_text(FakeCursor("papers/x/latest.json"), "10.1000/abc") == "from  mapping cache"
+        assert P.load_cached_paper_text(FakeCursor(None), "10.1000/ptf") == "from  fetcher"
+
+
 # --------------------------------------------------------------------------- #
 # The real fetcher subclass (only where paper-text-fetcher is installed)
 # --------------------------------------------------------------------------- #
