@@ -85,6 +85,29 @@ _ALLOWED_RELATIONSHIPS: Set[str] = {
     "References",
 }
 
+# `References` is used loosely in SPARC metadata: usually it names the dataset's
+# own paper, but it also links works the dataset merely cites. Those are
+# filtered by what they are rather than by relation:
+#   - SPARC's own dataset DOIs (not papers)
+#   - books (e.g. a textbook the model draws on)
+#   - correction / retraction notices (the amended paper is listed separately)
+_SPARC_DATASET_DOI_PREFIX = "10.26275/"
+_NON_PAPER_CROSSREF_TYPES: Set[str] = {
+    "book", "monograph", "edited-book", "reference-book", "book-set", "book-series",
+    "book-track", "book-part", "book-section", "reference-entry",
+}
+
+
+def _non_primary_reason(doi_norm: str, crossref: Dict[str, Any]) -> Optional[str]:
+    """Why this linked DOI cannot be the dataset's primary paper, or None."""
+    if doi_norm.startswith(_SPARC_DATASET_DOI_PREFIX):
+        return "sparc_dataset_doi"
+    if crossref.get("type") in _NON_PAPER_CROSSREF_TYPES:
+        return f"crossref_type:{crossref['type']}"
+    if crossref.get("update_types"):
+        return "update_notice:" + ",".join(crossref["update_types"])
+    return None
+
 
 @dataclass
 class SparcPaperResolutionResult:
@@ -179,7 +202,11 @@ def resolve_papers_for_sparc_dataset(
         )
 
     out: List[Dict[str, Any]] = []
+    skipped: List[str] = []
     for doi_norm, rel in candidates:
+        if doi_norm.startswith(_SPARC_DATASET_DOI_PREFIX):
+            skipped.append(f"{doi_norm} (sparc_dataset_doi)")
+            continue
         paper: Dict[str, Any] = {
             "doi": doi_norm,
             "title": None,
@@ -202,6 +229,10 @@ def resolve_papers_for_sparc_dataset(
             max_retries=max_retries,
             backoff_seconds=backoff_seconds,
         )
+        not_primary = _non_primary_reason(doi_norm, cr)
+        if not_primary:
+            skipped.append(f"{doi_norm} ({not_primary})")
+            continue
         if cr.get("title"):
             paper["title"] = cr.get("title")
             paper["paper_metadata_source"] = "crossref"
@@ -241,10 +272,12 @@ def resolve_papers_for_sparc_dataset(
 
         out.append(paper)
 
+    if skipped:
+        logger.info("SPARC %s: skipped linked DOIs that are not papers: %s", dataset_id, "; ".join(skipped))
     return SparcPaperResolutionResult(
         papers=out,
         telemetry=telemetry.to_dict(),
-        reason=None,
+        reason=None if out else "no_primary_papers_after_filtering",
         error=None,
     )
 
@@ -968,7 +1001,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
             "telemetry": {},
         }
 
-    max_citing_papers_per_primary = max(int(params.get("max_citing_papers_per_primary", 10) or 0), 0)
+    max_citing_papers_per_primary = max(int(params.get("max_citing_papers_per_primary", 2000) or 0), 0)
     if max_citing_papers_per_primary <= 0:
         return {
             "batch_index": batch_index,
@@ -1624,7 +1657,10 @@ dag = DAG(
         "force_refresh_fulltext": False,
         "write_run_artifacts": False,
         "enable_citation_enrichment": True,
-        "max_citing_papers_per_primary": 10,
+        # Citing papers fetched per primary paper. 2000 covers every primary paper in
+        # all four archives as of 2026-09 (largest: 1,162 citers). 0 turns citation
+        # fetching off; it does not mean unlimited.
+        "max_citing_papers_per_primary": 2000,
         "citation_context_chars": 500,
         "force_refresh_citation_contexts": False,
     },

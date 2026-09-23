@@ -1451,7 +1451,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
             "telemetry": {},
         }
 
-    max_citing_papers_per_primary = max(int(params.get("max_citing_papers_per_primary", 10) or 0), 0)
+    max_citing_papers_per_primary = max(int(params.get("max_citing_papers_per_primary", 2000) or 0), 0)
     if max_citing_papers_per_primary <= 0:
         return {
             "batch_index": batch_index,
@@ -2337,7 +2337,10 @@ dag = DAG(
         "write_run_artifacts": False,
         # Citation enrichment runs after primary mappings and reuses the same batch expansion.
         "enable_citation_enrichment": True,
-        "max_citing_papers_per_primary": 10,
+        # Citing papers fetched per primary paper. 2000 covers every primary paper in
+        # all four archives as of 2026-09 (largest: 1,162 citers). 0 turns citation
+        # fetching off; it does not mean unlimited.
+        "max_citing_papers_per_primary": 2000,
         "citation_context_chars": 500,
         "force_refresh_citation_contexts": False,
     },

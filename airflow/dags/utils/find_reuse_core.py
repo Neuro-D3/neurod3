@@ -767,11 +767,22 @@ def resolve_crossref_metadata(
             publication_date_out = f"{parts[0]:04d}"
         break
 
+    # Work type ("journal-article", "monograph", "posted-content", ...) and the
+    # kinds of notice this work is (a correction or retraction carries an
+    # `update-to` entry pointing at the work it amends).
+    work_type = msg.get("type") if isinstance(msg.get("type"), str) else None
+    update_types = sorted({
+        u.get("type") for u in (msg.get("update-to") or [])
+        if isinstance(u, dict) and isinstance(u.get("type"), str)
+    })
+
     return {
         "title": title_out,
         "authors": authors_out,
         "publication_date": publication_date_out,
         "publication_year": publication_year_from_date(publication_date_out),
+        "type": work_type,
+        "update_types": update_types,
     }
 
 
