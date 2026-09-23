@@ -54,6 +54,7 @@ from utils.paper_citations import (
     get_openalex_paper_data,
 )
 from utils.paper_fulltext import fetch_fulltext_oa
+from utils.openalex_budget import check_openalex_budget
 
 try:
     from airflow.models.xcom_arg import XComArg
@@ -467,6 +468,8 @@ def create_sparc_paper_mapping_tables(**_context) -> None:
 
 def fetch_unmapped_sparc_ids(**context) -> Dict[str, Any]:
     params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
+    # Read today's OpenAlex budget from its X-RateLimit headers; abort below the floor.
+    check_openalex_budget(params)
     include_already_mapped = bool(params.get("include_already_mapped", False))
     max_cap = _parse_max_datasets_per_run(params.get("max_datasets_per_run", 50))
     batch_size = _parse_batch_size(params.get("batch_size", 25), default=25)
@@ -1603,6 +1606,8 @@ dag = DAG(
     is_paused_upon_creation=False,
     params={
         "max_datasets_per_run": 50,
+        # Abort before selecting anything when fewer OpenAlex requests remain today.
+        "min_openalex_requests": 200,
         "batch_size": 25,
         "include_already_mapped": False,
         "min_api_interval_seconds": 0.2,

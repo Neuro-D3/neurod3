@@ -58,6 +58,7 @@ from utils.paper_citations import (
     get_openalex_paper_data,
 )
 from utils.paper_fulltext import fetch_fulltext_oa
+from utils.openalex_budget import check_openalex_budget
 from utils.paper_resolution import (
     PaperResolutionResult,
     resolve_papers_for_dandiset,
@@ -444,6 +445,8 @@ def fetch_unmapped_dandi_ids(**context) -> Dict[str, Any]:
     Returns only a list of dataset_id strings (plus run metadata) to keep XCom light.
     """
     params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
+    # Read today's OpenAlex budget from its X-RateLimit headers; abort below the floor.
+    check_openalex_budget(params)
     include_already_mapped = bool(params.get("include_already_mapped", False))
     max_cap = _parse_max_datasets_per_run(params.get("max_datasets_per_run", 50))
     batch_size = _parse_batch_size(params.get("batch_size", 25), default=25)
@@ -2307,6 +2310,8 @@ dag = DAG(
     params={
         # Dev-safe default. For production scale, set to "all" (or 0/None) via DAG run config / Variable / env.
         "max_datasets_per_run": 50,
+        # Abort before selecting anything when fewer OpenAlex requests remain today.
+        "min_openalex_requests": 200,
         # Batch granularity for dynamic task mapping (limits task count + resource use)
         "batch_size": 25,
         # If true, process datasets even if they already have mappings

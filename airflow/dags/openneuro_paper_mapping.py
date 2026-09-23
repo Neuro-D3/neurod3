@@ -48,6 +48,7 @@ from utils.paper_citations import (
     get_openalex_paper_data,
 )
 from utils.paper_fulltext import fetch_fulltext_oa
+from utils.openalex_budget import check_openalex_budget
 from utils.openneuro_paper_resolution import resolve_papers_for_openneuro_dataset, OpenNeuroPaperResolutionResult
 
 logger = logging.getLogger(__name__)
@@ -279,6 +280,8 @@ def create_openneuro_paper_mapping_tables(**_context) -> None:
 
 def fetch_unmapped_openneuro_ids(**context) -> Dict[str, Any]:
     params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
+    # Read today's OpenAlex budget from its X-RateLimit headers; abort below the floor.
+    check_openalex_budget(params)
     include_already_mapped = bool(params.get("include_already_mapped", False))
     backfill_missing_paper_titles = bool(params.get("backfill_missing_paper_titles", True))
     max_cap = _parse_max_datasets_per_run(params.get("max_datasets_per_run", 50))
@@ -1486,6 +1489,8 @@ dag = DAG(
     is_paused_upon_creation=False,
     params={
         "max_datasets_per_run": 50,
+        # Abort before selecting anything when fewer OpenAlex requests remain today.
+        "min_openalex_requests": 200,
         "batch_size": 25,
         "include_already_mapped": False,
         "prioritize_doi_signals": True,
