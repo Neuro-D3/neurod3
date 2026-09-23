@@ -281,6 +281,7 @@ def fetch_unmapped_crcns_ids(**context) -> Dict[str, Any]:
     # Read today's OpenAlex budget from its X-RateLimit headers; abort below the floor.
     check_openalex_budget(params)
     include_already_mapped = bool(params.get("include_already_mapped", False))
+    retry_unresolved = bool(params.get("retry_unresolved", False))
     max_cap = _parse_max_datasets_per_run(params.get("max_datasets_per_run", 50))
     batch_size = _parse_batch_size(params.get("batch_size", 25), default=25)
 
@@ -296,6 +297,10 @@ def fetch_unmapped_crcns_ids(**context) -> Dict[str, Any]:
             SELECT 1 FROM crcns_paper_map m WHERE m.crcns_id = d.dataset_id
         )
         """
+        if not retry_unresolved:
+            # A previous run already tried these and found no paper (`papers = 0`).
+            # Without this they sort ahead of never-tried datasets on every capped run.
+            base_where += "  AND d.papers IS DISTINCT FROM 0"
 
     query = f"""
     SELECT d.dataset_id, d.title, d.description, d.url, d.updated_at
@@ -346,6 +351,7 @@ def fetch_unmapped_crcns_ids(**context) -> Dict[str, Any]:
                             "filtered_counts": filtered_counts,
                             "batch_size": batch_size,
                             "include_already_mapped": include_already_mapped,
+                            "retry_unresolved": retry_unresolved,
                         }
                     ),
                 ),
@@ -1420,6 +1426,8 @@ dag = DAG(
         "min_openalex_requests": 200,
         "batch_size": 25,
         "include_already_mapped": False,
+        # If true, also retry datasets a previous run found no paper for
+        "retry_unresolved": False,
         "min_api_interval_seconds": 0.2,
         "max_retries": 6,
         "backoff_seconds": 2.0,
