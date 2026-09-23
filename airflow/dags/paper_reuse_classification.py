@@ -210,6 +210,33 @@ def _candidate_status_filter(reclassify: bool, prompt_version: int, model: str) 
     return sql, {"prompt_version": prompt_version, "model": model}
 
 
+def _citation_edge_order_sql(mix_publishers: bool) -> str:
+    """
+    ORDER BY for citation-edge candidates.
+
+    Always: never-classified rows first, then other rows needing work, then
+    rows waiting on full text. Within that, by default, citing DOI order
+    (alphabetical, so a small run sees one publisher: 10.1002 is Wiley).
+    ``mix_publishers`` instead deals round-robin across DOI prefixes (one
+    publisher's pair, then the next publisher's, ...), each prefix in a stable
+    hash order, so a small run is a mixed sample and reruns continue it.
+    """
+    priority = (
+        "CASE WHEN cls.id IS NULL THEN 0 "
+        f"WHEN cls.status = '{STATUS_NO_FULL_TEXT}' THEN 2 "
+        "ELSE 1 END"
+    )
+    if not mix_publishers:
+        return f"{priority}, cit.citing_paper_doi, cit.resolved_at DESC"
+    prefix = "split_part(cit.citing_paper_doi, '/', 1)"
+    stable = "md5(cit.citing_paper_doi || '|' || cit.primary_paper_doi)"
+    return (
+        f"{priority}, "
+        f"ROW_NUMBER() OVER (PARTITION BY ({priority}), {prefix} ORDER BY {stable}), "
+        f"{prefix}, {stable}"
+    )
+
+
 def _group_edges_by_paper(edges: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
     """
     Group edge keys by (source, citing paper), preserving first-seen order.
@@ -356,6 +383,7 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
     repo = _normalize_repository_filter(params.get("source_filter"))
     scope = str(params.get("classification_scope", "citation_edges")).lower()
     reclassify = bool(params.get("reclassify_existing", False))
+    mix_publishers = bool(params.get("mix_publishers", False))
     model = _resolve_model(params.get("model"))
 
     sources = _citation_table_sources_for_filter(repo)
@@ -387,7 +415,8 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
 
             if scope in ("citation_edges", "both"):
                 edges.extend(_fetch_citation_edge_candidates(
-                    cursor, source_name, cit_table, cls_table, id_col, remaining, status_sql, status_params))
+                    cursor, source_name, cit_table, cls_table, id_col, remaining, status_sql, status_params,
+                    mix_publishers=mix_publishers))
 
             if scope in ("primary_only", "both") and (max_edges <= 0 or len(edges) < max_edges):
                 remaining = max_edges - len(edges) if max_edges > 0 else 100000
@@ -398,13 +427,14 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
         edges = edges[:max_edges]
 
     logger.info(
-        "Fetched %d edges to classify (source_filter=%s, scope=%s, reclassify=%s, prompt_version=%s, model=%s)",
-        len(edges), repo, scope, reclassify, PROMPT_VERSION, model,
+        "Fetched %d edges to classify (source_filter=%s, scope=%s, reclassify=%s, mix_publishers=%s, prompt_version=%s, model=%s)",
+        len(edges), repo, scope, reclassify, mix_publishers, PROMPT_VERSION, model,
     )
     return edges
 
 
-def _fetch_citation_edge_candidates(cursor, source_name, cit_table, cls_table, id_col, limit, status_sql, status_params):
+def _fetch_citation_edge_candidates(cursor, source_name, cit_table, cls_table, id_col, limit, status_sql, status_params,
+                                    mix_publishers: bool = False):
     """Citation edges (citing paper cites the dataset's primary paper) -> mode citing."""
     sql = f"""
         SELECT cit.{id_col} AS dataset_id, cit.primary_paper_doi, cit.citing_paper_doi
@@ -416,11 +446,7 @@ def _fetch_citation_edge_candidates(cursor, source_name, cit_table, cls_table, i
         WHERE 1=1
           {status_sql}
         ORDER BY
-            CASE WHEN cls.id IS NULL THEN 0
-                 WHEN cls.status = '{STATUS_NO_FULL_TEXT}' THEN 2
-                 ELSE 1 END,
-            cit.citing_paper_doi,
-            cit.resolved_at DESC
+            {_citation_edge_order_sql(mix_publishers)}
         LIMIT %(limit)s;
     """
     cursor.execute(sql, {**status_params, "limit": limit})
@@ -882,7 +908,7 @@ def summarize_classification_run(**context):
     persisted_params = {k: params.get(k) for k in (
         "model", "reasoning_effort", "classification_scope", "source_filter", "max_edges_per_run",
         "batch_size", "dry_run", "reclassify_existing", "fetch_missing_fulltext",
-        "temperature", "max_tokens", "max_input_chars", "max_retries", "min_credit_usd",
+        "temperature", "max_tokens", "max_input_chars", "max_retries", "min_credit_usd", "mix_publishers",
     )}
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -926,6 +952,7 @@ def _build_dag_params() -> Dict[str, Any]:
         "min_credit_usd": 5.0,
         "dry_run": False,
         "reclassify_existing": False,
+        "mix_publishers": False,
     }
     if Param is not None:
         p["model"] = Param(DEFAULT_MODEL, type="string", title="Model",
@@ -942,6 +969,10 @@ def _build_dag_params() -> Dict[str, Any]:
                                        description="0 = no limit. Start small: each pair is one whole-paper LLM call.")
         p["fetch_missing_fulltext"] = Param(True, type="boolean", title="Fetch missing full text",
                                             description="Fetch on demand via paper-text-fetcher when no cached text exists.")
+        p["mix_publishers"] = Param(False, type="boolean", title="Mix publishers",
+                                    description="Off: pairs in citing-DOI order (a small run sees one publisher, "
+                                                "e.g. 10.1002 = Wiley). On: round-robin across DOI prefixes for a "
+                                                "mixed sample; reruns continue the same order.")
         p["min_credit_usd"] = Param(5.0, type="number", title="Minimum OpenRouter credit",
                                     description="Abort before classifying if the key's remaining credit is below this.")
         p["source_filter"] = Param(

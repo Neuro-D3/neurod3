@@ -70,6 +70,27 @@ class TestCandidatePredicate:
         assert "'classified'" not in sql
 
 
+class TestCandidateOrder:
+    def test_default_is_citing_doi_order(self):
+        sql = D._citation_edge_order_sql(False)
+        assert sql.startswith("CASE WHEN cls.id IS NULL THEN 0")
+        assert sql.endswith("cit.citing_paper_doi, cit.resolved_at DESC")
+        assert "ROW_NUMBER" not in sql
+
+    def test_mix_publishers_round_robins_doi_prefixes(self):
+        sql = D._citation_edge_order_sql(True)
+        # Unclassified rows still come first; within a priority, deal one pair
+        # per DOI prefix at a time in a stable hash order.
+        assert sql.startswith("CASE WHEN cls.id IS NULL THEN 0")
+        assert "ROW_NUMBER() OVER (PARTITION BY" in sql
+        assert "split_part(cit.citing_paper_doi, '/', 1)" in sql
+        assert "md5(" in sql and "random()" not in sql
+
+    def test_param_defaults_off(self):
+        p = D._build_dag_params()["mix_publishers"]
+        assert getattr(p, "value", p) is False
+
+
 class TestBatching:
     def test_pairs_of_one_paper_form_one_group_in_first_seen_order(self):
         edges = [edge(dataset="1", citing="10.1/a"), edge(dataset="2", citing="10.1/b"),
