@@ -414,8 +414,9 @@ This is being delivered in phases, each its own pull request:
 | 3 | Paper-mapping DAGs adopt the fetcher and the new `papers` columns; cache moved out of the DAG folder | done |
 | 4 | API: `reuse_count`, new fields on citations | done |
 | 5 | Site: evidence quotes, modality chips, same-lab badge, new badges | done |
+| 6 | Cleanup: legacy `SECONDARY` compatibility removed from API and site | done |
 
-Until phase 4 ships, the API and site still count the retired `SECONDARY` label from the previous excerpt-based classifier.
+The retired `SECONDARY` label from the previous excerpt-based classifier is no longer counted anywhere; only `REUSE` rows count as reuse.
 
 ### Re-rendering the diagrams
 

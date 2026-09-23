@@ -95,14 +95,14 @@ class TestClassificationExtraColumns:
 
 
 class TestReuseCountSubquery:
-    def test_counts_reuse_and_legacy_secondary_for_every_present_source(self):
+    def test_counts_reuse_for_every_present_source(self):
         cur = FakeCursor(tables={t for t, _ in M._CLASSIFICATION_TABLES})
         sql = M._reuse_count_subquery(cur)
         assert sql.count("COUNT(DISTINCT citing_paper_doi)") == 4
-        assert "IN ('REUSE', 'SECONDARY')" in sql
+        assert "IN ('REUSE')" in sql
         for _table, id_col in M._CLASSIFICATION_TABLES:
             assert f"{id_col} = d.dataset_id" in sql
-        assert "= 'SECONDARY'" not in sql  # the old single-label filter is gone
+        assert "SECONDARY" not in sql  # the retired label is gone for good
 
     def test_only_existing_tables_are_summed(self):
         cur = FakeCursor(tables={"dandi_paper_citation_classifications", "sparc_paper_citation_classifications"})
@@ -116,6 +116,4 @@ class TestReuseCountSubquery:
         assert M._reuse_count_subquery(FakeCursor()) == "0"
 
     def test_reuse_labels_constant(self):
-        assert "REUSE" in M.REUSE_CLASSIFICATIONS
-        assert "SECONDARY" in M.REUSE_CLASSIFICATIONS  # until the reclassification window closes
-        assert "MENTION" not in M.REUSE_CLASSIFICATIONS
+        assert M.REUSE_CLASSIFICATIONS == ("REUSE",)

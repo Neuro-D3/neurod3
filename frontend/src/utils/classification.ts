@@ -4,12 +4,11 @@
  * The classifier (airflow/dags/utils/classify_fulltext_reuse.py) labels each
  * (citing paper, dataset) pair REUSE / MENTION / NEITHER in citing mode or
  * PRIMARY / REUSE / NEITHER in direct mode, with a 1–10 confidence and
- * verified evidence quotes. SECONDARY is the retired label of the previous
- * excerpt-based classifier; it is still treated as reuse until every row has
- * been reclassified, then it can be dropped from REUSE_LABELS.
+ * verified evidence quotes. (The previous excerpt-based classifier's SECONDARY
+ * label was retired once every row had been reclassified.)
  */
 
-export const REUSE_LABELS = ['REUSE', 'SECONDARY'] as const;
+export const REUSE_LABELS = ['REUSE'] as const;
 
 export function isReuseClassification(classification?: string | null): boolean {
   const c = (classification || '').trim().toUpperCase();
@@ -48,7 +47,7 @@ export function confidenceShort(value?: number | null): { text: string; color: s
 /** Tailwind classes for a classification / row-status badge. */
 export function statusBadgeClass(status?: string | null): string {
   const s = (status || '').trim().toLowerCase();
-  if (s === 'reuse' || s === 'secondary') return 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30';
+  if (s === 'reuse') return 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30';
   if (s === 'primary') return 'bg-blue-500/15 text-blue-700 ring-blue-500/30';
   if (s === 'mention') return 'bg-sky-500/15 text-sky-700 ring-sky-500/30';
   if (s === 'neither') return 'bg-slate-500/10 text-slate-600 ring-slate-400/30';
@@ -66,7 +65,6 @@ export function statusLabel(status?: string | null): string {
   if (!s) return 'Unclassified';
   const known: Record<string, string> = {
     REUSE: 'Reuse',
-    SECONDARY: 'Reuse (legacy)',
     MENTION: 'Mention',
     NEITHER: 'Neither',
     PRIMARY: 'Primary',

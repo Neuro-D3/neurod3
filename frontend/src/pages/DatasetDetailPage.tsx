@@ -297,8 +297,7 @@ export default function DatasetDetailPage() {
   const citationsByPrimary = (doi: string): DatasetDetailCitation[] =>
     data?.citations.filter((c) => c.primary_paper_doi === doi) ?? [];
 
-  // REUSE from the whole-paper classifier (plus the retired SECONDARY label
-  // until every row has been reclassified). MENTION / NEITHER / PRIMARY are
+  // REUSE from the whole-paper classifier. MENTION / NEITHER / PRIMARY are
   // deliberately not shown here: only papers that actually used the data.
   const reusePapers = (data?.citations ?? []).filter((c) => isReuseClassification(c.classification));
 

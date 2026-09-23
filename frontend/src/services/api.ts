@@ -31,8 +31,6 @@ export interface Dataset {
   paper_titles?: string[] | null;
   /** Distinct citing papers the LLM classified as reusing this dataset's data (REUSE). */
   reuse_count?: number | null;
-  /** @deprecated Same value as reuse_count; kept one release for older API builds. */
-  secondary_reuse_count?: number | null;
   url: string;
   description?: string;
   authors?: string[] | null;
@@ -358,7 +356,7 @@ export async function fetchPaperMappingSummary(params?: {
 export async function fetchPaperMappingDatasets(params?: {
   source?: 'CRCNS' | 'DANDI' | 'OpenNeuro' | 'SPARC';
   search?: string;
-  /** Same bucket labels as summary by_classification (e.g. SECONDARY, NEITHER, placeholder). */
+  /** Same bucket labels as summary by_classification (e.g. REUSE, MENTION, NEITHER, placeholder). */
   classification_bucket?: string;
   sort_by?:
     | 'mapped_papers'

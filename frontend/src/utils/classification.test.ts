@@ -12,12 +12,12 @@ import {
 } from './classification';
 
 describe('isReuseClassification', () => {
-  it('treats REUSE and the legacy SECONDARY as reuse, case-insensitively', () => {
+  it('treats REUSE as reuse, case-insensitively', () => {
     expect(isReuseClassification('REUSE')).toBe(true);
     expect(isReuseClassification('reuse')).toBe(true);
-    expect(isReuseClassification('SECONDARY')).toBe(true);
   });
-  it('rejects every other label and empties', () => {
+  it('rejects every other label and empties, including the retired SECONDARY', () => {
+    expect(isReuseClassification('SECONDARY')).toBe(false);
     expect(isReuseClassification('MENTION')).toBe(false);
     expect(isReuseClassification('PRIMARY')).toBe(false);
     expect(isReuseClassification('NEITHER')).toBe(false);
@@ -61,8 +61,8 @@ describe('statusBadgeClass', () => {
     expect(statusBadgeClass('no_full_text')).toContain('orange');
     expect(statusBadgeClass('placeholder')).toContain('amber');
   });
-  it('keeps the legacy SECONDARY green during the reclassification window', () => {
-    expect(statusBadgeClass('SECONDARY')).toBe(statusBadgeClass('REUSE'));
+  it('no longer special-cases the retired SECONDARY label', () => {
+    expect(statusBadgeClass('SECONDARY')).toContain('slate');
   });
   it('falls back to neutral for unknown buckets', () => {
     expect(statusBadgeClass('something_new')).toContain('slate');
@@ -74,7 +74,7 @@ describe('statusLabel', () => {
   it('humanizes known buckets', () => {
     expect(statusLabel('REUSE')).toBe('Reuse');
     expect(statusLabel('no_full_text')).toBe('No full text');
-    expect(statusLabel('SECONDARY')).toBe('Reuse (legacy)');
+    expect(statusLabel('SECONDARY')).toBe('SECONDARY');
     expect(statusLabel('')).toBe('Unclassified');
     expect(statusLabel('brand_new')).toBe('brand new');
   });

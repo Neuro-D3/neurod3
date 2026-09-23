@@ -171,10 +171,10 @@ CLASSIFICATION_EXTRA_COLUMNS: List[Tuple[str, str]] = [
     ("provider", "text"),
 ]
 
-# Labels that mean "this paper reused the dataset's data". SECONDARY is the
-# retired label of the excerpt-based classifier; it is counted until every row
-# has been reclassified under the whole-paper scheme (then drop it).
-REUSE_CLASSIFICATIONS: Tuple[str, ...] = ("REUSE", "SECONDARY")
+# Labels that mean "this paper reused the dataset's data". (The excerpt-based
+# classifier's SECONDARY label was retired once every row had been
+# reclassified under the whole-paper scheme.)
+REUSE_CLASSIFICATIONS: Tuple[str, ...] = ("REUSE",)
 REUSE_CLASSIFICATIONS_SQL = "(" + ", ".join(f"'{c}'" for c in REUSE_CLASSIFICATIONS) + ")"
 
 
@@ -224,8 +224,7 @@ def _reuse_count_subquery(cursor, dataset_alias: str = "d") -> str:
     SQL expression: distinct citing papers classified as reuse for one dataset.
 
     One correlated COUNT per source table that exists, summed; "0" when none
-    exist yet. Counts REUSE_CLASSIFICATIONS so the retired SECONDARY rows
-    keep counting until they have been reclassified.
+    exist yet. Counts the labels in REUSE_CLASSIFICATIONS.
     """
     parts = []
     for table, id_col in _CLASSIFICATION_TABLES:
@@ -679,8 +678,7 @@ async def get_datasets(
                 num_subjects_expr = "num_subjects," if "num_subjects" in ds_opt_cols else "NULL::integer AS num_subjects,"
 
                 # reuse_count: citing papers the LLM classified as reusing the dataset's
-                # data (REUSE, plus the retired SECONDARY label until reclassification
-                # finishes; see REUSE_CLASSIFICATIONS). The per-source classification
+                # data (see REUSE_CLASSIFICATIONS). The per-source classification
                 # tables only exist after the paper-mapping DAGs have run, so each
                 # branch is included only when its table exists — otherwise the whole
                 # query fails with UndefinedTable and the endpoint 500s.
@@ -699,8 +697,7 @@ async def get_datasets(
                         {num_subjects_expr.replace('num_subjects', 'd.num_subjects') if 'num_subjects' in ds_opt_cols else num_subjects_expr}
                         d.created_at,
                         d.updated_at,
-                        ({reuse_subquery}) AS reuse_count,
-                        ({reuse_subquery}) AS secondary_reuse_count
+                        ({reuse_subquery}) AS reuse_count
                     FROM {table_name} d
                     WHERE 1=1
                 """
@@ -1334,7 +1331,7 @@ async def get_paper_mapping_datasets(
         description=(
             "Only datasets with at least one citation edge whose bucket matches "
             "COALESCE(NULLIF(classification,''), status, 'unclassified') — same keys as summary by_classification "
-            "(e.g. SECONDARY, NEITHER, placeholder, classified, error)."
+            "(e.g. REUSE, MENTION, NEITHER, PRIMARY, placeholder, error, no_full_text)."
         ),
     ),
     sort_by: str = Query(

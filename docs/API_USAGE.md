@@ -125,7 +125,7 @@ curl "http://localhost:8000/api/datasets?source=DANDI&modality=fMRI&search=corte
 
 ### Paper reuse classification fields
 
-Each dataset in `GET /api/datasets` carries `reuse_count`: the number of distinct citing papers the LLM classified as having reused the dataset's data (`REUSE`, plus the retired `SECONDARY` label until the reclassification finishes). `secondary_reuse_count` is a deprecated alias with the same value and will be removed.
+Each dataset in `GET /api/datasets` carries `reuse_count`: the number of distinct citing papers the LLM classified as having reused the dataset's data (`REUSE`).
 
 ```bash
 curl "http://localhost:8000/api/datasets?source=DANDI&sort_by=papers&limit=5" | jq '.[] | {id, reuse_count}'
