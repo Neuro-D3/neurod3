@@ -191,12 +191,17 @@ services:
         echo
         echo "Change ownership of files in /opt/airflow to ${AIRFLOW_UID}:0"
         echo
-        chown -R "${AIRFLOW_UID}:0" /opt/airflow/
+        # Everything except the paper cache mount (output/): thousands of files whose
+        # owner is already right, and walking them stalls `compose up` for minutes.
+        find /opt/airflow -mindepth 1 -maxdepth 1 ! -name output -exec chown -R "${AIRFLOW_UID}:0" {} +
         echo
         echo "Change ownership of files in shared volumes to ${AIRFLOW_UID}:0"
         echo
-        mkdir -p /opt/airflow/output
-        chown -v -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins,config,output}
+        # The paper cache holds thousands of files; own the directory, not every file
+        # (its contents are created by the airflow user anyway). A recursive chown
+        # here stalls every `compose up` for minutes on a bind mount.
+        mkdir -p /opt/airflow/output && chown "${AIRFLOW_UID}:0" /opt/airflow/output
+        chown -v -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins,config}
         echo
         echo "Files in shared volumes:"
         echo
