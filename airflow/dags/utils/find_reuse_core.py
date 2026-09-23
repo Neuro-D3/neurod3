@@ -19,7 +19,7 @@ import threading
 import time
 import warnings
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import requests
 
@@ -234,6 +234,49 @@ def _throttle(min_interval_seconds: float, telemetry: Telemetry) -> None:
         _last_request_at = time.monotonic()
 
 
+OPENALEX_HOST = "api.openalex.org"
+
+
+def contact_email() -> Optional[str]:
+    """
+    The address this deployment identifies itself with to open APIs.
+
+    OPENALEX_MAILTO wins when set; otherwise PAPER_FETCHER_CONTACT_EMAIL, the
+    same address paper-text-fetcher sends to NCBI, CrossRef and Unpaywall.
+    """
+    import os
+    for name in ("OPENALEX_MAILTO", "PAPER_FETCHER_CONTACT_EMAIL"):
+        value = (os.environ.get(name) or "").strip()
+        if value and "@" in value:
+            return value
+    return None
+
+
+def openalex_polite_url(url: str, email: Optional[str] = None) -> str:
+    """
+    Add ``mailto=<email>`` to an OpenAlex URL so requests join the polite pool.
+
+    OpenAlex serves anonymous callers from a shared, heavily throttled pool;
+    callers that identify themselves get the documented rate (about 10
+    requests/s) and priority. Non-OpenAlex URLs and URLs that already carry a
+    mailto are returned unchanged, as is everything when no email is set.
+    """
+    email = email if email is not None else contact_email()
+    if not email:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if parts.netloc.lower() != OPENALEX_HOST:
+        return url
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    if "mailto" in query:
+        return url
+    query["mailto"] = email
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
 def http_get_json(
     session: requests.Session,
     url: str,
@@ -248,8 +291,10 @@ def http_get_json(
     Throttled + retried JSON GET with simple telemetry.
 
     Retries transient statuses: 429, 502, 503, 504 and network errors.
+    OpenAlex URLs get a ``mailto`` parameter (see ``openalex_polite_url``).
     """
     tel = telemetry or Telemetry()
+    url = openalex_polite_url(url)
 
     last_exc: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
