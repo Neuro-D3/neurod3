@@ -630,7 +630,7 @@ export default function PaperMappingDashboard() {
                             )}
                             {hallucinated && (
                               <div className="mt-1 text-xs text-rose-600">
-                                {citation.hallucinated_quote_count} quote{citation.hallucinated_quote_count === 1 ? '' : 's'} not found in the paper text
+                                {citation.hallucinated_quote_count} quote{citation.hallucinated_quote_count === 1 ? '' : 's'} could not be matched word for word
                               </div>
                             )}
                             {!quote && (

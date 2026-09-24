@@ -141,7 +141,7 @@ function ReusePaperCard({ c, bg }: { c: DatasetDetailCitation; bg: string }) {
       )}
       {hallucinated && (
         <p className="mt-1 text-[10px] text-rose-600">
-          {c.hallucinated_quote_count} quote{c.hallucinated_quote_count === 1 ? '' : 's'} not found in the paper text
+          {c.hallucinated_quote_count} quote{c.hallucinated_quote_count === 1 ? '' : 's'} could not be matched word for word
         </p>
       )}
       {typeof c.confidence === 'number' && (
