@@ -448,11 +448,11 @@ export default function PaperMappingDashboard() {
           role="dialog"
           aria-modal="false"
           aria-label={`Dataset drill-down: ${selectedDataset.source} ${selectedDataset.dataset_id}`}
-          className={`fixed inset-y-0 right-0 z-40 flex w-full max-w-3xl flex-col border-l border-slate-200 bg-white shadow-2xl motion-reduce:animate-none ${
+          className={`fixed inset-y-0 right-0 z-40 flex w-full max-w-3xl flex-col border-l border-slate-300 bg-slate-50 shadow-2xl motion-reduce:animate-none ${
             panelClosing ? 'animate-panel-out' : 'animate-panel-in'
           }`}
         >
-          <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
+          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
             <div>
               <h2 className="text-base font-semibold">Dataset Drill-down</h2>
               <p className="text-sm text-slate-500">
@@ -468,11 +468,11 @@ export default function PaperMappingDashboard() {
               ✕
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto p-4">
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
             {detailLoading ? <p className="text-sm text-slate-500">Loading dataset detail…</p> : null}
             {!detailLoading && datasetDetail ? (
-              <div className="space-y-6">
-                <div className="rounded-xl bg-slate-50 p-4">
+              <div className="flex min-h-0 flex-1 flex-col gap-6">
+                <div className="shrink-0 rounded-xl border border-slate-200 bg-white p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">{datasetDetail.dataset.source}</div>
@@ -507,15 +507,15 @@ export default function PaperMappingDashboard() {
                   </div>
                 </div>
 
-                <div className="space-y-6">
-                  <section>
+                <div className="flex min-h-0 flex-1 flex-col gap-6">
+                  <section className="shrink-0">
                     <h4 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
                       Primary Papers <span className="font-normal normal-case text-slate-400">({formatNumber(datasetDetail.primary_papers.length)})</span>
                     </h4>
                     {/* Own scroller, so a long list does not push Citing Papers out of view. */}
-                    <div className="max-h-[30vh] space-y-3 overflow-y-auto overscroll-contain pr-1">
+                    <div className="max-h-[20vh] space-y-3 overflow-y-auto overscroll-contain pr-1">
                       {datasetDetail.primary_papers.map((paper) => (
-                        <div key={paper.paper_doi} className="rounded-xl border border-slate-200 p-4">
+                        <div key={paper.paper_doi} className="rounded-xl border border-slate-200 bg-white p-4">
                           <div className="flex flex-wrap items-start justify-between gap-2">
                             <div>
                               <div className="font-medium text-slate-900">{paper.paper_title || paper.paper_doi}</div>
@@ -541,7 +541,8 @@ export default function PaperMappingDashboard() {
                     </div>
                   </section>
 
-                  <section>
+                  {/* Fills the rest of the panel and scrolls on its own, like Primary Papers. */}
+                  <section className="flex min-h-[14rem] flex-1 flex-col">
                     <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
                       Citing Papers <span className="font-normal normal-case text-slate-400">({formatNumber(citationsTotal)})</span>
                     </h4>
@@ -549,7 +550,7 @@ export default function PaperMappingDashboard() {
                       Showing {formatNumber(citationsPreview.length)} of {formatNumber(citationsTotal)}, classified papers first
                       (Reuse, then other labels), then newest.
                     </p>
-                    <div className="space-y-3">
+                    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
                       {citationsPreview.map((citation) => {
                         const firstContext = citation.citation_contexts?.[0]?.context;
                         const conf = confidenceShort(citation.confidence);
@@ -558,7 +559,7 @@ export default function PaperMappingDashboard() {
                         const quote = primaryQuote(citation.evidence_quotes);
                         const hallucinated = (citation.hallucinated_quote_count ?? 0) > 0;
                         return (
-                          <div key={`${citation.primary_paper_doi}:${citation.citing_paper_doi}`} className="rounded-xl border border-slate-200 p-4">
+                          <div key={`${citation.primary_paper_doi}:${citation.citing_paper_doi}`} className="rounded-xl border border-slate-200 bg-white p-4">
                             <div className="flex flex-wrap items-start justify-between gap-2">
                               <div>
                                 <div className="font-medium text-slate-900">{citation.citing_paper_title || citation.citing_paper_doi}</div>
