@@ -72,7 +72,7 @@ try:
         DEFAULT_MAX_TOKENS,
         DEFAULT_MAX_INPUT_CHARS,
     )
-    from utils.paper_fulltext import fetch_fulltext_detailed, TEXT_STATUS_FULL
+    from utils.paper_fulltext import fetch_fulltext_detailed, load_cached_paper_text, TEXT_STATUS_FULL
 except ImportError:  # pragma: no cover - direct import outside the dags folder
     from dags.utils.database import get_db_connection
     from dags.utils.llm_classify import get_openrouter_api_key, validate_openrouter_api_key
@@ -87,7 +87,7 @@ except ImportError:  # pragma: no cover - direct import outside the dags folder
         DEFAULT_MAX_TOKENS,
         DEFAULT_MAX_INPUT_CHARS,
     )
-    from dags.utils.paper_fulltext import fetch_fulltext_detailed, TEXT_STATUS_FULL
+    from dags.utils.paper_fulltext import fetch_fulltext_detailed, load_cached_paper_text, TEXT_STATUS_FULL
 
 logger = logging.getLogger(__name__)
 
@@ -372,16 +372,23 @@ ON CONFLICT (run_id, pair_id) DO UPDATE SET
 """
 
 
-def _dataset_description(cursor, dataset_id: str) -> str:
+# unified_datasets.source label -> per-archive dataset table
+_DATASET_TABLES = {"DANDI": "dandi_dataset", "OpenNeuro": "openneuro_dataset",
+                   "CRCNS": "crcns_dataset", "SPARC": "sparc_dataset"}
+
+
+def _dataset_description(cursor, source: str, dataset_id: str) -> str:
     """Same description the production DAG hands the model, when this DB has the dataset."""
-    for sql in (
+    queries = [(
         "SELECT COALESCE(full_description, description) FROM unified_datasets "
-        "WHERE source = 'DANDI' AND dataset_id = %s LIMIT 1;",
-        "SELECT description FROM dandi_dataset WHERE dataset_id = %s LIMIT 1;",
-    ):
+        "WHERE source = %s AND dataset_id = %s LIMIT 1;", (source, dataset_id))]
+    table = _DATASET_TABLES.get(source)
+    if table:
+        queries.append((f"SELECT description FROM {table} WHERE dataset_id = %s LIMIT 1;", (dataset_id,)))
+    for sql, args in queries:
         try:
             cursor.execute("SAVEPOINT ds_lookup;")
-            cursor.execute(sql, (dataset_id,))
+            cursor.execute(sql, args)
             row = cursor.fetchone()
             cursor.execute("RELEASE SAVEPOINT ds_lookup;")
             if row and row[0]:
@@ -431,8 +438,13 @@ def classify_benchmark_batch(*, batch_index: int, paper_groups: List[List[Dict[s
             if fatal:
                 break
             doi = group[0]["fetched_doi"]
-            fetched = fetch_fulltext_detailed(doi)
-            text = fetched.get("text") if fetched.get("status") == TEXT_STATUS_FULL else None
+            # Same order as paper_reuse_classification: the mapping DAGs' cache,
+            # then the fetcher. The benchmark should read what production reads.
+            text = load_cached_paper_text(cursor, doi)
+            fetched: Dict[str, Any] = {"source": "cache", "status": TEXT_STATUS_FULL}
+            if not text:
+                fetched = fetch_fulltext_detailed(doi)
+                text = fetched.get("text") if fetched.get("status") == TEXT_STATUS_FULL else None
             if not text:
                 logger.info("No full text for %s: %s (%s)", doi, fetched.get("status"), fetched.get("reason"))
 
@@ -442,7 +454,7 @@ def classify_benchmark_batch(*, batch_index: int, paper_groups: List[List[Dict[s
                                       error_kind=STATUS_NO_FULL_TEXT, reasoning=fetched.get("reason"))
                 elif dry_run:
                     prompt = build_prompt(text, dataset_id=pair["dataset_id"], dataset_name=pair.get("dataset_name", ""),
-                                          dataset_description=_dataset_description(cursor, pair["dataset_id"]),
+                                          dataset_description=_dataset_description(cursor, pair.get("dataset_source", "DANDI"), pair["dataset_id"]),
                                           primary_paper_doi=pair.get("primary_paper_doi") or "", mode=pair["mode"])
                     logger.info("[DRY RUN] %s mode=%s prompt_chars=%d", pair["pair_id"], pair["mode"], len(prompt))
                     row = _result_row(run_id, pair, status=STATUS_DRY_RUN, text_source=fetched.get("source"),
@@ -452,7 +464,7 @@ def classify_benchmark_batch(*, batch_index: int, paper_groups: List[List[Dict[s
                         text,
                         dataset_id=pair["dataset_id"],
                         dataset_name=pair.get("dataset_name", ""),
-                        dataset_description=_dataset_description(cursor, pair["dataset_id"]),
+                        dataset_description=_dataset_description(cursor, pair.get("dataset_source", "DANDI"), pair["dataset_id"]),
                         primary_paper_doi=pair.get("primary_paper_doi") or "",
                         paper_doi=doi,
                         api_key=api_key,
@@ -542,7 +554,7 @@ def score_benchmark_run(**context) -> Dict[str, Any]:
             (run_id,),
         )
         cols = [d[0] for d in cursor.description]
-        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        rows = [dict(zip(cols, r, strict=True)) for r in cursor.fetchall()]
         coverage = _mapping_coverage(cursor, pairs)
 
         metrics = score_results(rows)

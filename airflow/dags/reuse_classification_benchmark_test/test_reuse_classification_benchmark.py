@@ -21,6 +21,7 @@ if HERE not in sys.path:
 pytest.importorskip("airflow")
 
 import reuse_classification_benchmark_dag as B  # noqa: E402
+from airflow.exceptions import AirflowFailException  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -70,7 +71,7 @@ class TestSelectPairs:
         assert len(B.select_pairs(self.PAIRS, "FULL", max_pairs=2)) == 2
 
     def test_unknown_set_is_refused(self):
-        with pytest.raises(Exception):
+        with pytest.raises(AirflowFailException):
             B.select_pairs(self.PAIRS, "everything")
 
 
