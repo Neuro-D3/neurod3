@@ -77,6 +77,77 @@ export function statusLabel(status?: string | null): string {
   return known[s] ?? s.replace(/_/g, ' ');
 }
 
+/**
+ * Outcome buckets for the dashboard's distribution bar, in drawing order.
+ * Colors are validated as a categorical set (dataviz validate_palette.js, light
+ * surface): the order matters, since adjacent segments must stay distinguishable.
+ */
+export const OUTCOME_BUCKETS: { key: string; color: string }[] = [
+  { key: 'REUSE', color: '#059669' },
+  { key: 'PRIMARY', color: '#2563eb' },
+  { key: 'MENTION', color: '#0891b2' },
+  { key: 'no_full_text', color: '#ea580c' },
+  { key: 'NEITHER', color: '#7c3aed' },
+  { key: 'error', color: '#e11d48' },
+];
+
+/** Rows that hold no attempt: created by mapping, or a dry run. */
+const NOT_ATTEMPTED = new Set(['placeholder', 'unclassified', 'dry_run']);
+
+export interface OutcomeSlice {
+  key: string;
+  label: string;
+  color: string;
+  count: number;
+  /** Share of attempted edges, 0–1. */
+  share: number;
+}
+
+export interface ClassificationProgress {
+  total: number;
+  attempted: number;
+  notYet: number;
+  /** Share of all edges attempted, 0–1. */
+  attemptedShare: number;
+  outcomes: OutcomeSlice[];
+}
+
+/**
+ * Split all citation edges into attempted vs not yet, and the attempted ones
+ * into outcome buckets. `byClassification` is the summary API's bucket counts;
+ * buckets without a fixed color (should any appear) are kept, in slate.
+ */
+export function classificationProgress(
+  citationEdges: number,
+  byClassification: Record<string, number>,
+): ClassificationProgress {
+  const counts = Object.entries(byClassification || {}).filter(([k, n]) => !NOT_ATTEMPTED.has(k) && n > 0);
+  const attempted = counts.reduce((sum, [, n]) => sum + n, 0);
+  const total = Math.max(citationEdges || 0, attempted);
+  const known = new Map(OUTCOME_BUCKETS.map((b, i) => [b.key, { ...b, i }]));
+  const outcomes = counts
+    .map(([key, count]) => {
+      const b = known.get(key);
+      return {
+        key,
+        label: statusLabel(key),
+        color: b?.color ?? '#64748b',
+        count,
+        share: attempted ? count / attempted : 0,
+        order: b ? b.i : OUTCOME_BUCKETS.length,
+      };
+    })
+    .sort((a, b) => a.order - b.order || b.count - a.count)
+    .map(({ order, ...slice }) => slice);
+  return {
+    total,
+    attempted,
+    notYet: total - attempted,
+    attemptedShare: total ? attempted / total : 0,
+    outcomes,
+  };
+}
+
 const REUSE_TYPE_LABELS: Record<string, string> = {
   TOOL_DEMO: 'Tool demo',
   BENCHMARK: 'Benchmark',

@@ -1,4 +1,5 @@
 import {
+  classificationProgress,
   confidenceLabel,
   confidenceShort,
   confidenceTier,
@@ -118,5 +119,43 @@ describe('primaryQuote', () => {
     expect(primaryQuote([{ quote: '' }, { quote: 'x', match_type: 'not_found' }])?.quote).toBe('x');
     expect(primaryQuote([])).toBeNull();
     expect(primaryQuote(null)).toBeNull();
+  });
+});
+
+describe('classificationProgress', () => {
+  const live = { MENTION: 162, no_full_text: 116, error: 9, NEITHER: 7, REUSE: 3 };
+
+  it('splits all edges into attempted and not yet', () => {
+    const p = classificationProgress(15038, live);
+    expect(p.attempted).toBe(297);
+    expect(p.notYet).toBe(15038 - 297);
+    expect(p.attemptedShare).toBeCloseTo(297 / 15038);
+  });
+
+  it('orders outcomes by the fixed palette order, not by count', () => {
+    const keys = classificationProgress(15038, live).outcomes.map((o) => o.key);
+    expect(keys).toEqual(['REUSE', 'MENTION', 'no_full_text', 'NEITHER', 'error']);
+  });
+
+  it('gives outcome shares of attempted edges', () => {
+    const reuse = classificationProgress(15038, live).outcomes[0];
+    expect(reuse.share).toBeCloseTo(3 / 297);
+    expect(reuse.label).toBe('Reuse');
+  });
+
+  it('does not count placeholder or dry-run rows as attempted', () => {
+    const p = classificationProgress(100, { placeholder: 40, dry_run: 5, MENTION: 10 });
+    expect(p.attempted).toBe(10);
+    expect(p.outcomes.map((o) => o.key)).toEqual(['MENTION']);
+  });
+
+  it('keeps an unknown bucket instead of dropping it', () => {
+    const p = classificationProgress(10, { REUSE: 1, SOMETHING_NEW: 2 });
+    expect(p.outcomes.map((o) => o.key)).toEqual(['REUSE', 'SOMETHING_NEW']);
+  });
+
+  it('handles no data', () => {
+    const p = classificationProgress(0, {});
+    expect(p).toEqual({ total: 0, attempted: 0, notYet: 0, attemptedShare: 0, outcomes: [] });
   });
 });

@@ -106,6 +106,21 @@ def _validate_paper_mapping_source(source: Optional[str]) -> Optional[str]:
     return source
 
 
+# ORDER BY for citation lists (alias `cc` = citation_classifications, `ce` =
+# citation_edges). Labelled pairs come first so a capped list shows what the
+# classifier found, not only the newest (usually unclassified) citing papers.
+CITATION_DISPLAY_ORDER_SQL = """
+    CASE
+        WHEN cc.classification = 'REUSE' THEN 0
+        WHEN cc.classification = 'PRIMARY' THEN 1
+        WHEN cc.classification = 'MENTION' THEN 2
+        WHEN cc.classification = 'NEITHER' THEN 3
+        WHEN cc.status IN ('error', 'no_full_text') THEN 4
+        ELSE 5
+    END
+"""
+
+
 def _paper_mapping_relation_exists(cursor, relation_name: str, relation_type: str = "table") -> bool:
     if relation_type == "view":
         cursor.execute(
@@ -1145,7 +1160,8 @@ async def get_dataset_detail(source: str, dataset_id: str):
                          AND cc.primary_paper_doi = ce.primary_paper_doi
                          AND cc.citing_paper_doi = ce.citing_paper_doi
                         WHERE ce.source = %s AND ce.dataset_id = %s
-                        ORDER BY COALESCE(p_citing.publication_date, '') DESC,
+                        ORDER BY {CITATION_DISPLAY_ORDER_SQL},
+                                 COALESCE(p_citing.publication_date, '') DESC,
                                  ce.citing_paper_doi ASC
                         LIMIT 250;
                     """
@@ -1607,7 +1623,8 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                      AND cc.primary_paper_doi = ce.primary_paper_doi
                      AND cc.citing_paper_doi = ce.citing_paper_doi
                     WHERE ce.source = %s AND ce.dataset_id = %s
-                    ORDER BY COALESCE(ce.citing_publication_date, p_citing.publication_date, '') DESC, ce.citing_paper_doi ASC
+                    ORDER BY {CITATION_DISPLAY_ORDER_SQL},
+                             COALESCE(ce.citing_publication_date, p_citing.publication_date, '') DESC, ce.citing_paper_doi ASC
                     LIMIT 250;
                 """
                 cursor.execute(citations_query, [source, dataset_id])
@@ -1704,7 +1721,8 @@ async def get_paper_mapping_citations(
                      AND cc.primary_paper_doi = ce.primary_paper_doi
                      AND cc.citing_paper_doi = ce.citing_paper_doi
                     {where_sql}
-                    ORDER BY COALESCE(ce.citing_publication_date, '') DESC, ce.citing_paper_doi ASC
+                    ORDER BY {CITATION_DISPLAY_ORDER_SQL},
+                             COALESCE(ce.citing_publication_date, '') DESC, ce.citing_paper_doi ASC
                     LIMIT %s OFFSET %s;
                 """
                 cursor.execute(query, params + [limit, offset])

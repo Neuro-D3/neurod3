@@ -12,6 +12,8 @@ import {
   PaperMappingSummary,
 } from '../services/api';
 import {
+  ClassificationProgress,
+  classificationProgress,
   confidenceShort,
   modalityLabel,
   primaryQuote,
@@ -66,6 +68,7 @@ export default function PaperMappingDashboard() {
   const [selectedDataset, setSelectedDataset] = useState<PaperMappingDatasetRow | null>(null);
   const [datasetDetail, setDatasetDetail] = useState<PaperMappingDatasetDetail | null>(null);
   const [citationsPreview, setCitationsPreview] = useState<PaperMappingCitation[]>([]);
+  const [citationsTotal, setCitationsTotal] = useState(0);
 
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -139,6 +142,7 @@ export default function PaperMappingDashboard() {
         if (cancelled) return;
         setDatasetDetail(detailResp);
         setCitationsPreview(citationsResp.citations);
+        setCitationsTotal(citationsResp.count ?? citationsResp.citations.length);
       } catch (err: any) {
         if (cancelled) return;
         setError(err?.message || String(err));
@@ -207,13 +211,17 @@ export default function PaperMappingDashboard() {
           <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
         ) : null}
 
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-4 md:grid-cols-3">
           <SummaryCard title="Datasets With Mapped Papers" value={formatNumber(summary?.summary.datasets_with_mapped_papers)} />
           <SummaryCard title="Distinct Primary Papers" value={formatNumber(summary?.summary.distinct_mapped_primary_papers)} />
           <SummaryCard title="Citation Edges" value={formatNumber(summary?.summary.citation_edges)} />
-          <SummaryCard title="Unclassified Edges" value={formatNumber((summary?.summary.citation_edges ?? 0) - (summary?.summary.classified_edges ?? 0))} />
-          <SummaryCard title="Classified Edges" value={formatNumber(summary?.summary.classified_edges)} />
         </div>
+
+        {summary ? (
+          <ClassificationDistribution
+            progress={classificationProgress(summary.summary.citation_edges, summary.by_classification)}
+          />
+        ) : null}
 
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
           <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -477,7 +485,11 @@ export default function PaperMappingDashboard() {
                   </section>
 
                   <section>
-                    <h4 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Citing Papers</h4>
+                    <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Citing Papers</h4>
+                    <p className="mb-3 mt-1 text-xs text-slate-500">
+                      Showing {formatNumber(citationsPreview.length)} of {formatNumber(citationsTotal)}, classified papers first
+                      (Reuse, then other labels), then newest.
+                    </p>
                     <div className="space-y-3">
                       {citationsPreview.map((citation) => {
                         const firstContext = citation.citation_contexts?.[0]?.context;
@@ -575,6 +587,84 @@ export default function PaperMappingDashboard() {
         </section>
       </div>
     </div>
+  );
+}
+
+function percent(share: number): string {
+  if (share <= 0) return '0%';
+  if (share < 0.001) return '<0.1%';
+  return `${(share * 100).toFixed(share < 0.1 ? 1 : 0)}%`;
+}
+
+/**
+ * Two stacked bars: how many citation edges have been attempted at all, and
+ * how the attempted ones split by outcome. One bar over every edge would hide
+ * the outcomes while most edges are still unclassified.
+ */
+function ClassificationDistribution({ progress }: { progress: ClassificationProgress }) {
+  const [hovered, setHovered] = useState<string | null>(null);
+  const { total, attempted, notYet, attemptedShare, outcomes } = progress;
+  const segment = (key: string, share: number, color: string, tip: string) => (
+    <div
+      key={key}
+      role="img"
+      aria-label={tip}
+      title={tip}
+      onMouseEnter={() => setHovered(key)}
+      onMouseLeave={() => setHovered(null)}
+      className="h-full transition-opacity first:rounded-l last:rounded-r"
+      style={{
+        width: `${share * 100}%`,
+        minWidth: share > 0 ? 3 : 0,
+        backgroundColor: color,
+        opacity: hovered && hovered !== key ? 0.45 : 1,
+      }}
+    />
+  );
+
+  return (
+    <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-base font-semibold">Classification Progress</h2>
+        <p className="text-sm text-slate-500">
+          <span className="font-semibold text-slate-900">{formatNumber(attempted)}</span> of {formatNumber(total)} citation
+          edges attempted ({percent(attemptedShare)}) · {formatNumber(notYet)} not yet classified
+        </p>
+      </div>
+
+      <div className="mt-3 flex h-3 w-full gap-[2px] overflow-hidden rounded bg-white" aria-label="Attempted vs not yet classified">
+        {segment('attempted', attemptedShare, '#334155', `Attempted: ${formatNumber(attempted)} (${percent(attemptedShare)})`)}
+        {segment('not_yet', 1 - attemptedShare, '#e2e8f0', `Not yet classified: ${formatNumber(notYet)} (${percent(1 - attemptedShare)})`)}
+      </div>
+
+      <h3 className="mt-5 text-sm font-medium text-slate-700">Outcome of attempted edges</h3>
+      {outcomes.length ? (
+        <>
+          <div className="mt-2 flex h-6 w-full gap-[2px] overflow-hidden rounded" aria-label="Outcome of attempted edges">
+            {outcomes.map((o) =>
+              segment(o.key, o.share, o.color, `${o.label}: ${formatNumber(o.count)} (${percent(o.share)} of attempted)`),
+            )}
+          </div>
+          <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+            {outcomes.map((o) => (
+              <li
+                key={o.key}
+                className="flex items-center gap-2"
+                onMouseEnter={() => setHovered(o.key)}
+                onMouseLeave={() => setHovered(null)}
+              >
+                <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: o.color }} aria-hidden="true" />
+                <span className="text-slate-700">{o.label}</span>
+                <span className="font-semibold text-slate-900">{formatNumber(o.count)}</span>
+                <span className="text-slate-500">{percent(o.share)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="mt-2 text-sm text-slate-500">Nothing classified yet. Run the paper_reuse_classification DAG.</p>
+      )}
+    </section>
   );
 }
 
