@@ -115,8 +115,13 @@ describe('primaryQuote', () => {
     ]);
     expect(q?.quote).toBe('we downloaded the data');
   });
-  it('falls back to the first non-empty quote and handles empties', () => {
-    expect(primaryQuote([{ quote: '' }, { quote: 'x', match_type: 'not_found' }])?.quote).toBe('x');
+  it('never shows a quote the verifier could not find in the paper', () => {
+    expect(primaryQuote([{ quote: '' }, { quote: 'x', match_type: 'not_found' }])).toBeNull();
+    expect(primaryQuote([{ quote: 'fabricated', match_type: 'not_found' }])).toBeNull();
+  });
+  it('falls back to an unverified quote only when none was checked, and handles empties', () => {
+    expect(primaryQuote([{ quote: 'legacy row' }])?.quote).toBe('legacy row');
+    expect(primaryQuote([{ quote: 'legacy row' }, { quote: 'checked', match_type: 'normalized' }])?.quote).toBe('checked');
     expect(primaryQuote([])).toBeNull();
     expect(primaryQuote(null)).toBeNull();
   });

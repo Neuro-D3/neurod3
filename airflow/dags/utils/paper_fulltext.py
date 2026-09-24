@@ -302,7 +302,7 @@ def get_paper_fetcher(cache_dir: Optional[Path] = None):
             from bs4 import XMLParsedAsHTMLWarning
             warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
         except Exception:
-            pass
+            pass  # older bs4 has no XMLParsedAsHTMLWarning; the logs are just noisier
     except ImportError:
         if not _fetcher_import_warned:
             logger.warning(

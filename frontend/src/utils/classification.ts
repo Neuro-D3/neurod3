@@ -199,10 +199,16 @@ export interface EvidenceQuote {
   offset?: number;
 }
 
-/** First usable quote, preferring ones actually found in the paper. */
+/**
+ * The quote to show as evidence: the first one verified in the paper text.
+ * A quote the verifier could not find (`match_type: 'not_found'`) is never
+ * shown as evidence; the page reports those as a count instead. A quote with
+ * no match_type (never verified) is shown only when nothing verified exists.
+ */
 export function primaryQuote(quotes?: EvidenceQuote[] | null): EvidenceQuote | null {
   if (!Array.isArray(quotes) || quotes.length === 0) return null;
-  const usable = quotes.filter((q) => q && typeof q.quote === 'string' && q.quote.trim().length > 0);
-  if (usable.length === 0) return null;
-  return usable.find((q) => q.match_type && q.match_type !== 'not_found') ?? usable[0];
+  const usable = quotes.filter(
+    (q) => q && typeof q.quote === 'string' && q.quote.trim().length > 0 && q.match_type !== 'not_found',
+  );
+  return usable.find((q) => q.match_type) ?? usable[0] ?? null;
 }

@@ -95,12 +95,14 @@ class TestClassificationExtraColumns:
 
 class TestReuseCountSubquery:
     def test_counts_reuse_for_every_present_source(self):
-        cur = FakeCursor(tables={t for t, _ in M._CLASSIFICATION_TABLES})
+        cur = FakeCursor(tables={t for t, _, _ in M._CLASSIFICATION_TABLES})
         sql = M._reuse_count_subquery(cur)
         assert sql.count("COUNT(DISTINCT citing_paper_doi)") == 4
         assert "IN ('REUSE')" in sql
-        for _table, id_col in M._CLASSIFICATION_TABLES:
+        for _table, id_col, source in M._CLASSIFICATION_TABLES:
             assert f"{id_col} = d.dataset_id" in sql
+            # Dataset ids are only unique per archive: each count is gated on it.
+            assert f"d.source = '{source}'" in sql
         assert "SECONDARY" not in sql  # the retired label is gone for good
 
     def test_only_existing_tables_are_summed(self):

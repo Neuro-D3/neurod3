@@ -226,11 +226,12 @@ def _classification_extra_columns_sql(cursor, table_name: str, alias: str = "c")
     return ",\n            ".join(parts)
 
 
-_CLASSIFICATION_TABLES: List[Tuple[str, str]] = [
-    ("dandi_paper_citation_classifications", "dandi_id"),
-    ("openneuro_paper_citation_classifications", "openneuro_id"),
-    ("crcns_paper_citation_classifications", "crcns_id"),
-    ("sparc_paper_citation_classifications", "sparc_id"),
+# (classification table, dataset id column, unified_datasets.source label)
+_CLASSIFICATION_TABLES: List[Tuple[str, str, str]] = [
+    ("dandi_paper_citation_classifications", "dandi_id", "DANDI"),
+    ("openneuro_paper_citation_classifications", "openneuro_id", "OpenNeuro"),
+    ("crcns_paper_citation_classifications", "crcns_id", "CRCNS"),
+    ("sparc_paper_citation_classifications", "sparc_id", "SPARC"),
 ]
 
 
@@ -239,16 +240,19 @@ def _reuse_count_subquery(cursor, dataset_alias: str = "d") -> str:
     SQL expression: distinct citing papers classified as reuse for one dataset.
 
     One correlated COUNT per source table that exists, summed; "0" when none
-    exist yet. Counts the labels in REUSE_CLASSIFICATIONS.
+    exist yet. Counts the labels in REUSE_CLASSIFICATIONS. Each count is tied
+    to its archive via `{dataset_alias}.source`, since dataset ids are only
+    unique within an archive.
     """
     parts = []
-    for table, id_col in _CLASSIFICATION_TABLES:
+    for table, id_col, source in _CLASSIFICATION_TABLES:
         if _paper_mapping_relation_exists(cursor, table):
             parts.append(
+                f"(CASE WHEN {dataset_alias}.source = '{source}' THEN "
                 "COALESCE((SELECT COUNT(DISTINCT citing_paper_doi)::int "
                 f"FROM {table} "
                 f"WHERE {id_col} = {dataset_alias}.dataset_id "
-                f"AND classification IN {REUSE_CLASSIFICATIONS_SQL}), 0)"
+                f"AND classification IN {REUSE_CLASSIFICATIONS_SQL}), 0) ELSE 0 END)"
             )
     return " + ".join(parts) if parts else "0"
 
@@ -833,6 +837,8 @@ async def get_datasets(
                     "count": total
                 }
 
+    except HTTPException:
+        raise  # e.g. 400 for an invalid sort_by; the catch-all below would turn it into a 500
     except psycopg.Error as e:
         logger.exception("Database query error")
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")

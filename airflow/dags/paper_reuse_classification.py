@@ -411,7 +411,8 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
         for source_name, cit_table, cls_table, id_col in sources:
             if max_edges > 0 and len(edges) >= max_edges:
                 break
-            remaining = max_edges - len(edges) if max_edges > 0 else 100000
+            # None -> LIMIT NULL, which Postgres treats as no limit (max_edges_per_run=0).
+            remaining = max_edges - len(edges) if max_edges > 0 else None
 
             if scope in ("citation_edges", "both"):
                 edges.extend(_fetch_citation_edge_candidates(
@@ -419,7 +420,7 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
                     mix_publishers=mix_publishers))
 
             if scope in ("primary_only", "both") and (max_edges <= 0 or len(edges) < max_edges):
-                remaining = max_edges - len(edges) if max_edges > 0 else 100000
+                remaining = max_edges - len(edges) if max_edges > 0 else None
                 edges.extend(_fetch_primary_candidates(
                     cursor, source_name, cit_table, cls_table, id_col, remaining, status_sql, status_params))
 

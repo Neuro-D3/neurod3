@@ -175,7 +175,12 @@ services:
         # admin user) before exec'ing the command.
         /entrypoint airflow version
         /entrypoint airflow config list >/dev/null
-        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/
+        # Everything except the paper cache volume (output/), which holds thousands
+        # of files the airflow user already owns; walking them on every start
+        # stalls deploys. Own the output directory itself, not its contents
+        # (same approach as the local docker-compose.yml).
+        find /opt/airflow -mindepth 1 -maxdepth 1 ! -name output -exec chown -R "${AIRFLOW_UID:-50000}:0" {} +
+        chown "${AIRFLOW_UID:-50000}:0" /opt/airflow /opt/airflow/output
 
         echo "Ensuring Airflow pool paper_mapping_api_pool exists:"
         PAPER_MAPPING_API_POOL_SLOTS="$${PAPER_MAPPING_API_POOL_SLOTS:-2}"

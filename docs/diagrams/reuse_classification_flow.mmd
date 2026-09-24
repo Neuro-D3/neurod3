@@ -19,7 +19,7 @@ flowchart LR
         A1 --> A2["Resolve primary papers<br/>DOIs in relatedResource<br/>and description"]
         A2 --> A3["Find citing papers<br/>OpenAlex citation graph"]:::ext
         A3 --> A4["Fetch citing-paper full text<br/>paper-text-fetcher<br/>(see source-chain diagram)"]
-        A4 --> FS[/"Full-text JSON cache on disk<br/>airflow/dags/output/…"/]:::store
+        A4 --> FS[/"Full-text JSON cache on disk<br/>airflow/output/…"/]:::store
         A4 --> DB1[("papers<br/>text_status · cache key")]:::store
         A3 --> DB2[("&lt;src&gt;_paper_citations<br/>dataset ↔ primary ↔ citing")]:::store
     end
