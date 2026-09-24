@@ -156,6 +156,15 @@ export default function PaperMappingDashboard() {
     };
   }, [selectedDataset]);
 
+  useEffect(() => {
+    if (!selectedDataset) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSelectedDataset(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedDataset]);
+
   const classificationBreakdown = useMemo(() => {
     if (!summary) return [];
     return Object.entries(summary.by_classification).sort((a, b) => b[1] - a[1]);
@@ -404,18 +413,31 @@ export default function PaperMappingDashboard() {
           </aside>
         </div>
 
-        <section className="mt-6 rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-4 py-3">
-            <h2 className="text-base font-semibold">Dataset Drill-down</h2>
-            <p className="text-sm text-slate-500">
-              {selectedDataset
-                ? `${selectedDataset.source} ${selectedDataset.dataset_id}`
-                : 'Select a mapped dataset to inspect primary papers, citing papers, and extracted contexts.'}
-            </p>
+        {selectedDataset ? (
+        <aside
+          role="dialog"
+          aria-modal="false"
+          aria-label={`Dataset drill-down: ${selectedDataset.source} ${selectedDataset.dataset_id}`}
+          className="fixed inset-y-0 right-0 z-40 flex w-full max-w-3xl flex-col border-l border-slate-200 bg-white shadow-2xl"
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
+            <div>
+              <h2 className="text-base font-semibold">Dataset Drill-down</h2>
+              <p className="text-sm text-slate-500">
+                {selectedDataset.source} {selectedDataset.dataset_id}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedDataset(null)}
+              aria-label="Close drill-down"
+              className="rounded-lg px-2 py-1 text-lg leading-none text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+            >
+              ✕
+            </button>
           </div>
-          <div className="p-4">
+          <div className="flex-1 overflow-y-auto p-4">
             {detailLoading ? <p className="text-sm text-slate-500">Loading dataset detail…</p> : null}
-            {!detailLoading && !selectedDataset ? <p className="text-sm text-slate-500">No dataset selected.</p> : null}
             {!detailLoading && datasetDetail ? (
               <div className="space-y-6">
                 <div className="rounded-xl bg-slate-50 p-4">
@@ -445,7 +467,7 @@ export default function PaperMappingDashboard() {
                       </a>
                     ) : null}
                   </div>
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <MiniStat label="Mapped primary papers" value={formatNumber(datasetDetail.dataset.mapped_papers_count)} />
                     <MiniStat label="Citation edges" value={formatNumber(datasetDetail.dataset.citation_edges_count)} />
                     <MiniStat label="Contexts extracted" value={formatNumber(datasetDetail.dataset.contexts_extracted_count)} />
@@ -453,7 +475,7 @@ export default function PaperMappingDashboard() {
                   </div>
                 </div>
 
-                <div className="grid gap-6 xl:grid-cols-2">
+                <div className="space-y-6">
                   <section>
                     <h4 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Primary Papers</h4>
                     <div className="space-y-3">
@@ -584,7 +606,8 @@ export default function PaperMappingDashboard() {
               </div>
             ) : null}
           </div>
-        </section>
+        </aside>
+        ) : null}
       </div>
     </div>
   );
