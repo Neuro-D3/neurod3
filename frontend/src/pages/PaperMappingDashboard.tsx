@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   datasetDetailPath,
@@ -24,6 +24,9 @@ import {
 } from '../utils/classification';
 
 type SourceFilter = 'all' | 'CRCNS' | 'DANDI' | 'OpenNeuro' | 'SPARC';
+
+/** Matches `animate-panel-out` in tailwind.config.js; the panel unmounts after it. */
+const PANEL_CLOSE_MS = 220;
 type SortKey =
   | 'mapped_papers'
   | 'citation_edges'
@@ -66,6 +69,10 @@ export default function PaperMappingDashboard() {
   const [datasets, setDatasets] = useState<PaperMappingDatasetRow[]>([]);
   const [datasetCount, setDatasetCount] = useState(0);
   const [selectedDataset, setSelectedDataset] = useState<PaperMappingDatasetRow | null>(null);
+  // The drill-down panel slides in when it mounts (CSS animation) and slides
+  // out on close; `selectedDataset` stays set until the slide-out finishes.
+  const [panelClosing, setPanelClosing] = useState(false);
+  const closeTimer = useRef<number | null>(null);
   const [datasetDetail, setDatasetDetail] = useState<PaperMappingDatasetDetail | null>(null);
   const [citationsPreview, setCitationsPreview] = useState<PaperMappingCitation[]>([]);
   const [citationsTotal, setCitationsTotal] = useState(0);
@@ -81,9 +88,32 @@ export default function PaperMappingDashboard() {
     setPage(1);
   }, [sourceFilter, search, classificationBucketFilter]);
 
+  const openPanel = useCallback((dataset: PaperMappingDatasetRow) => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+    setPanelClosing(false);
+    setSelectedDataset(dataset);
+  }, []);
+
+  const closePanel = useCallback(() => {
+    setPanelClosing(true);
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => {
+      setSelectedDataset(null);
+      setPanelClosing(false);
+      closeTimer.current = null;
+    }, PANEL_CLOSE_MS);
+  }, []);
+
+  useEffect(() => () => {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+  }, []);
+
   useEffect(() => {
-    setSelectedDataset(null);
-  }, [classificationBucketFilter]);
+    closePanel();
+  }, [classificationBucketFilter, closePanel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -157,13 +187,13 @@ export default function PaperMappingDashboard() {
   }, [selectedDataset]);
 
   useEffect(() => {
-    if (!selectedDataset) return;
+    if (!selectedDataset || panelClosing) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSelectedDataset(null);
+      if (e.key === 'Escape') closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedDataset]);
+  }, [selectedDataset, panelClosing, closePanel]);
 
   const classificationBreakdown = useMemo(() => {
     if (!summary) return [];
@@ -295,7 +325,7 @@ export default function PaperMappingDashboard() {
                       <tr
                         key={`${dataset.source}:${dataset.dataset_id}`}
                         className={`cursor-pointer transition hover:bg-slate-50 ${isSelected ? 'bg-slate-50' : ''}`}
-                        onClick={() => setSelectedDataset(dataset)}
+                        onClick={() => openPanel(dataset)}
                       >
                         <td className="px-4 py-3 align-top">
                           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">{dataset.source}</span>
@@ -418,7 +448,9 @@ export default function PaperMappingDashboard() {
           role="dialog"
           aria-modal="false"
           aria-label={`Dataset drill-down: ${selectedDataset.source} ${selectedDataset.dataset_id}`}
-          className="fixed inset-y-0 right-0 z-40 flex w-full max-w-3xl flex-col border-l border-slate-200 bg-white shadow-2xl"
+          className={`fixed inset-y-0 right-0 z-40 flex w-full max-w-3xl flex-col border-l border-slate-200 bg-white shadow-2xl motion-reduce:animate-none ${
+            panelClosing ? 'animate-panel-out' : 'animate-panel-in'
+          }`}
         >
           <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
             <div>
@@ -429,7 +461,7 @@ export default function PaperMappingDashboard() {
             </div>
             <button
               type="button"
-              onClick={() => setSelectedDataset(null)}
+              onClick={closePanel}
               aria-label="Close drill-down"
               className="rounded-lg px-2 py-1 text-lg leading-none text-slate-500 hover:bg-slate-100 hover:text-slate-900"
             >
