@@ -39,7 +39,7 @@ from utils.database import (
     backfill_papers_text_status,
 )
 from utils.cache_keys import paper_cache_key_for_doi
-from utils.find_reuse_core import normalize_doi, Telemetry
+from utils.find_reuse_core import is_definitive_no_paper, normalize_doi, Telemetry
 from utils.paper_citations import (
     find_citation_contexts,
     get_alternate_doi,
@@ -570,9 +570,11 @@ def _persist_crcns_records(
                 )
                 inserted_maps += 1
 
+            # Only a definitive "no paper" sets papers = 0 (which later runs skip);
+            # a failed attempt leaves papers unset so it is retried.
             for u in unresolved:
                 ds_id = u.get("crcns_id")
-                if isinstance(ds_id, str) and ds_id:
+                if isinstance(ds_id, str) and ds_id and is_definitive_no_paper(u.get("reason")):
                     processed_datasets.add(ds_id)
 
             if processed_datasets:

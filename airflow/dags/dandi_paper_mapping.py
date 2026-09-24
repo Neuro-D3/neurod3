@@ -50,7 +50,7 @@ from utils.database import (
     backfill_papers_text_status,
 )
 from utils.cache_keys import paper_cache_key_for_doi
-from utils.find_reuse_core import normalize_doi, Telemetry
+from utils.find_reuse_core import is_definitive_no_paper, normalize_doi, Telemetry
 from utils.paper_citations import (
     find_citation_contexts,
     get_alternate_doi,
@@ -953,9 +953,11 @@ def persist_paper_mappings(**context) -> Dict[str, Any]:
                 inserted_maps += 1
 
             # Also track dandisets that had no resolved mappings (so we can set papers=0)
+            # Only a definitive "no paper" sets papers = 0 (which later runs skip);
+            # a failed attempt leaves papers unset so it is retried.
             for u in unresolved:
                 ds_id = u.get("dandi_id")
-                if isinstance(ds_id, str) and ds_id:
+                if isinstance(ds_id, str) and ds_id and is_definitive_no_paper(u.get("reason")):
                     processed_dandisets.add(ds_id)
 
             # Update dandi_dataset.papers for dandisets touched this run.
@@ -1232,9 +1234,11 @@ def _persist_resolved_records(
                 inserted_maps += 1
 
             # Track dandisets that had no resolved mappings so we can set papers=0
+            # Only a definitive "no paper" sets papers = 0 (which later runs skip);
+            # a failed attempt leaves papers unset so it is retried.
             for u in unresolved:
                 ds_id = u.get("dandi_id")
-                if isinstance(ds_id, str) and ds_id:
+                if isinstance(ds_id, str) and ds_id and is_definitive_no_paper(u.get("reason")):
                     processed_dandisets.add(ds_id)
 
             if processed_dandisets:

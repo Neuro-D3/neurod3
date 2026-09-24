@@ -20,14 +20,12 @@ import requests
 
 try:
     from utils.find_reuse_core import (
-        contact_email,
         openalex_api_key,
         openalex_polite_url,
         openalex_request_headers,
     )
 except ImportError:  # pragma: no cover - direct import outside the dags folder
     from dags.utils.find_reuse_core import (  # type: ignore
-        contact_email,
         openalex_api_key,
         openalex_polite_url,
         openalex_request_headers,

@@ -14,6 +14,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import psycopg2
 import requests
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
@@ -51,7 +52,8 @@ def _rekey_doi_rows(cursor, doi: str, code: str) -> int:
     the code resolves, the upsert would otherwise add a second row next to the
     old one and leave the paper mappings on the old id. No-op when nothing is
     keyed by the DOI. Skipped (with a warning) when the code is already taken,
-    since merging two histories needs a human decision.
+    in crcns_dataset or in any paper table, since merging two histories needs a
+    human decision; the savepoint keeps that from aborting the ingestion run.
     """
     cursor.execute("SELECT 1 FROM crcns_dataset WHERE dataset_id = %s", (doi,))
     if not cursor.fetchone():
@@ -61,12 +63,19 @@ def _rekey_doi_rows(cursor, doi: str, code: str) -> int:
         logger.warning("Both %s and %s exist in crcns_dataset; not re-keying, merge by hand", doi, code)
         return 0
     moved = 0
-    for table, column in _CRCNS_ID_TABLES:
-        cursor.execute("SELECT to_regclass(%s) IS NOT NULL", (f"public.{table}",))
-        if not cursor.fetchone()[0]:
-            continue
-        cursor.execute(f"UPDATE {table} SET {column} = %s WHERE {column} = %s", (code, doi))
-        moved += cursor.rowcount
+    cursor.execute("SAVEPOINT crcns_rekey")
+    try:
+        for table, column in _CRCNS_ID_TABLES:
+            cursor.execute("SELECT to_regclass(%s) IS NOT NULL", (f"public.{table}",))
+            if not cursor.fetchone()[0]:
+                continue
+            cursor.execute(f"UPDATE {table} SET {column} = %s WHERE {column} = %s", (code, doi))
+            moved += cursor.rowcount
+    except psycopg2.IntegrityError as e:
+        cursor.execute("ROLLBACK TO SAVEPOINT crcns_rekey")
+        logger.warning("Rows for %s already exist under %s (%s); not re-keying, merge by hand", doi, code, e)
+        return 0
+    cursor.execute("RELEASE SAVEPOINT crcns_rekey")
     logger.info("Re-keyed CRCNS dataset %s -> %s (%d rows)", doi, code, moved)
     return moved
 

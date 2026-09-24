@@ -42,6 +42,7 @@ from utils.database import (
 )
 from utils.cache_keys import paper_cache_key_for_doi
 from utils.find_reuse_core import (
+    is_definitive_no_paper,
     normalize_doi,
     Telemetry,
     resolve_crossref_metadata,
@@ -92,6 +93,12 @@ _ALLOWED_RELATIONSHIPS: Set[str] = {
 #   - books (e.g. a textbook the model draws on)
 #   - correction / retraction notices (the amended paper is listed separately)
 _SPARC_DATASET_DOI_PREFIX = "10.26275/"
+# Crossref `update-to` types that make a record a notice about another work.
+# Others (new_version, new_edition, addendum, clarification) mark real papers.
+_NOTICE_UPDATE_TYPES: Set[str] = {
+    "correction", "erratum", "corrigendum", "retraction", "partial_retraction",
+    "withdrawal", "removal", "expression_of_concern",
+}
 _NON_PAPER_CROSSREF_TYPES: Set[str] = {
     "book", "monograph", "edited-book", "reference-book", "book-set", "book-series",
     "book-track", "book-part", "book-section", "reference-entry",
@@ -104,8 +111,9 @@ def _non_primary_reason(doi_norm: str, crossref: Dict[str, Any]) -> Optional[str
         return "sparc_dataset_doi"
     if crossref.get("type") in _NON_PAPER_CROSSREF_TYPES:
         return f"crossref_type:{crossref['type']}"
-    if crossref.get("update_types"):
-        return "update_notice:" + ",".join(crossref["update_types"])
+    notices = sorted(set(crossref.get("update_types") or ()) & _NOTICE_UPDATE_TYPES)
+    if notices:
+        return "update_notice:" + ",".join(notices)
     return None
 
 
@@ -793,9 +801,11 @@ def _persist_sparc_records(
                 )
                 inserted_maps += 1
 
+            # Only a definitive "no paper" sets papers = 0 (which later runs skip);
+            # a failed attempt leaves papers unset so it is retried.
             for u in unresolved:
                 ds_id = u.get("sparc_id")
-                if isinstance(ds_id, str) and ds_id:
+                if isinstance(ds_id, str) and ds_id and is_definitive_no_paper(u.get("reason")):
                     processed_datasets.add(ds_id)
 
             if processed_datasets:

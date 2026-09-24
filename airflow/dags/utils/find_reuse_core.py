@@ -279,6 +279,28 @@ OPENALEX_HOST = "api.openalex.org"
 MAX_RETRY_AFTER_SECONDS = 300.0
 
 
+# Resolution outcomes that mean the dataset has no linkable paper, as opposed
+# to a failed attempt. The paper-mapping DAGs record papers = 0 only for these,
+# and skip papers = 0 datasets on later runs; anything else (an exception, a
+# timeout, a 5xx, a quota refusal, an unreachable archive API) leaves papers
+# unset so the next run tries again.
+NO_PAPER_REASONS = frozenset({
+    "no_dois_found",
+    "no_papers_found",
+    "no_external_publications",
+    "no_primary_papers_after_filtering",
+    "no_landing_url",
+    "pennsieve_404",
+    "http_404",
+    "http_410",
+})
+
+
+def is_definitive_no_paper(reason: Optional[str]) -> bool:
+    """True when an unresolved dataset truly has no paper, not a failed attempt."""
+    return (reason or "") in NO_PAPER_REASONS
+
+
 class ApiQuotaExhausted(RuntimeError):
     """
     An API refused the request and asked us to come back much later.

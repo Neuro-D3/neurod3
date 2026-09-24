@@ -8,7 +8,6 @@ SQL text that comes out.
 
 import re
 
-import pytest
 
 import main as M
 
