@@ -263,7 +263,8 @@ export default function PaperMappingDashboard() {
         ) : null}
 
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
-          <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+          {/* min-w-0: on phones the table scrolls inside this card instead of widening the page. */}
+          <section className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <div>
                 <h2 className="text-base font-semibold">Mapped Datasets</h2>
@@ -665,7 +666,7 @@ function percent(share: number): string {
 function ClassificationDistribution({ progress }: { progress: ClassificationProgress }) {
   const [hovered, setHovered] = useState<string | null>(null);
   const { total, attempted, notYet, attemptedShare, outcomes } = progress;
-  const segment = (key: string, share: number, color: string, tip: string) => (
+  const segment = (key: string, share: number, fill: { color?: string; className?: string }, tip: string) => (
     <div
       key={key}
       role="img"
@@ -673,11 +674,11 @@ function ClassificationDistribution({ progress }: { progress: ClassificationProg
       title={tip}
       onMouseEnter={() => setHovered(key)}
       onMouseLeave={() => setHovered(null)}
-      className="h-full transition-opacity first:rounded-l last:rounded-r"
+      className={`h-full transition-opacity first:rounded-l last:rounded-r ${fill.className ?? ''}`}
       style={{
         width: `${share * 100}%`,
         minWidth: share > 0 ? 3 : 0,
-        backgroundColor: color,
+        backgroundColor: fill.color,
         opacity: hovered && hovered !== key ? 0.45 : 1,
       }}
     />
@@ -694,8 +695,8 @@ function ClassificationDistribution({ progress }: { progress: ClassificationProg
       </div>
 
       <div className="mt-3 flex h-3 w-full gap-[2px] overflow-hidden rounded bg-white" aria-label="Attempted vs not yet classified">
-        {segment('attempted', attemptedShare, '#334155', `Attempted: ${formatNumber(attempted)} (${percent(attemptedShare)})`)}
-        {segment('not_yet', 1 - attemptedShare, '#e2e8f0', `Not yet classified: ${formatNumber(notYet)} (${percent(1 - attemptedShare)})`)}
+        {segment('attempted', attemptedShare, { color: '#334155' }, `Attempted: ${formatNumber(attempted)} (${percent(attemptedShare)})`)}
+        {segment('not_yet', 1 - attemptedShare, { color: '#e2e8f0' }, `Not yet classified: ${formatNumber(notYet)} (${percent(1 - attemptedShare)})`)}
       </div>
 
       <h3 className="mt-5 text-sm font-medium text-slate-700">Outcome of attempted edges</h3>
@@ -703,7 +704,7 @@ function ClassificationDistribution({ progress }: { progress: ClassificationProg
         <>
           <div className="mt-2 flex h-6 w-full gap-[2px] overflow-hidden rounded" aria-label="Outcome of attempted edges">
             {outcomes.map((o) =>
-              segment(o.key, o.share, o.color, `${o.label}: ${formatNumber(o.count)} (${percent(o.share)} of attempted)`),
+              segment(o.key, o.share, { className: `ring-1 ring-inset ${o.className}` }, `${o.label}: ${formatNumber(o.count)} (${percent(o.share)} of attempted)`),
             )}
           </div>
           <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm">
@@ -714,7 +715,7 @@ function ClassificationDistribution({ progress }: { progress: ClassificationProg
                 onMouseEnter={() => setHovered(o.key)}
                 onMouseLeave={() => setHovered(null)}
               >
-                <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: o.color }} aria-hidden="true" />
+                <span className={`inline-block h-2.5 w-2.5 rounded-full ring-1 ${o.className}`} aria-hidden="true" />
                 <span className="text-slate-700">{o.label}</span>
                 <span className="font-semibold text-slate-900">{formatNumber(o.count)}</span>
                 <span className="text-slate-500">{percent(o.share)}</span>

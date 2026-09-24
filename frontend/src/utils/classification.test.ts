@@ -134,13 +134,15 @@ describe('classificationProgress', () => {
 
   it('orders outcomes by the fixed palette order, not by count', () => {
     const keys = classificationProgress(15038, live).outcomes.map((o) => o.key);
-    expect(keys).toEqual(['REUSE', 'MENTION', 'no_full_text', 'NEITHER', 'error']);
+    expect(keys).toEqual(['REUSE', 'MENTION', 'NEITHER', 'no_full_text', 'error']);
   });
 
   it('gives outcome shares of attempted edges', () => {
     const reuse = classificationProgress(15038, live).outcomes[0];
     expect(reuse.share).toBeCloseTo(3 / 297);
     expect(reuse.label).toBe('Reuse');
+    // Same tint as the label badge elsewhere on the page.
+    expect(reuse.className).toBe(statusBadgeClass('REUSE'));
   });
 
   it('does not count placeholder or dry-run rows as attempted', () => {

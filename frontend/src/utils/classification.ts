@@ -78,18 +78,11 @@ export function statusLabel(status?: string | null): string {
 }
 
 /**
- * Outcome buckets for the dashboard's distribution bar, in drawing order.
- * Colors are validated as a categorical set (dataviz validate_palette.js, light
- * surface): the order matters, since adjacent segments must stay distinguishable.
+ * Outcome buckets for the dashboard's distribution bar, in drawing order. The
+ * bar uses the same light tints as the label badges (statusBadgeClass), so a
+ * label looks the same everywhere on the page.
  */
-export const OUTCOME_BUCKETS: { key: string; color: string }[] = [
-  { key: 'REUSE', color: '#059669' },
-  { key: 'PRIMARY', color: '#2563eb' },
-  { key: 'MENTION', color: '#0891b2' },
-  { key: 'no_full_text', color: '#ea580c' },
-  { key: 'NEITHER', color: '#7c3aed' },
-  { key: 'error', color: '#e11d48' },
-];
+export const OUTCOME_ORDER: string[] = ['REUSE', 'PRIMARY', 'MENTION', 'NEITHER', 'no_full_text', 'error'];
 
 /** Rows that hold no attempt: created by mapping, or a dry run. */
 const NOT_ATTEMPTED = new Set(['placeholder', 'unclassified', 'dry_run']);
@@ -97,7 +90,8 @@ const NOT_ATTEMPTED = new Set(['placeholder', 'unclassified', 'dry_run']);
 export interface OutcomeSlice {
   key: string;
   label: string;
-  color: string;
+  /** Tailwind classes, from statusBadgeClass. */
+  className: string;
   count: number;
   /** Share of attempted edges, 0–1. */
   share: number;
@@ -115,7 +109,7 @@ export interface ClassificationProgress {
 /**
  * Split all citation edges into attempted vs not yet, and the attempted ones
  * into outcome buckets. `byClassification` is the summary API's bucket counts;
- * buckets without a fixed color (should any appear) are kept, in slate.
+ * buckets outside OUTCOME_ORDER (should any appear) are kept, drawn last.
  */
 export function classificationProgress(
   citationEdges: number,
@@ -124,17 +118,16 @@ export function classificationProgress(
   const counts = Object.entries(byClassification || {}).filter(([k, n]) => !NOT_ATTEMPTED.has(k) && n > 0);
   const attempted = counts.reduce((sum, [, n]) => sum + n, 0);
   const total = Math.max(citationEdges || 0, attempted);
-  const known = new Map(OUTCOME_BUCKETS.map((b, i) => [b.key, { ...b, i }]));
   const outcomes = counts
     .map(([key, count]) => {
-      const b = known.get(key);
+      const i = OUTCOME_ORDER.indexOf(key);
       return {
         key,
         label: statusLabel(key),
-        color: b?.color ?? '#64748b',
+        className: statusBadgeClass(key),
         count,
         share: attempted ? count / attempted : 0,
-        order: b ? b.i : OUTCOME_BUCKETS.length,
+        order: i >= 0 ? i : OUTCOME_ORDER.length,
       };
     })
     .sort((a, b) => a.order - b.order || b.count - a.count)
