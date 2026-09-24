@@ -384,8 +384,11 @@ export default function PaperMappingDashboard() {
             </div>
           </section>
 
-          <aside className="space-y-6">
-            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          {/* Phones: `contents` lets the Snapshot and Source Breakdown join the single
+              column separately, so the Snapshot (the filter) can sit above the table.
+              Desktop: an ordinary sidebar. */}
+          <aside className="contents lg:block lg:space-y-6">
+            <section className="order-first rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:order-none">
               <h2 className="text-base font-semibold">Classification Snapshot</h2>
               <p className="mt-1 text-xs text-slate-500">
                 Click a row to show only datasets that have at least one edge in that bucket. Click again to clear.
