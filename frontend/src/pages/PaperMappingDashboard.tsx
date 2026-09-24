@@ -509,8 +509,11 @@ export default function PaperMappingDashboard() {
 
                 <div className="space-y-6">
                   <section>
-                    <h4 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Primary Papers</h4>
-                    <div className="space-y-3">
+                    <h4 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+                      Primary Papers <span className="font-normal normal-case text-slate-400">({formatNumber(datasetDetail.primary_papers.length)})</span>
+                    </h4>
+                    {/* Own scroller, so a long list does not push Citing Papers out of view. */}
+                    <div className="max-h-[30vh] space-y-3 overflow-y-auto overscroll-contain pr-1">
                       {datasetDetail.primary_papers.map((paper) => (
                         <div key={paper.paper_doi} className="rounded-xl border border-slate-200 p-4">
                           <div className="flex flex-wrap items-start justify-between gap-2">
@@ -539,7 +542,9 @@ export default function PaperMappingDashboard() {
                   </section>
 
                   <section>
-                    <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Citing Papers</h4>
+                    <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+                      Citing Papers <span className="font-normal normal-case text-slate-400">({formatNumber(citationsTotal)})</span>
+                    </h4>
                     <p className="mb-3 mt-1 text-xs text-slate-500">
                       Showing {formatNumber(citationsPreview.length)} of {formatNumber(citationsTotal)}, classified papers first
                       (Reuse, then other labels), then newest.
