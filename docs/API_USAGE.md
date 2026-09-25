@@ -123,6 +123,35 @@ curl "http://localhost:8000/api/datasets?search=brain"
 curl "http://localhost:8000/api/datasets?source=DANDI&modality=fMRI&search=cortex"
 ```
 
+### Paper reuse classification fields
+
+Each dataset in `GET /api/datasets` carries `reuse_count`: the number of distinct citing papers the LLM classified as having reused the dataset's data (`REUSE`).
+
+```bash
+curl "http://localhost:8000/api/datasets?source=DANDI&sort_by=papers&limit=5" | jq '.[] | {id, reuse_count}'
+```
+
+`GET /api/datasets/{source}/{id}`, `GET /api/paper-mapping/datasets/{source}/{id}` and `GET /api/paper-mapping/citations` return one object per (citing paper, dataset) pair with:
+
+| Field | Meaning |
+|---|---|
+| `classification` | `REUSE`, `MENTION`, `NEITHER` (citing mode) or `PRIMARY`, `REUSE`, `NEITHER` (direct mode); `null` until classified |
+| `classification_status` | `classification`, else the row `status` (`placeholder`, `error`, `no_full_text`, `dry_run`), else `unclassified` |
+| `mode`, `prompt_version`, `classification_model` | how the row was produced; rows with an older prompt version are reclassified on the next run |
+| `confidence` | 1–10 |
+| `reasoning` | the model's short justification |
+| `evidence_quotes` | verbatim passages the model judged from, each `{quote, match_type, verbatim, chars, offset}`; `match_type` is `exact`, `normalized`, `case_insensitive`, `spacing_insensitive`, `punctuation_insensitive` or `not_found` |
+| `hallucinated_quote_count` | quotes that were not found in the paper text |
+| `reuse_type`, `reuse_type_other` | only for `REUSE`: `TOOL_DEMO`, `BENCHMARK`, `AGGREGATION`, `CONFIRMATORY`, `NOVEL_ANALYSIS`, `ML_TRAINING`, `SIMULATION`, `TEACHING`, `OTHER` (+ write-in) |
+| `reused_modalities`, `reused_dandi_hosted` | only for `REUSE`: which parts of the data were reused (`neurophysiology`, `behavior`, `imaging`, `morphology`, `transcriptomics`, `other`, `unclear`) |
+| `same_lab`, `same_lab_confidence`, `source_archive` | only for `REUSE` |
+| `citing_text_status` | whether the citing paper's body was retrieved: `full_text`, `metadata_only`, `unavailable`, or `null` |
+
+```bash
+curl "http://localhost:8000/api/datasets/DANDI/000016" | jq '.citations[] | select(.classification == "REUSE") | {citing_paper_doi, confidence, reuse_type, reused_modalities, quote: .evidence_quotes[0].quote}'
+```
+
+
 ### Get Dataset Statistics
 
 ```bash

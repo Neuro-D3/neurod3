@@ -6,6 +6,7 @@ locals {
   # d3-staging-<name> since GCP secret IDs cannot contain "/".
   secret_ids = {
     openrouter_api_key = "d3-staging-openrouter-api-key"
+    openalex_api_key   = "d3-staging-openalex-api-key"
     airflow_fernet_key = "d3-staging-airflow-fernet-key"
     airflow_jwt_secret = "d3-staging-airflow-jwt-secret"
     airflow_api_secret = "d3-staging-airflow-api-secret-key"

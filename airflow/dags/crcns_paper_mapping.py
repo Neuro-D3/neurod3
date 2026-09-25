@@ -33,9 +33,13 @@ try:
 except Exception:  # pragma: no cover
     from airflow.operators.python import PythonOperator  # type: ignore
 
-from utils.database import get_db_connection
+from utils.database import (
+    get_db_connection,
+    ensure_paper_reuse_classification_columns,
+    backfill_papers_text_status,
+)
 from utils.cache_keys import paper_cache_key_for_doi
-from utils.find_reuse_core import normalize_doi, Telemetry
+from utils.find_reuse_core import is_definitive_no_paper, normalize_doi, Telemetry
 from utils.paper_citations import (
     find_citation_contexts,
     get_alternate_doi,
@@ -43,6 +47,7 @@ from utils.paper_citations import (
     get_openalex_paper_data,
 )
 from utils.paper_fulltext import fetch_fulltext_oa
+from utils.openalex_budget import check_openalex_budget
 from utils.crcns_paper_resolution import (
     CrcnsPaperResolutionResult,
     resolve_papers_for_crcns_dataset,
@@ -79,7 +84,7 @@ def _get_output_root() -> Path:
     env = os.getenv("CRCNS_PAPER_MAPPING_OUTPUT_DIR", "").strip()
     if env:
         return Path(env)
-    return Path(__file__).parent / "output" / "crcns_paper_mapping"
+    return Path(__file__).parent.parent / "output" / "crcns_paper_mapping"
 
 
 def _parse_max_datasets_per_run(value: Any) -> Optional[int]:
@@ -264,13 +269,19 @@ def create_crcns_paper_mapping_tables(**_context) -> None:
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(ddl)
+            # Whole-paper classification columns + runs table (utils/database.py);
+            # idempotent, shared with the paper_reuse_classification DAG.
+            ensure_paper_reuse_classification_columns(cursor)
         conn.commit()
     logger.info("Ensured CRCNS paper mapping tables/views exist.")
 
 
 def fetch_unmapped_crcns_ids(**context) -> Dict[str, Any]:
     params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
+    # Read today's OpenAlex budget from its X-RateLimit headers; abort below the floor.
+    check_openalex_budget(params)
     include_already_mapped = bool(params.get("include_already_mapped", False))
+    retry_unresolved = bool(params.get("retry_unresolved", False))
     max_cap = _parse_max_datasets_per_run(params.get("max_datasets_per_run", 50))
     batch_size = _parse_batch_size(params.get("batch_size", 25), default=25)
 
@@ -286,6 +297,10 @@ def fetch_unmapped_crcns_ids(**context) -> Dict[str, Any]:
             SELECT 1 FROM crcns_paper_map m WHERE m.crcns_id = d.dataset_id
         )
         """
+        if not retry_unresolved:
+            # A previous run already tried these and found no paper (`papers = 0`).
+            # Without this they sort ahead of never-tried datasets on every capped run.
+            base_where += "  AND d.papers IS DISTINCT FROM 0"
 
     query = f"""
     SELECT d.dataset_id, d.title, d.description, d.url, d.updated_at
@@ -336,6 +351,7 @@ def fetch_unmapped_crcns_ids(**context) -> Dict[str, Any]:
                             "filtered_counts": filtered_counts,
                             "batch_size": batch_size,
                             "include_already_mapped": include_already_mapped,
+                            "retry_unresolved": retry_unresolved,
                         }
                     ),
                 ),
@@ -554,9 +570,11 @@ def _persist_crcns_records(
                 )
                 inserted_maps += 1
 
+            # Only a definitive "no paper" sets papers = 0 (which later runs skip);
+            # a failed attempt leaves papers unset so it is retried.
             for u in unresolved:
                 ds_id = u.get("crcns_id")
-                if isinstance(ds_id, str) and ds_id:
+                if isinstance(ds_id, str) and ds_id and is_definitive_no_paper(u.get("reason")):
                     processed_datasets.add(ds_id)
 
             if processed_datasets:
@@ -762,7 +780,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
             "telemetry": {},
         }
 
-    max_citing_papers_per_primary = max(int(params.get("max_citing_papers_per_primary", 10) or 0), 0)
+    max_citing_papers_per_primary = max(int(params.get("max_citing_papers_per_primary", 2000) or 0), 0)
     if max_citing_papers_per_primary <= 0:
         return {
             "batch_index": batch_index,
@@ -1324,6 +1342,9 @@ def summarize_run(**context) -> None:
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
+            # papers fetched during this run: derive text_status from the
+            # fetcher result stored in fulltext_available / fulltext_reason.
+            backfill_papers_text_status(cursor)
             cursor.execute(
                 """
                 UPDATE crcns_paper_resolution_runs
@@ -1403,15 +1424,22 @@ dag = DAG(
     is_paused_upon_creation=False,
     params={
         "max_datasets_per_run": 50,
+        # Abort before selecting anything when fewer OpenAlex requests remain today.
+        "min_openalex_requests": 200,
         "batch_size": 25,
         "include_already_mapped": False,
+        # If true, also retry datasets a previous run found no paper for
+        "retry_unresolved": False,
         "min_api_interval_seconds": 0.2,
         "max_retries": 6,
         "backoff_seconds": 2.0,
         "force_refresh_fulltext": False,
         "write_run_artifacts": False,
         "enable_citation_enrichment": True,
-        "max_citing_papers_per_primary": 10,
+        # Citing papers fetched per primary paper. 2000 covers every primary paper in
+        # all four archives as of 2026-09 (largest: 1,162 citers). 0 turns citation
+        # fetching off; it does not mean unlimited.
+        "max_citing_papers_per_primary": 2000,
         "citation_context_chars": 500,
         "force_refresh_citation_contexts": False,
     },
@@ -1445,7 +1473,7 @@ resolve_and_persist_batch_task = (
     PythonOperator.partial(
         task_id="resolve_and_persist_batch",
         python_callable=resolve_and_persist_batch,
-        pool="dandi_paper_api_pool",
+        pool="paper_mapping_api_pool",
         dag=dag,
     ).expand(op_kwargs=XComArg(build_batches_task))
 )
@@ -1454,7 +1482,7 @@ fetch_and_persist_citations_batch_task = (
     PythonOperator.partial(
         task_id="fetch_and_persist_citations_batch",
         python_callable=fetch_and_persist_citations_batch,
-        pool="dandi_paper_api_pool",
+        pool="paper_mapping_api_pool",
         dag=dag,
     ).expand(op_kwargs=XComArg(build_batches_task))
 )

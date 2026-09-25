@@ -4,7 +4,7 @@ Provides REST endpoints to fetch neuroscience datasets from PostgreSQL.
 """
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
@@ -106,6 +106,21 @@ def _validate_paper_mapping_source(source: Optional[str]) -> Optional[str]:
     return source
 
 
+# ORDER BY for citation lists (alias `cc` = citation_classifications, `ce` =
+# citation_edges). Labelled pairs come first so a capped list shows what the
+# classifier found, not only the newest (usually unclassified) citing papers.
+CITATION_DISPLAY_ORDER_SQL = """
+    CASE
+        WHEN cc.classification = 'REUSE' THEN 0
+        WHEN cc.classification = 'PRIMARY' THEN 1
+        WHEN cc.classification = 'MENTION' THEN 2
+        WHEN cc.classification = 'NEITHER' THEN 3
+        WHEN cc.status IN ('error', 'no_full_text') THEN 4
+        ELSE 5
+    END
+"""
+
+
 def _paper_mapping_relation_exists(cursor, relation_name: str, relation_type: str = "table") -> bool:
     if relation_type == "view":
         cursor.execute(
@@ -153,6 +168,95 @@ def _ensure_paper_mapping_tables(cursor) -> None:
         )
 
 
+# Columns the whole-paper classifier writes (airflow/dags/utils/database.py,
+# ensure_paper_reuse_classification_columns) beyond the original set, with the
+# type each should have when the table predates them. Only those the API and
+# site surface; the DAG stores more (usage, truncation, quote_warnings).
+CLASSIFICATION_EXTRA_COLUMNS: List[Tuple[str, str]] = [
+    ("prompt_version", "integer"),
+    ("mode", "text"),
+    ("reuse_type", "text"),
+    ("reuse_type_other", "text"),
+    ("reused_modalities", "jsonb"),
+    ("reused_dandi_hosted", "boolean"),
+    ("evidence_quotes", "jsonb"),
+    ("source_quotes", "jsonb"),
+    ("hallucinated_quote_count", "integer"),
+    ("error_kind", "text"),
+    ("provider", "text"),
+]
+
+# Labels that mean "this paper reused the dataset's data". (The excerpt-based
+# classifier's SECONDARY label was retired once every row had been
+# reclassified under the whole-paper scheme.)
+REUSE_CLASSIFICATIONS: Tuple[str, ...] = ("REUSE",)
+REUSE_CLASSIFICATIONS_SQL = "(" + ", ".join(f"'{c}'" for c in REUSE_CLASSIFICATIONS) + ")"
+
+
+def _table_columns(cursor, table_name: str) -> set:
+    """Column names of a public table (empty set when the table is missing)."""
+    if cursor is None:
+        return set()
+    cursor.execute(
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s;
+        """,
+        (table_name,),
+    )
+    return {r["column_name"] for r in cursor.fetchall()}
+
+
+def _classification_extra_columns_sql(cursor, table_name: str, alias: str = "c") -> str:
+    """
+    SELECT-list fragment for CLASSIFICATION_EXTRA_COLUMNS on one source table.
+
+    A deployment whose DAGs have not run since the columns were introduced
+    still has the old table shape; selecting the columns outright would make
+    every paper-mapping endpoint fail. Missing columns are selected as typed
+    NULLs so the UNION stays type-consistent across sources.
+    """
+    present = _table_columns(cursor, table_name)
+    parts = []
+    for column, col_type in CLASSIFICATION_EXTRA_COLUMNS:
+        if column in present:
+            parts.append(f"{alias}.{column}")
+        else:
+            parts.append(f"NULL::{col_type} AS {column}")
+    return ",\n            ".join(parts)
+
+
+# (classification table, dataset id column, unified_datasets.source label)
+_CLASSIFICATION_TABLES: List[Tuple[str, str, str]] = [
+    ("dandi_paper_citation_classifications", "dandi_id", "DANDI"),
+    ("openneuro_paper_citation_classifications", "openneuro_id", "OpenNeuro"),
+    ("crcns_paper_citation_classifications", "crcns_id", "CRCNS"),
+    ("sparc_paper_citation_classifications", "sparc_id", "SPARC"),
+]
+
+
+def _reuse_count_subquery(cursor, dataset_alias: str = "d") -> str:
+    """
+    SQL expression: distinct citing papers classified as reuse for one dataset.
+
+    One correlated COUNT per source table that exists, summed; "0" when none
+    exist yet. Counts the labels in REUSE_CLASSIFICATIONS. Each count is tied
+    to its archive via `{dataset_alias}.source`, since dataset ids are only
+    unique within an archive.
+    """
+    parts = []
+    for table, id_col, source in _CLASSIFICATION_TABLES:
+        if _paper_mapping_relation_exists(cursor, table):
+            parts.append(
+                f"(CASE WHEN {dataset_alias}.source = '{source}' THEN "
+                "COALESCE((SELECT COUNT(DISTINCT citing_paper_doi)::int "
+                f"FROM {table} "
+                f"WHERE {id_col} = {dataset_alias}.dataset_id "
+                f"AND classification IN {REUSE_CLASSIFICATIONS_SQL}), 0) ELSE 0 END)"
+            )
+    return " + ".join(parts) if parts else "0"
+
+
 def _paper_mapping_ctes(cursor=None) -> str:
     """Build the WITH … CTEs that union per-source paper-mapping tables.
 
@@ -173,6 +277,13 @@ def _paper_mapping_ctes(cursor=None) -> str:
     has_sparc_classifications = bool(cursor) and _paper_mapping_relation_exists(
         cursor, "sparc_paper_citation_classifications"
     )
+
+    # Whole-paper classification columns, selected as typed NULLs where a
+    # table has not been migrated yet (see _classification_extra_columns_sql).
+    dandi_cls_extra = _classification_extra_columns_sql(cursor, "dandi_paper_citation_classifications")
+    openneuro_cls_extra = _classification_extra_columns_sql(cursor, "openneuro_paper_citation_classifications")
+    crcns_cls_extra = _classification_extra_columns_sql(cursor, "crcns_paper_citation_classifications")
+    sparc_cls_extra = _classification_extra_columns_sql(cursor, "sparc_paper_citation_classifications")
 
     crcns_dataset_branch = """
         UNION ALL
@@ -221,7 +332,7 @@ def _paper_mapping_ctes(cursor=None) -> str:
         FROM crcns_paper_citations c
     """ if has_crcns_citations else ""
 
-    crcns_classifications_branch = """
+    crcns_classifications_branch = f"""
         UNION ALL
         SELECT
             'CRCNS'::text AS source,
@@ -237,7 +348,8 @@ def _paper_mapping_ctes(cursor=None) -> str:
             c.reasoning,
             c.classification_model,
             c.classified_at,
-            c.run_id
+            c.run_id,
+            {crcns_cls_extra}
         FROM crcns_paper_citation_classifications c
     """ if has_crcns_classifications else ""
 
@@ -288,7 +400,7 @@ def _paper_mapping_ctes(cursor=None) -> str:
         FROM sparc_paper_citations c
     """ if has_sparc_citations else ""
 
-    sparc_classifications_branch = """
+    sparc_classifications_branch = f"""
         UNION ALL
         SELECT
             'SPARC'::text AS source,
@@ -304,7 +416,8 @@ def _paper_mapping_ctes(cursor=None) -> str:
             c.reasoning,
             c.classification_model,
             c.classified_at,
-            c.run_id
+            c.run_id,
+            {sparc_cls_extra}
         FROM sparc_paper_citation_classifications c
     """ if has_sparc_classifications else ""
 
@@ -409,7 +522,8 @@ def _paper_mapping_ctes(cursor=None) -> str:
             c.reasoning,
             c.classification_model,
             c.classified_at,
-            c.run_id
+            c.run_id,
+            {dandi_cls_extra}
         FROM dandi_paper_citation_classifications c
         UNION ALL
         SELECT
@@ -426,7 +540,8 @@ def _paper_mapping_ctes(cursor=None) -> str:
             c.reasoning,
             c.classification_model,
             c.classified_at,
-            c.run_id
+            c.run_id,
+            {openneuro_cls_extra}
         FROM openneuro_paper_citation_classifications c
         {crcns_classifications_branch}
         {sparc_classifications_branch}
@@ -581,25 +696,12 @@ async def get_datasets(
                 authors_expr = "authors," if "authors" in ds_opt_cols else "NULL::jsonb AS authors,"
                 num_subjects_expr = "num_subjects," if "num_subjects" in ds_opt_cols else "NULL::integer AS num_subjects,"
 
-                # secondary_reuse_count comes from the per-source citation-classification
-                # tables, which only exist after the paper-mapping DAGs have run. Include
-                # each branch only when its table exists, so the datasets list still works
-                # on a DB that has only the base datasets — otherwise the whole query fails
-                # with UndefinedTable and the endpoint 500s.
-                _reuse_parts = []
-                if _paper_mapping_relation_exists(cursor, "dandi_paper_citation_classifications"):
-                    _reuse_parts.append(
-                        "COALESCE((SELECT COUNT(DISTINCT citing_paper_doi)::int "
-                        "FROM dandi_paper_citation_classifications "
-                        "WHERE dandi_id = d.dataset_id AND classification = 'SECONDARY'), 0)"
-                    )
-                if _paper_mapping_relation_exists(cursor, "openneuro_paper_citation_classifications"):
-                    _reuse_parts.append(
-                        "COALESCE((SELECT COUNT(DISTINCT citing_paper_doi)::int "
-                        "FROM openneuro_paper_citation_classifications "
-                        "WHERE openneuro_id = d.dataset_id AND classification = 'SECONDARY'), 0)"
-                    )
-                secondary_reuse_subquery = " + ".join(_reuse_parts) if _reuse_parts else "0"
+                # reuse_count: citing papers the LLM classified as reusing the dataset's
+                # data (see REUSE_CLASSIFICATIONS). The per-source classification
+                # tables only exist after the paper-mapping DAGs have run, so each
+                # branch is included only when its table exists — otherwise the whole
+                # query fails with UndefinedTable and the endpoint 500s.
+                reuse_subquery = _reuse_count_subquery(cursor)
 
                 base_select = f"""
                     SELECT
@@ -614,7 +716,7 @@ async def get_datasets(
                         {num_subjects_expr.replace('num_subjects', 'd.num_subjects') if 'num_subjects' in ds_opt_cols else num_subjects_expr}
                         d.created_at,
                         d.updated_at,
-                        ({secondary_reuse_subquery}) AS secondary_reuse_count
+                        ({reuse_subquery}) AS reuse_count
                     FROM {table_name} d
                     WHERE 1=1
                 """
@@ -649,7 +751,7 @@ async def get_datasets(
 
                 sort_column_by_key = {
                     "published": "d.created_at",
-                    "papers": f"(COALESCE(d.papers, 0) + ({secondary_reuse_subquery}))",
+                    "papers": f"(COALESCE(d.papers, 0) + ({reuse_subquery}))",
                     "title": "d.title",
                     "id": "d.dataset_id",
                     "source": "d.source",
@@ -735,6 +837,8 @@ async def get_datasets(
                     "count": total
                 }
 
+    except HTTPException:
+        raise  # e.g. 400 for an invalid sort_by; the catch-all below would turn it into a 500
     except psycopg.Error as e:
         logger.exception("Database query error")
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
@@ -981,11 +1085,12 @@ async def get_dataset_detail(source: str, dataset_id: str):
                     cursor.execute("""
                         SELECT column_name FROM information_schema.columns
                         WHERE table_schema = 'public' AND table_name = 'papers'
-                          AND column_name IN ('journal', 'senior_author_country')
+                          AND column_name IN ('journal', 'senior_author_country', 'text_status')
                     """)
                     paper_opt_cols = {r["column_name"] for r in cursor.fetchall()}
                     p_journal = "p.journal," if "journal" in paper_opt_cols else "NULL AS journal,"
                     p_country = "p.senior_author_country," if "senior_author_country" in paper_opt_cols else "NULL AS senior_author_country,"
+                    c_text_status = "p_citing.text_status AS citing_text_status," if "text_status" in paper_opt_cols else "NULL::text AS citing_text_status,"
 
                     primary_papers_query = f"""
                         {_paper_mapping_ctes(cursor)}
@@ -1034,10 +1139,24 @@ async def get_dataset_detail(source: str, dataset_id: str):
                             {c_country}
                             p_citing.publication_date AS citing_publication_date,
                             p_citing.publication_year AS citing_publication_year,
+                            {c_text_status}
                             COALESCE(NULLIF(cc.classification, ''), cc.status, 'unclassified') AS classification_status,
                             cc.classification,
                             cc.confidence,
-                            cc.reasoning
+                            cc.reasoning,
+                            cc.status,
+                            cc.mode,
+                            cc.prompt_version,
+                            cc.classification_model,
+                            cc.reuse_type,
+                            cc.reuse_type_other,
+                            cc.reused_modalities,
+                            cc.reused_dandi_hosted,
+                            cc.same_lab,
+                            cc.same_lab_confidence,
+                            cc.source_archive,
+                            cc.evidence_quotes,
+                            cc.hallucinated_quote_count
                         FROM citation_edges ce
                         LEFT JOIN papers p_primary ON p_primary.paper_doi = ce.primary_paper_doi
                         LEFT JOIN papers p_citing ON p_citing.paper_doi = ce.citing_paper_doi
@@ -1047,7 +1166,8 @@ async def get_dataset_detail(source: str, dataset_id: str):
                          AND cc.primary_paper_doi = ce.primary_paper_doi
                          AND cc.citing_paper_doi = ce.citing_paper_doi
                         WHERE ce.source = %s AND ce.dataset_id = %s
-                        ORDER BY COALESCE(p_citing.publication_date, '') DESC,
+                        ORDER BY {CITATION_DISPLAY_ORDER_SQL},
+                                 COALESCE(p_citing.publication_date, '') DESC,
                                  ce.citing_paper_doi ASC
                         LIMIT 250;
                     """
@@ -1233,7 +1353,7 @@ async def get_paper_mapping_datasets(
         description=(
             "Only datasets with at least one citation edge whose bucket matches "
             "COALESCE(NULLIF(classification,''), status, 'unclassified') — same keys as summary by_classification "
-            "(e.g. SECONDARY, NEITHER, placeholder, classified, error)."
+            "(e.g. REUSE, MENTION, NEITHER, PRIMARY, placeholder, error, no_full_text)."
         ),
     ),
     sort_by: str = Query(
@@ -1457,6 +1577,11 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                 cursor.execute(primary_papers_query, [source, dataset_id, source, dataset_id, source, dataset_id])
                 primary_papers = [dict(row) for row in cursor.fetchall()]
 
+                c_text_status = (
+                    "p_citing.text_status AS citing_text_status,"
+                    if "text_status" in _table_columns(cursor, "papers")
+                    else "NULL::text AS citing_text_status,"
+                )
                 citations_query = f"""
                     {_paper_mapping_ctes(cursor)}
                     SELECT
@@ -1467,6 +1592,7 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                         p_citing.authors AS citing_authors,
                         p_citing.publication_date AS citing_publication_date_from_papers,
                         p_citing.publication_year AS citing_publication_year,
+                        {c_text_status}
                         ce.citing_publication_date,
                         ce.citation_source,
                         ce.matched_primary_paper_doi,
@@ -1476,11 +1602,22 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                         COALESCE(NULLIF(cc.classification, ''), cc.status, 'unclassified') AS classification_status,
                         cc.classification,
                         cc.same_lab,
+                        cc.same_lab_confidence,
                         cc.confidence,
                         cc.status,
                         cc.reasoning,
                         cc.classification_model,
-                        cc.classified_at
+                        cc.classified_at,
+                        cc.mode,
+                        cc.prompt_version,
+                        cc.reuse_type,
+                        cc.reuse_type_other,
+                        cc.reused_modalities,
+                        cc.reused_dandi_hosted,
+                        cc.source_archive,
+                        cc.evidence_quotes,
+                        cc.hallucinated_quote_count,
+                        cc.error_kind
                     FROM citation_edges ce
                     LEFT JOIN papers p_primary
                       ON p_primary.paper_doi = ce.primary_paper_doi
@@ -1492,7 +1629,8 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                      AND cc.primary_paper_doi = ce.primary_paper_doi
                      AND cc.citing_paper_doi = ce.citing_paper_doi
                     WHERE ce.source = %s AND ce.dataset_id = %s
-                    ORDER BY COALESCE(ce.citing_publication_date, p_citing.publication_date, '') DESC, ce.citing_paper_doi ASC
+                    ORDER BY {CITATION_DISPLAY_ORDER_SQL},
+                             COALESCE(ce.citing_publication_date, p_citing.publication_date, '') DESC, ce.citing_paper_doi ASC
                     LIMIT 250;
                 """
                 cursor.execute(citations_query, [source, dataset_id])
@@ -1544,6 +1682,11 @@ async def get_paper_mapping_citations(
                 cursor.execute(count_query, params)
                 total = cursor.fetchone()["total"]
 
+                c_text_status = (
+                    "p_citing.text_status AS citing_text_status,"
+                    if "text_status" in _table_columns(cursor, "papers")
+                    else "NULL::text AS citing_text_status,"
+                )
                 query = f"""
                     {_paper_mapping_ctes(cursor)}
                     SELECT
@@ -1553,6 +1696,7 @@ async def get_paper_mapping_citations(
                         p_primary.title AS primary_paper_title,
                         ce.citing_paper_doi,
                         p_citing.title AS citing_paper_title,
+                        {c_text_status}
                         ce.citing_publication_date,
                         ce.citation_source,
                         ce.citation_contexts,
@@ -1560,9 +1704,18 @@ async def get_paper_mapping_citations(
                         COALESCE(NULLIF(cc.classification, ''), cc.status, 'unclassified') AS classification_status,
                         cc.classification,
                         cc.same_lab,
+                        cc.same_lab_confidence,
                         cc.confidence,
                         cc.status,
-                        cc.reasoning
+                        cc.reasoning,
+                        cc.mode,
+                        cc.prompt_version,
+                        cc.reuse_type,
+                        cc.reuse_type_other,
+                        cc.reused_modalities,
+                        cc.source_archive,
+                        cc.evidence_quotes,
+                        cc.hallucinated_quote_count
                     FROM citation_edges ce
                     LEFT JOIN papers p_primary
                       ON p_primary.paper_doi = ce.primary_paper_doi
@@ -1574,7 +1727,8 @@ async def get_paper_mapping_citations(
                      AND cc.primary_paper_doi = ce.primary_paper_doi
                      AND cc.citing_paper_doi = ce.citing_paper_doi
                     {where_sql}
-                    ORDER BY COALESCE(ce.citing_publication_date, '') DESC, ce.citing_paper_doi ASC
+                    ORDER BY {CITATION_DISPLAY_ORDER_SQL},
+                             COALESCE(ce.citing_publication_date, '') DESC, ce.citing_paper_doi ASC
                     LIMIT %s OFFSET %s;
                 """
                 cursor.execute(query, params + [limit, offset])

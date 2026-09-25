@@ -1,0 +1,54 @@
+%% Paper reuse classification: pipeline overview.
+%% Rendered to reuse_classification_flow.png by render_mermaid.py (see README
+%% "Paper Reuse Classification"). Edit this file, re-render, commit both.
+%% The full-text source chain has its own diagram: fulltext_source_chain.mmd.
+%% --
+%% Layout note: the three stages are linked as subgraphs, not node-to-node.
+%% Mermaid drops a subgraph's own direction as soon as one of its nodes has an
+%% edge to the outside, and the columns collapse into one flat strip.
+flowchart LR
+    classDef store fill:#eef3ff,stroke:#3b5bdb,color:#1c2b6b
+    classDef llm fill:#fff4e6,stroke:#e8590c,color:#7a2e00
+    classDef ext fill:#f1f3f5,stroke:#868e96,color:#343a40
+    classDef ui fill:#e6fcf5,stroke:#0ca678,color:#05442e
+    classDef gate fill:#fff9db,stroke:#f08c00,color:#5c3d00
+
+    subgraph INGEST["1 · Ingestion — &lt;src&gt;_paper_mapping DAGs"]
+        direction TB
+        A1["Dataset metadata<br/>DANDI · OpenNeuro · CRCNS · SPARC"]:::ext
+        A1 --> A2["Resolve primary papers<br/>DOIs in relatedResource<br/>and description"]
+        A2 --> A3["Find citing papers<br/>OpenAlex citation graph"]:::ext
+        A3 --> A4["Fetch citing-paper full text<br/>paper-text-fetcher<br/>(see source-chain diagram)"]
+        A4 --> FS[/"Full-text JSON cache on disk<br/>airflow/output/…"/]:::store
+        A4 --> DB1[("papers<br/>text_status · cache key")]:::store
+        A3 --> DB2[("&lt;src&gt;_paper_citations<br/>dataset ↔ primary ↔ citing")]:::store
+    end
+
+    subgraph CLS["2 · paper_reuse_classification DAG (manual trigger)"]
+        direction TB
+        C0["create_classification_schema<br/>ADD COLUMN IF NOT EXISTS"]
+        C0 --> C1["fetch_unclassified_edges<br/>never classified · errors ·<br/>stale prompt_version or model"]
+        C1 --> C2["build_classification_batches<br/>all pairs of one citing paper<br/>stay in one batch"]
+        C2 --> C3["classify_and_persist_batch × N<br/>concurrency capped by an Airflow pool"]
+        C3 --> G1{"Full text<br/>on disk?"}:::gate
+        G1 -- "no" --> C4["Fetch on demand<br/>paper-text-fetcher"]:::ext
+        C4 --> G2{"Body<br/>retrieved?"}:::gate
+        G2 -- "no" --> C5["status = no_full_text<br/>retried on a later run"]:::store
+        G1 -- "yes" --> C6
+        G2 -- "yes" --> C6
+        C6["Prompt = whole paper<br/>+ dataset id, name, description<br/>OpenRouter → openai/gpt-5.6-luna<br/>reasoning = max · temperature 0"]:::llm
+        C6 --> C7["Label · confidence · reasoning · quotes<br/>every quote is verified<br/>against the paper text"]:::llm
+        C7 -- "transport /<br/>parse error" --> C8["status = error<br/>never overwrites a good row"]:::store
+        C7 --> C9[("&lt;src&gt;_paper_citation_classifications<br/>citing mode: REUSE · MENTION · NEITHER<br/>direct mode: PRIMARY · REUSE · NEITHER<br/>+ reuse_type · modalities · same_lab ·<br/>source_archive · evidence_quotes · prompt_version")]:::store
+        C9 --> C10["summarize_classification_run<br/>labels · cost · quote checks<br/>→ paper_reuse_classification_runs"]:::store
+    end
+
+    subgraph SERVE["3 · API and site"]
+        direction TB
+        D1["api/main.py<br/>reuse_count per dataset ·<br/>citations with labels and quotes"]:::ui
+        D1 --> D2["Dataset detail page<br/>AI-identified reuse papers<br/>with evidence quotes"]:::ui
+        D1 --> D3["Paper-mapping dashboard<br/>label breakdown and filters"]:::ui
+    end
+
+    INGEST -- "papers, citations,<br/>cached text" --> CLS
+    CLS -- "classification rows" --> SERVE

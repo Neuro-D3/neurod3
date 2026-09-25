@@ -1,0 +1,41 @@
+%% Full-text source chain inside paper-text-fetcher, as called for one DOI by
+%% utils/paper_fulltext.py. Order verified against the pinned package commit.
+%% Rendered to fulltext_source_chain.png by render_mermaid.py.
+flowchart TB
+    classDef ext fill:#f1f3f5,stroke:#868e96,color:#343a40
+    classDef gate fill:#fff9db,stroke:#f08c00,color:#5c3d00
+    classDef ok fill:#e6fcf5,stroke:#0ca678,color:#05442e
+    classDef no fill:#fff5f5,stroke:#e03131,color:#6b0000
+    classDef cache fill:#eef3ff,stroke:#3b5bdb,color:#1c2b6b
+
+    IN["DOI"] --> K{"Already in the<br/>JSON cache?"}:::gate
+    K -- "yes · full text never expires,<br/>metadata-only retried after 7 days" --> OUT
+    K -- "no" --> P{"bioRxiv / medRxiv<br/>preprint (10.1101/…)?"}:::gate
+
+    P -- "yes" --> B["Headless Chromium (Playwright)<br/>renders the preprint page"]:::ext
+    P -- "no" --> E1["Europe PMC · JATS XML"]:::ext
+    B -- "no body" --> E1
+    E1 -- "no body" --> E2["NCBI PMC · efetch XML"]:::ext
+    E2 -- "no body" --> E3["Elsevier ScienceDirect<br/>10.1016/ DOIs only<br/>optional ELSEVIER_API_KEY"]:::ext
+    E3 -- "no body" --> E4["Unpaywall<br/>open-access PDF → text via PyMuPDF<br/>needs PAPER_FETCHER_CONTACT_EMAIL"]:::ext
+    E4 -- "no body" --> E5["Publisher HTML<br/>follow doi.org, scrape the article"]:::ext
+    E5 -- "no body" --> E6["PMC page via Chromium<br/>last resort when a PMCID exists"]:::ext
+
+    X["CrossRef<br/>title · abstract · reference list<br/>always fetched, never counts as a body"]:::ext
+    E1 -.-> X
+    B -.-> X
+
+    E6 --> V{"Article body?<br/>≥ 6,000 chars · no paywall or<br/>bot-check text · JATS has &lt;body&gt;"}:::gate
+    B -- "body" --> V
+    E1 -- "body" --> V
+    E2 -- "body" --> V
+    E3 -- "body" --> V
+    E4 -- "body" --> V
+    E5 -- "body" --> V
+    V -- "yes" --> S1["status = full_text<br/>→ classifier may run"]:::ok
+    V -- "no, CrossRef answered" --> S2["status = metadata_only<br/>→ not classified"]:::no
+    V -- "no, nothing at all" --> S3["status = unavailable<br/>→ not classified"]:::no
+    S1 --> C[("cache · one JSON per DOI<br/>PAPER_FETCHER_CACHE_DIR")]:::cache
+    S2 --> C
+    C --> OUT["text · source · status ·<br/>has_full_text · reason · from_cache"]
+    S3 --> OUT

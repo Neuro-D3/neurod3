@@ -22,11 +22,26 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     # OpenRouter API key for LLM-based paper reuse classification DAG.
     OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    # paper-text-fetcher settings (utils/paper_fulltext.py). See .env.example.
+    PAPER_FETCHER_CONTACT_EMAIL: ${PAPER_FETCHER_CONTACT_EMAIL:-}
+    ELSEVIER_API_KEY: ${ELSEVIER_API_KEY:-}
+    PAPER_FETCHER_CACHE_DIR: ${PAPER_FETCHER_CACHE_DIR:-/opt/airflow/output/paper_text_fetcher}
+    # OpenAlex API key (free). Without one, requests draw on a small daily budget
+    # shared by every caller on this IP and stop at midnight UTC once spent.
+    OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
+    # Paper-mapping artifacts + full-text cache live OUTSIDE the DAG folder: the
+    # DAG processor walks everything under dags/, and thousands of cached papers
+    # on a bind mount stall it. Same layout as deploy/gcp/staging.
+    DANDI_PAPER_MAPPING_OUTPUT_DIR: ${DANDI_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/dandi_paper_mapping}
+    OPENNEURO_PAPER_MAPPING_OUTPUT_DIR: ${OPENNEURO_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/openneuro_paper_mapping}
+    CRCNS_PAPER_MAPPING_OUTPUT_DIR: ${CRCNS_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/crcns_paper_mapping}
+    SPARC_PAPER_MAPPING_OUTPUT_DIR: ${SPARC_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/sparc_paper_mapping}
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
     - ./airflow/config:/opt/airflow/config
+    - ./airflow/output:/opt/airflow/output
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -176,10 +191,16 @@ services:
         echo
         echo "Change ownership of files in /opt/airflow to ${AIRFLOW_UID}:0"
         echo
-        chown -R "${AIRFLOW_UID}:0" /opt/airflow/
+        # Everything except the paper cache mount (output/): thousands of files whose
+        # owner is already right, and walking them stalls `compose up` for minutes.
+        find /opt/airflow -mindepth 1 -maxdepth 1 ! -name output -exec chown -R "${AIRFLOW_UID}:0" {} +
         echo
         echo "Change ownership of files in shared volumes to ${AIRFLOW_UID}:0"
         echo
+        # The paper cache holds thousands of files; own the directory, not every file
+        # (its contents are created by the airflow user anyway). A recursive chown
+        # here stalls every `compose up` for minutes on a bind mount.
+        mkdir -p /opt/airflow/output && chown "${AIRFLOW_UID}:0" /opt/airflow/output
         chown -v -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins,config}
         echo
         echo "Files in shared volumes:"
@@ -187,17 +208,29 @@ services:
         ls -la /opt/airflow/{logs,dags,plugins,config}
 
         echo
-        echo "Ensuring Airflow pool dandi_paper_api_pool exists:"
+        echo "Ensuring Airflow pool paper_mapping_api_pool exists:"
         echo
-        DANDI_PAPER_API_POOL_SLOTS="$${DANDI_PAPER_API_POOL_SLOTS:-2}"
+        PAPER_MAPPING_API_POOL_SLOTS="$${PAPER_MAPPING_API_POOL_SLOTS:-2}"
         pool_ok=0
         for i in {1..30}; do
-          /entrypoint airflow pools set dandi_paper_api_pool "$$DANDI_PAPER_API_POOL_SLOTS" "Limit DANDI paper mapping API concurrency" && pool_ok=1 && break
+          /entrypoint airflow pools set paper_mapping_api_pool "$$PAPER_MAPPING_API_POOL_SLOTS" "Limit paper-mapping API concurrency across all archives" && pool_ok=1 && break
           echo "Pool creation failed; retrying in 2s ($$i/30)..."
           sleep 2
         done
         if [[ "$$pool_ok" -ne 1 ]]; then
-          echo "WARNING: Could not ensure pool dandi_paper_api_pool after retries; continuing anyway."
+          echo "WARNING: Could not ensure pool paper_mapping_api_pool after retries; continuing anyway."
+        fi
+
+        echo "Ensuring Airflow pool paper_reuse_classification_pool exists:"
+        PAPER_REUSE_CLASSIFICATION_POOL_SLOTS="$${PAPER_REUSE_CLASSIFICATION_POOL_SLOTS:-2}"
+        pool_ok=0
+        for i in {1..30}; do
+          /entrypoint airflow pools set paper_reuse_classification_pool "$$PAPER_REUSE_CLASSIFICATION_POOL_SLOTS" "Limit concurrent whole-paper LLM classification batches" && pool_ok=1 && break
+          echo "Pool creation failed; retrying in 2s ($$i/30)..."
+          sleep 2
+        done
+        if [[ "$$pool_ok" -ne 1 ]]; then
+          echo "WARNING: Could not ensure pool paper_reuse_classification_pool after retries; continuing anyway."
         fi
     environment:
       <<: *airflow-common-env
@@ -206,7 +239,8 @@ services:
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
       _PIP_ADDITIONAL_REQUIREMENTS: ''
-      DANDI_PAPER_API_POOL_SLOTS: ${DANDI_PAPER_API_POOL_SLOTS:-2}
+      PAPER_MAPPING_API_POOL_SLOTS: ${PAPER_MAPPING_API_POOL_SLOTS:-2}
+      PAPER_REUSE_CLASSIFICATION_POOL_SLOTS: ${PAPER_REUSE_CLASSIFICATION_POOL_SLOTS:-2}
     user: "0:0"
 
   pgadmin:

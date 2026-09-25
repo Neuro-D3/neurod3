@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   datasetDetailPath,
@@ -11,8 +11,22 @@ import {
   PaperMappingDatasetRow,
   PaperMappingSummary,
 } from '../services/api';
+import {
+  ClassificationProgress,
+  classificationProgress,
+  confidenceShort,
+  modalityLabel,
+  primaryQuote,
+  reuseTypeLabel,
+  reusedModalities,
+  statusBadgeClass,
+  statusLabel,
+} from '../utils/classification';
 
 type SourceFilter = 'all' | 'CRCNS' | 'DANDI' | 'OpenNeuro' | 'SPARC';
+
+/** Matches `animate-panel-out` in tailwind.config.js; the panel unmounts after it. */
+const PANEL_CLOSE_MS = 220;
 type SortKey =
   | 'mapped_papers'
   | 'citation_edges'
@@ -41,25 +55,6 @@ function truncate(text?: string | null, max = 160): string {
   return `${text.slice(0, max - 1)}…`;
 }
 
-function statusBadgeClass(status?: string | null): string {
-  const normalized = (status || '').toLowerCase();
-  if (normalized === 'secondary') return 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30';
-  if (normalized === 'primary') return 'bg-blue-500/15 text-blue-700 ring-blue-500/30';
-  if (normalized === 'neither') return 'bg-slate-500/10 text-slate-600 ring-slate-400/30';
-  if (normalized === 'unknown') return 'bg-amber-500/15 text-amber-700 ring-amber-500/30';
-  if (normalized.includes('reuse')) return 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30';
-  if (normalized.includes('mention')) return 'bg-sky-500/15 text-sky-700 ring-sky-500/30';
-  if (normalized.includes('placeholder')) return 'bg-amber-500/15 text-amber-700 ring-amber-500/30';
-  return 'bg-slate-500/10 text-slate-700 ring-slate-400/30';
-}
-
-function confidenceLabel(value?: number | null): { text: string; color: string } {
-  if (value === 3) return { text: 'High', color: 'text-emerald-600' };
-  if (value === 2) return { text: 'Medium', color: 'text-amber-600' };
-  if (value === 1) return { text: 'Low', color: 'text-red-500' };
-  return { text: '—', color: 'text-slate-400' };
-}
-
 const PAGE_SIZE = 20;
 
 export default function PaperMappingDashboard() {
@@ -74,8 +69,13 @@ export default function PaperMappingDashboard() {
   const [datasets, setDatasets] = useState<PaperMappingDatasetRow[]>([]);
   const [datasetCount, setDatasetCount] = useState(0);
   const [selectedDataset, setSelectedDataset] = useState<PaperMappingDatasetRow | null>(null);
+  // The drill-down panel slides in when it mounts (CSS animation) and slides
+  // out on close; `selectedDataset` stays set until the slide-out finishes.
+  const [panelClosing, setPanelClosing] = useState(false);
+  const closeTimer = useRef<number | null>(null);
   const [datasetDetail, setDatasetDetail] = useState<PaperMappingDatasetDetail | null>(null);
   const [citationsPreview, setCitationsPreview] = useState<PaperMappingCitation[]>([]);
+  const [citationsTotal, setCitationsTotal] = useState(0);
 
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -88,9 +88,32 @@ export default function PaperMappingDashboard() {
     setPage(1);
   }, [sourceFilter, search, classificationBucketFilter]);
 
+  const openPanel = useCallback((dataset: PaperMappingDatasetRow) => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+    setPanelClosing(false);
+    setSelectedDataset(dataset);
+  }, []);
+
+  const closePanel = useCallback(() => {
+    setPanelClosing(true);
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => {
+      setSelectedDataset(null);
+      setPanelClosing(false);
+      closeTimer.current = null;
+    }, PANEL_CLOSE_MS);
+  }, []);
+
+  useEffect(() => () => {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+  }, []);
+
   useEffect(() => {
-    setSelectedDataset(null);
-  }, [classificationBucketFilter]);
+    closePanel();
+  }, [classificationBucketFilter, closePanel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -149,6 +172,7 @@ export default function PaperMappingDashboard() {
         if (cancelled) return;
         setDatasetDetail(detailResp);
         setCitationsPreview(citationsResp.citations);
+        setCitationsTotal(citationsResp.count ?? citationsResp.citations.length);
       } catch (err: any) {
         if (cancelled) return;
         setError(err?.message || String(err));
@@ -161,6 +185,15 @@ export default function PaperMappingDashboard() {
       cancelled = true;
     };
   }, [selectedDataset]);
+
+  useEffect(() => {
+    if (!selectedDataset || panelClosing) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closePanel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedDataset, panelClosing, closePanel]);
 
   const classificationBreakdown = useMemo(() => {
     if (!summary) return [];
@@ -182,7 +215,7 @@ export default function PaperMappingDashboard() {
         <div className="mb-6">
           <h1 className="text-3xl font-semibold tracking-tight">Internal Paper Mapping Dashboard</h1>
           <p className="mt-2 max-w-3xl text-sm text-slate-600">
-            Review mapped primary papers, citation enrichment coverage, and placeholder classification state across DANDI, OpenNeuro, CRCNS, and SPARC.
+            Review mapped primary papers, citation enrichment coverage, and whole-paper reuse classifications (REUSE / MENTION / NEITHER, with verified quotes) across DANDI, OpenNeuro, CRCNS, and SPARC.
           </p>
         </div>
 
@@ -217,16 +250,21 @@ export default function PaperMappingDashboard() {
           <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
         ) : null}
 
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-4 md:grid-cols-3">
           <SummaryCard title="Datasets With Mapped Papers" value={formatNumber(summary?.summary.datasets_with_mapped_papers)} />
           <SummaryCard title="Distinct Primary Papers" value={formatNumber(summary?.summary.distinct_mapped_primary_papers)} />
           <SummaryCard title="Citation Edges" value={formatNumber(summary?.summary.citation_edges)} />
-          <SummaryCard title="Unclassified Edges" value={formatNumber((summary?.summary.citation_edges ?? 0) - (summary?.summary.classified_edges ?? 0))} />
-          <SummaryCard title="Classified Edges" value={formatNumber(summary?.summary.classified_edges)} />
         </div>
 
+        {summary ? (
+          <ClassificationDistribution
+            progress={classificationProgress(summary.summary.citation_edges, summary.by_classification)}
+          />
+        ) : null}
+
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
-          <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+          {/* min-w-0: on phones the table scrolls inside this card instead of widening the page. */}
+          <section className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <div>
                 <h2 className="text-base font-semibold">Mapped Datasets</h2>
@@ -288,7 +326,7 @@ export default function PaperMappingDashboard() {
                       <tr
                         key={`${dataset.source}:${dataset.dataset_id}`}
                         className={`cursor-pointer transition hover:bg-slate-50 ${isSelected ? 'bg-slate-50' : ''}`}
-                        onClick={() => setSelectedDataset(dataset)}
+                        onClick={() => openPanel(dataset)}
                       >
                         <td className="px-4 py-3 align-top">
                           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">{dataset.source}</span>
@@ -346,8 +384,11 @@ export default function PaperMappingDashboard() {
             </div>
           </section>
 
-          <aside className="space-y-6">
-            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          {/* Phones: `contents` lets the Snapshot and Source Breakdown join the single
+              column separately, so the Snapshot (the filter) can sit above the table.
+              Desktop: an ordinary sidebar. */}
+          <aside className="contents lg:block lg:space-y-6">
+            <section className="order-first rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:order-none">
               <h2 className="text-base font-semibold">Classification Snapshot</h2>
               <p className="mt-1 text-xs text-slate-500">
                 Click a row to show only datasets that have at least one edge in that bucket. Click again to clear.
@@ -369,13 +410,16 @@ export default function PaperMappingDashboard() {
                             : 'bg-slate-50 hover:bg-slate-100'
                         }`}
                       >
-                        <span className="capitalize text-slate-700">{bucket.replace(/_/g, ' ')}</span>
+                        <span className="flex items-center gap-2 text-slate-700">
+                          <span className={`inline-block h-2.5 w-2.5 rounded-full ring-1 ${statusBadgeClass(bucket)}`} aria-hidden="true" />
+                          {statusLabel(bucket)}
+                        </span>
                         <span className="font-medium text-slate-900">{formatNumber(count)}</span>
                       </button>
                     );
                   })
                 ) : (
-                  <p className="text-slate-500">No classification rows yet. Placeholder schema is ready for the future LLM DAG.</p>
+                  <p className="text-slate-500">No classification rows yet. Run the paper_reuse_classification DAG after paper mapping.</p>
                 )}
               </div>
             </section>
@@ -403,21 +447,36 @@ export default function PaperMappingDashboard() {
           </aside>
         </div>
 
-        <section className="mt-6 rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-4 py-3">
-            <h2 className="text-base font-semibold">Dataset Drill-down</h2>
-            <p className="text-sm text-slate-500">
-              {selectedDataset
-                ? `${selectedDataset.source} ${selectedDataset.dataset_id}`
-                : 'Select a mapped dataset to inspect primary papers, citing papers, and extracted contexts.'}
-            </p>
+        {selectedDataset ? (
+        <aside
+          role="dialog"
+          aria-modal="false"
+          aria-label={`Dataset drill-down: ${selectedDataset.source} ${selectedDataset.dataset_id}`}
+          className={`fixed inset-y-0 right-0 z-40 flex w-full max-w-3xl flex-col border-l border-slate-300 bg-slate-50 shadow-2xl motion-reduce:animate-none ${
+            panelClosing ? 'animate-panel-out' : 'animate-panel-in'
+          }`}
+        >
+          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
+            <div>
+              <h2 className="text-base font-semibold">Dataset Drill-down</h2>
+              <p className="text-sm text-slate-500">
+                {selectedDataset.source} {selectedDataset.dataset_id}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={closePanel}
+              aria-label="Close drill-down"
+              className="rounded-lg px-2 py-1 text-lg leading-none text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+            >
+              ✕
+            </button>
           </div>
-          <div className="p-4">
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
             {detailLoading ? <p className="text-sm text-slate-500">Loading dataset detail…</p> : null}
-            {!detailLoading && !selectedDataset ? <p className="text-sm text-slate-500">No dataset selected.</p> : null}
             {!detailLoading && datasetDetail ? (
-              <div className="space-y-6">
-                <div className="rounded-xl bg-slate-50 p-4">
+              <div className="flex min-h-0 flex-1 flex-col gap-6">
+                <div className="shrink-0 rounded-xl border border-slate-200 bg-white p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">{datasetDetail.dataset.source}</div>
@@ -444,7 +503,7 @@ export default function PaperMappingDashboard() {
                       </a>
                     ) : null}
                   </div>
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <MiniStat label="Mapped primary papers" value={formatNumber(datasetDetail.dataset.mapped_papers_count)} />
                     <MiniStat label="Citation edges" value={formatNumber(datasetDetail.dataset.citation_edges_count)} />
                     <MiniStat label="Contexts extracted" value={formatNumber(datasetDetail.dataset.contexts_extracted_count)} />
@@ -452,12 +511,15 @@ export default function PaperMappingDashboard() {
                   </div>
                 </div>
 
-                <div className="grid gap-6 xl:grid-cols-2">
-                  <section>
-                    <h4 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Primary Papers</h4>
-                    <div className="space-y-3">
+                <div className="flex min-h-0 flex-1 flex-col gap-6">
+                  <section className="shrink-0">
+                    <h4 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+                      Primary Papers <span className="font-normal normal-case text-slate-400">({formatNumber(datasetDetail.primary_papers.length)})</span>
+                    </h4>
+                    {/* Own scroller, so a long list does not push Citing Papers out of view. */}
+                    <div className="max-h-[20vh] space-y-3 overflow-y-auto overscroll-contain pr-1">
                       {datasetDetail.primary_papers.map((paper) => (
-                        <div key={paper.paper_doi} className="rounded-xl border border-slate-200 p-4">
+                        <div key={paper.paper_doi} className="rounded-xl border border-slate-200 bg-white p-4">
                           <div className="flex flex-wrap items-start justify-between gap-2">
                             <div>
                               <div className="font-medium text-slate-900">{paper.paper_title || paper.paper_doi}</div>
@@ -483,46 +545,99 @@ export default function PaperMappingDashboard() {
                     </div>
                   </section>
 
-                  <section>
-                    <h4 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Citing Papers</h4>
-                    <div className="space-y-3">
+                  {/* Fills the rest of the panel and scrolls on its own, like Primary Papers. */}
+                  <section className="flex min-h-[14rem] flex-1 flex-col">
+                    <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+                      Citing Papers <span className="font-normal normal-case text-slate-400">({formatNumber(citationsTotal)})</span>
+                    </h4>
+                    <p className="mb-3 mt-1 text-xs text-slate-500">
+                      Showing {formatNumber(citationsPreview.length)} of {formatNumber(citationsTotal)}, classified papers first
+                      (Reuse, then other labels), then newest.
+                    </p>
+                    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
                       {citationsPreview.map((citation) => {
                         const firstContext = citation.citation_contexts?.[0]?.context;
-                        const conf = confidenceLabel(citation.confidence);
+                        const conf = confidenceShort(citation.confidence);
+                        const typeLabel = reuseTypeLabel(citation.reuse_type, citation.reuse_type_other);
+                        const modalities = reusedModalities(citation.reused_modalities);
+                        const quote = primaryQuote(citation.evidence_quotes);
+                        const hallucinated = (citation.hallucinated_quote_count ?? 0) > 0;
                         return (
-                          <div key={`${citation.primary_paper_doi}:${citation.citing_paper_doi}`} className="rounded-xl border border-slate-200 p-4">
+                          <div key={`${citation.primary_paper_doi}:${citation.citing_paper_doi}`} className="rounded-xl border border-slate-200 bg-white p-4">
                             <div className="flex flex-wrap items-start justify-between gap-2">
                               <div>
                                 <div className="font-medium text-slate-900">{citation.citing_paper_title || citation.citing_paper_doi}</div>
                                 <div className="mt-1 font-mono text-xs text-slate-500">{citation.citing_paper_doi}</div>
                               </div>
                               <div className="flex items-center gap-2">
-                                <span className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${statusBadgeClass(citation.classification_status)}`}>
-                                  {citation.classification_status || 'unclassified'}
+                                <span
+                                  className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${statusBadgeClass(citation.classification_status)}`}
+                                  title={citation.mode ? `${citation.mode} mode, prompt v${citation.prompt_version ?? '?'}` : undefined}
+                                >
+                                  {statusLabel(citation.classification_status)}
                                 </span>
-                                {citation.confidence != null && (
+                                {citation.confidence != null && citation.confidence > 0 && (
                                   <span className={`text-xs font-medium ${conf.color}`}>
                                     {conf.text}
                                   </span>
                                 )}
                               </div>
                             </div>
+                            {(typeLabel || modalities.length > 0 || citation.same_lab === true || citation.source_archive) && (
+                              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                                {typeLabel && (
+                                  <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-violet-700 ring-1 ring-violet-200">
+                                    {typeLabel}
+                                  </span>
+                                )}
+                                {modalities.map((m) => (
+                                  <span key={m} className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-blue-100">
+                                    {modalityLabel(m)}
+                                  </span>
+                                ))}
+                                {citation.same_lab === true && (
+                                  <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-200">
+                                    Same lab
+                                  </span>
+                                )}
+                                {citation.source_archive && (
+                                  <span className="text-[11px] text-slate-400">via {citation.source_archive}</span>
+                                )}
+                              </div>
+                            )}
                             <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-slate-600">
                               <span>Primary paper</span>
                               <span className="text-right">{truncate(citation.primary_paper_title || citation.primary_paper_doi, 36)}</span>
                               <span>Citation date</span>
                               <span className="text-right">{formatDate(citation.citing_publication_date || citation.citing_publication_date_from_papers)}</span>
+                              <span>Full text</span>
+                              <span className="text-right">{citation.citing_text_status ? statusLabel(citation.citing_text_status) : '—'}</span>
                               <span>Contexts found</span>
                               <span className="text-right">{formatNumber(citation.citation_contexts?.length || 0)}</span>
                             </div>
+                            {quote && (
+                              <blockquote
+                                className="mt-3 border-l-2 border-slate-300 pl-3 text-sm text-slate-700"
+                                title={quote.match_type ? `Verified against the paper text (${quote.match_type})` : undefined}
+                              >
+                                “{truncate(quote.quote, 320)}”
+                              </blockquote>
+                            )}
                             {citation.reasoning && (
                               <div className="mt-2 text-xs text-slate-500 italic">
-                                {truncate(citation.reasoning, 200)}
+                                {truncate(citation.reasoning, 240)}
                               </div>
                             )}
-                            <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
-                              {firstContext ? truncate(firstContext, 280) : 'No extracted citation context stored yet.'}
-                            </div>
+                            {hallucinated && (
+                              <div className="mt-1 text-xs text-rose-600">
+                                {citation.hallucinated_quote_count} quote{citation.hallucinated_quote_count === 1 ? '' : 's'} could not be matched word for word
+                              </div>
+                            )}
+                            {!quote && (
+                              <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+                                {firstContext ? truncate(firstContext, 280) : 'No extracted citation context stored yet.'}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -533,9 +648,88 @@ export default function PaperMappingDashboard() {
               </div>
             ) : null}
           </div>
-        </section>
+        </aside>
+        ) : null}
       </div>
     </div>
+  );
+}
+
+function percent(share: number): string {
+  if (share <= 0) return '0%';
+  if (share < 0.001) return '<0.1%';
+  return `${(share * 100).toFixed(share < 0.1 ? 1 : 0)}%`;
+}
+
+/**
+ * Two stacked bars: how many citation edges have been attempted at all, and
+ * how the attempted ones split by outcome. One bar over every edge would hide
+ * the outcomes while most edges are still unclassified.
+ */
+function ClassificationDistribution({ progress }: { progress: ClassificationProgress }) {
+  const [hovered, setHovered] = useState<string | null>(null);
+  const { total, attempted, notYet, attemptedShare, outcomes } = progress;
+  const segment = (key: string, share: number, fill: { color?: string; className?: string }, tip: string) => (
+    <div
+      key={key}
+      role="img"
+      aria-label={tip}
+      title={tip}
+      onMouseEnter={() => setHovered(key)}
+      onMouseLeave={() => setHovered(null)}
+      className={`h-full transition-opacity first:rounded-l last:rounded-r ${fill.className ?? ''}`}
+      style={{
+        width: `${share * 100}%`,
+        minWidth: share > 0 ? 3 : 0,
+        backgroundColor: fill.color,
+        opacity: hovered && hovered !== key ? 0.45 : 1,
+      }}
+    />
+  );
+
+  return (
+    <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-base font-semibold">Classification Progress</h2>
+        <p className="text-sm text-slate-500">
+          <span className="font-semibold text-slate-900">{formatNumber(attempted)}</span> of {formatNumber(total)} citation
+          edges attempted ({percent(attemptedShare)}) · {formatNumber(notYet)} not yet classified
+        </p>
+      </div>
+
+      <div className="mt-3 flex h-3 w-full gap-[2px] overflow-hidden rounded bg-white" aria-label="Attempted vs not yet classified">
+        {segment('attempted', attemptedShare, { color: '#334155' }, `Attempted: ${formatNumber(attempted)} (${percent(attemptedShare)})`)}
+        {segment('not_yet', 1 - attemptedShare, { color: '#e2e8f0' }, `Not yet classified: ${formatNumber(notYet)} (${percent(1 - attemptedShare)})`)}
+      </div>
+
+      <h3 className="mt-5 text-sm font-medium text-slate-700">Outcome of attempted edges</h3>
+      {outcomes.length ? (
+        <>
+          <div className="mt-2 flex h-6 w-full gap-[2px] overflow-hidden rounded" aria-label="Outcome of attempted edges">
+            {outcomes.map((o) =>
+              segment(o.key, o.share, { className: `ring-1 ring-inset ${o.className}` }, `${o.label}: ${formatNumber(o.count)} (${percent(o.share)} of attempted)`),
+            )}
+          </div>
+          <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+            {outcomes.map((o) => (
+              <li
+                key={o.key}
+                className="flex items-center gap-2"
+                onMouseEnter={() => setHovered(o.key)}
+                onMouseLeave={() => setHovered(null)}
+              >
+                <span className={`inline-block h-2.5 w-2.5 rounded-full ring-1 ${o.className}`} aria-hidden="true" />
+                <span className="text-slate-700">{o.label}</span>
+                <span className="font-semibold text-slate-900">{formatNumber(o.count)}</span>
+                <span className="text-slate-500">{percent(o.share)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="mt-2 text-sm text-slate-500">Nothing classified yet. Run the paper_reuse_classification DAG.</p>
+      )}
+    </section>
   );
 }
 

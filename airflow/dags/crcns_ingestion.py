@@ -14,6 +14,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import psycopg2
 import requests
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
@@ -28,7 +29,55 @@ USER_AGENT = "D3-CRCNS-Ingestion/1.0"
 
 # Matches the friendly CRCNS code in a redirected URL, e.g.
 # https://crcns.org/data-sets/vc/pvc-1 -> "pvc-1"
-_CRCNS_CODE_RE = re.compile(r"crcns\.org/(?:data-sets/\w+|[\w]+)/([\w]+-\d+)")
+# Category and code may both contain hyphens (data-sets/motor-cortex/alm-1,
+# data-sets/challenges/ch-epfl-2009); `\w` alone missed them and left those
+# datasets keyed by DOI.
+_CRCNS_CODE_RE = re.compile(r"crcns\.org/(?:data-sets/[\w-]+|[\w-]+)/([a-z][\w-]*?-\d+)(?:[/?#]|$)", re.I)
+
+# Tables that key rows by a CRCNS dataset id: (table, column). The paper tables
+# only exist once crcns_paper_mapping has run.
+_CRCNS_ID_TABLES = (
+    ("crcns_dataset", "dataset_id"),
+    ("crcns_paper_map", "crcns_id"),
+    ("crcns_paper_citations", "crcns_id"),
+    ("crcns_paper_citation_classifications", "crcns_id"),
+)
+
+
+def _rekey_doi_rows(cursor, doi: str, code: str) -> int:
+    """
+    Move a dataset stored under its DOI to its CRCNS code, in every table.
+
+    Datasets whose code could not be parsed were stored under their DOI; once
+    the code resolves, the upsert would otherwise add a second row next to the
+    old one and leave the paper mappings on the old id. No-op when nothing is
+    keyed by the DOI. Skipped (with a warning) when the code is already taken,
+    in crcns_dataset or in any paper table, since merging two histories needs a
+    human decision; the savepoint keeps that from aborting the ingestion run.
+    """
+    cursor.execute("SELECT 1 FROM crcns_dataset WHERE dataset_id = %s", (doi,))
+    if not cursor.fetchone():
+        return 0
+    cursor.execute("SELECT 1 FROM crcns_dataset WHERE dataset_id = %s", (code,))
+    if cursor.fetchone():
+        logger.warning("Both %s and %s exist in crcns_dataset; not re-keying, merge by hand", doi, code)
+        return 0
+    moved = 0
+    cursor.execute("SAVEPOINT crcns_rekey")
+    try:
+        for table, column in _CRCNS_ID_TABLES:
+            cursor.execute("SELECT to_regclass(%s) IS NOT NULL", (f"public.{table}",))
+            if not cursor.fetchone()[0]:
+                continue
+            cursor.execute(f"UPDATE {table} SET {column} = %s WHERE {column} = %s", (code, doi))
+            moved += cursor.rowcount
+    except psycopg2.IntegrityError as e:
+        cursor.execute("ROLLBACK TO SAVEPOINT crcns_rekey")
+        logger.warning("Rows for %s already exist under %s (%s); not re-keying, merge by hand", doi, code, e)
+        return 0
+    cursor.execute("RELEASE SAVEPOINT crcns_rekey")
+    logger.info("Re-keyed CRCNS dataset %s -> %s (%d rows)", doi, code, moved)
+    return moved
 
 default_args = {
     'owner': 'neurod3',
@@ -406,6 +455,11 @@ def insert_crcns_datasets(**context):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
+                for dataset in datasets:
+                    doi = (dataset.get("doi") or "").strip()
+                    code = dataset.get("dataset_id")
+                    if doi and code and code != doi:
+                        _rekey_doi_rows(cursor, doi, code)
                 for dataset in datasets:
                     row = dict(dataset)
                     authors_val = row.get("authors")

@@ -110,6 +110,13 @@ variable "openrouter_api_key" {
   sensitive   = true
 }
 
+variable "openalex_api_key" {
+  description = "OpenAlex API key (free: https://help.openalex.org/api/authentication/). Without it OpenAlex requests share a small per-IP daily budget and stop at midnight UTC once spent. Leave as the placeholder for the first apply, then add the real value as a new secret version; the VM startup script skips the placeholder."
+  type        = string
+  default     = "REPLACE_ME"
+  sensitive   = true
+}
+
 variable "airflow_fernet_key" {
   description = "Airflow Fernet key. Must be a real key from cryptography.fernet.Fernet.generate_key(); placeholder is rejected by Airflow at runtime, so set the real value before the VM boots Airflow."
   type        = string

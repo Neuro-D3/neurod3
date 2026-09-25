@@ -19,7 +19,7 @@ import threading
 import time
 import warnings
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import requests
 
@@ -27,8 +27,34 @@ logger = logging.getLogger(__name__)
 
 
 # DOI pattern adapted from ../find_reuse/dandi_primary_papers.py.
-# Matches `10.xxxx/...` and stops at whitespace or common punctuation that typically terminates a DOI.
-DOI_REGEX = re.compile(r'10\.\d{4,}/[^\s\]\)>"\',;]+', flags=re.IGNORECASE)
+# Matches `10.xxxx/...` and stops at whitespace or common punctuation that
+# typically terminates a DOI, including `<` so a DOI pasted into HTML
+# (`10.1038/nature14178</a>`) does not carry the tag along.
+DOI_REGEX = re.compile(r'10\.\d{4,}/[^\s\]\)<>"\',;]+', flags=re.IGNORECASE)
+
+# Suffixes that follow a DOI in free text but are not part of it: Zenodo badge
+# images, and rendered-page extensions.
+_DOI_JUNK_SUFFIX = re.compile(r"\.(?:svg|png|jpe?g|gif|html?)$", flags=re.IGNORECASE)
+
+# Preprint servers whose DOIs are quoted with a version suffix (`...v2`) that
+# the registries do not know. 10.1101 is bioRxiv/medRxiv; 10.64898 is bioRxiv's
+# prefix for deposits from 2026 on.
+_PREPRINT_PREFIXES = ("10.1101/", "10.64898/")
+
+
+def strip_nul(text: Optional[str]) -> Optional[str]:
+    """
+    Remove NUL characters from paper text.
+
+    PDF and HTML extraction (paper-text-fetcher) can leave U+0000 in the text.
+    PostgreSQL rejects it in text and jsonb columns ("unsupported Unicode
+    escape sequence"), so anything headed for citation_contexts or a prompt
+    goes through here first. Other control characters are left alone; they
+    are legal and harmless.
+    """
+    if not isinstance(text, str) or "\x00" not in text:
+        return text
+    return text.replace("\x00", "")
 
 
 def normalize_doi(doi: str) -> Optional[str]:
@@ -43,16 +69,22 @@ def normalize_doi(doi: str) -> Optional[str]:
             d = d[len(prefix) :].strip()
     if "doi.org/" in d:
         d = d.split("doi.org/")[-1].strip()
+    # A DOI pasted into HTML or markdown drags the closing tag / entity along
+    # (`10.1038/nature14178</a>`, `10.3389/fphys.2016.00425<br>`, `...&lt;`).
+    for cut in ("<", "&lt;", "&gt;", "&amp;"):
+        if cut in d:
+            d = d.split(cut, 1)[0]
+    d = _DOI_JUNK_SUFFIX.sub("", d)
     # Trim trailing punctuation
-    d = d.rstrip(" .;,)")
-    d = d.lstrip("(")
+    d = d.rstrip(" .;,)]>")
+    d = d.lstrip("([")
     if not d.lower().startswith("10."):
         return None
 
     # Canonicalize common preprint DOI variants.
     # bioRxiv / medRxiv commonly appear with a trailing version suffix like `v1` which is NOT part of the DOI.
     # Example: `10.1101/2024.04.23.590673v1` -> `10.1101/2024.04.23.590673`
-    if d.lower().startswith("10.1101/"):
+    if d.lower().startswith(_PREPRINT_PREFIXES):
         # Strip common suffixes that appear in free text but are not part of the DOI.
         # Examples:
         # - `...v1` -> `...`
@@ -61,9 +93,12 @@ def normalize_doi(doi: str) -> Optional[str]:
         d = re.sub(r"(?:v\d+)(?:\.(?:abstract|full|pdf))?$", "", d, flags=re.IGNORECASE)
         d = re.sub(r"\.(?:abstract|full|pdf)$", "", d, flags=re.IGNORECASE)
         # Guard against obviously incomplete year-only extractions.
-        if re.fullmatch(r"10\.1101/\d{4}", d, flags=re.IGNORECASE):
+        if re.fullmatch(r"10\.(?:1101|64898)/\d{4}", d, flags=re.IGNORECASE):
             return None
 
+    # A DOI needs a suffix; `10.1093/` alone is a fragment, not a paper.
+    if "/" not in d or not d.split("/", 1)[1]:
+        return None
     return d
 
 
@@ -198,6 +233,7 @@ def resolve_zenodo_metadata(
 @dataclass
 class Telemetry:
     api_429_count: int = 0
+    api_quota_exhausted_count: int = 0
     api_5xx_count: int = 0
     api_retry_count: int = 0
     throttled_count: int = 0
@@ -207,6 +243,7 @@ class Telemetry:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "api_429_count": self.api_429_count,
+            "api_quota_exhausted_count": self.api_quota_exhausted_count,
             "api_5xx_count": self.api_5xx_count,
             "api_retry_count": self.api_retry_count,
             "throttled_count": self.throttled_count,
@@ -234,6 +271,127 @@ def _throttle(min_interval_seconds: float, telemetry: Telemetry) -> None:
         _last_request_at = time.monotonic()
 
 
+OPENALEX_HOST = "api.openalex.org"
+
+# A 429/503 whose Retry-After exceeds this is treated as an exhausted quota
+# (see ApiQuotaExhausted) rather than slept through. Five minutes comfortably
+# covers real burst limits; a spent OpenAlex daily allowance asks for hours.
+MAX_RETRY_AFTER_SECONDS = 300.0
+
+
+# Resolution outcomes that mean the dataset has no linkable paper, as opposed
+# to a failed attempt. The paper-mapping DAGs record papers = 0 only for these,
+# and skip papers = 0 datasets on later runs; anything else (an exception, a
+# timeout, a 5xx, a quota refusal, an unreachable archive API) leaves papers
+# unset so the next run tries again.
+NO_PAPER_REASONS = frozenset({
+    "no_dois_found",
+    "no_papers_found",
+    "no_external_publications",
+    "no_primary_papers_after_filtering",
+    "no_landing_url",
+    "pennsieve_404",
+    "http_404",
+    "http_410",
+})
+
+
+def is_definitive_no_paper(reason: Optional[str]) -> bool:
+    """True when an unresolved dataset truly has no paper, not a failed attempt."""
+    return (reason or "") in NO_PAPER_REASONS
+
+
+class ApiQuotaExhausted(RuntimeError):
+    """
+    An API refused the request and asked us to come back much later.
+
+    Raised instead of sleeping so the task fails fast, releases its pool slot,
+    and can be re-run after the reset; and so callers never mistake the
+    refusal for an empty result. ``retry_after_seconds`` is the API's own
+    figure; ``resets_at`` is the corresponding UTC time.
+    """
+
+    def __init__(self, url: str, retry_after_seconds: float, status: int):
+        from datetime import datetime, timedelta, timezone
+        self.url = url
+        self.retry_after_seconds = float(retry_after_seconds)
+        self.status = status
+        self.resets_at = datetime.now(timezone.utc) + timedelta(seconds=self.retry_after_seconds)
+        host = urlsplit(url).netloc or url
+        super().__init__(
+            f"{host} returned HTTP {status} with Retry-After={int(self.retry_after_seconds)}s "
+            f"(quota resets about {self.resets_at:%Y-%m-%d %H:%M} UTC). "
+            "Re-run this task after the reset, or spread the run over more time."
+        )
+
+
+def contact_email() -> Optional[str]:
+    """
+    The address this deployment identifies itself with to open APIs.
+
+    OPENALEX_MAILTO wins when set; otherwise PAPER_FETCHER_CONTACT_EMAIL, the
+    same address paper-text-fetcher sends to NCBI, CrossRef and Unpaywall.
+    """
+    import os
+    for name in ("OPENALEX_MAILTO", "PAPER_FETCHER_CONTACT_EMAIL"):
+        value = (os.environ.get(name) or "").strip()
+        if value and "@" in value:
+            return value
+    return None
+
+
+def openalex_api_key() -> Optional[str]:
+    """
+    OPENALEX_API_KEY from the environment, or None.
+
+    Since 2026 OpenAlex meters requests: calls without a key draw on a small
+    free daily budget shared by every caller on the same public IP, and once
+    it is spent every request is refused until midnight UTC. A key is free
+    (https://help.openalex.org/api/authentication/) and carries its own
+    budget, so the DAGs should always run with one.
+    """
+    import os
+    value = (os.environ.get("OPENALEX_API_KEY") or "").strip()
+    return value or None
+
+
+def openalex_request_headers(url: str) -> Dict[str, str]:
+    """``Authorization: Bearer`` for OpenAlex URLs when a key is configured."""
+    try:
+        host = urlsplit(url).netloc.lower()
+    except ValueError:
+        return {}
+    if host != OPENALEX_HOST:
+        return {}
+    key = openalex_api_key()
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def openalex_polite_url(url: str, email: Optional[str] = None) -> str:
+    """
+    Add ``mailto=<email>`` to an OpenAlex URL so requests join the polite pool.
+
+    OpenAlex serves anonymous callers from a shared, heavily throttled pool;
+    callers that identify themselves get the documented rate (about 10
+    requests/s) and priority. Non-OpenAlex URLs and URLs that already carry a
+    mailto are returned unchanged, as is everything when no email is set.
+    """
+    email = email if email is not None else contact_email()
+    if not email:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if parts.netloc.lower() != OPENALEX_HOST:
+        return url
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    if "mailto" in query:
+        return url
+    query["mailto"] = email
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
 def http_get_json(
     session: requests.Session,
     url: str,
@@ -248,15 +406,18 @@ def http_get_json(
     Throttled + retried JSON GET with simple telemetry.
 
     Retries transient statuses: 429, 502, 503, 504 and network errors.
+    OpenAlex URLs get a ``mailto`` parameter (see ``openalex_polite_url``).
     """
     tel = telemetry or Telemetry()
+    url = openalex_polite_url(url)
+    headers = openalex_request_headers(url)
 
     last_exc: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
         _throttle(min_interval_seconds=min_interval_seconds, telemetry=tel)
         tel.total_requests += 1
         try:
-            resp = session.get(url, timeout=timeout)
+            resp = session.get(url, timeout=timeout, headers=headers or None)
             status = resp.status_code
 
             if status in (429, 502, 503, 504):
@@ -273,6 +434,14 @@ def http_get_json(
                         wait = float(retry_after)
                     except ValueError:
                         wait = None
+                if wait is not None and wait > MAX_RETRY_AFTER_SECONDS:
+                    # A Retry-After of hours is not a burst limit but a quota
+                    # (OpenAlex answers a spent daily allowance with the seconds
+                    # until midnight UTC). Sleeping through it would hold a pool
+                    # slot for the rest of the day, and returning None would let
+                    # callers record "no results" as if the API had answered.
+                    tel.api_quota_exhausted_count += 1
+                    raise ApiQuotaExhausted(url, wait, status)
                 if wait is None:
                     wait = min(backoff_seconds * (2 ** (attempt - 1)), 60.0)
 
@@ -620,11 +789,22 @@ def resolve_crossref_metadata(
             publication_date_out = f"{parts[0]:04d}"
         break
 
+    # Work type ("journal-article", "monograph", "posted-content", ...) and the
+    # kinds of notice this work is (a correction or retraction carries an
+    # `update-to` entry pointing at the work it amends).
+    work_type = msg.get("type") if isinstance(msg.get("type"), str) else None
+    update_types = sorted({
+        u.get("type") for u in (msg.get("update-to") or [])
+        if isinstance(u, dict) and isinstance(u.get("type"), str)
+    })
+
     return {
         "title": title_out,
         "authors": authors_out,
         "publication_date": publication_date_out,
         "publication_year": publication_year_from_date(publication_date_out),
+        "type": work_type,
+        "update_types": update_types,
     }
 
 

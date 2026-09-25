@@ -4,6 +4,16 @@ import ReactMarkdown from 'react-markdown';
 import { fetchDatasetDetail } from '../services/api';
 import type { DatasetDetailResponse, DatasetDetailPaper, DatasetDetailCitation, DatasetContributor } from '../services/api';
 import { PopulationIcon } from '../components/PopulationIcon';
+import {
+  CONFIDENCE_TIERS,
+  confidenceLabel,
+  confidenceTier,
+  isReuseClassification,
+  modalityLabel,
+  primaryQuote,
+  reuseTypeLabel,
+  reusedModalities,
+} from '../utils/classification';
 
 const SOURCE_COLORS: Record<string, string> = {
   DANDI: 'bg-purple-100 text-purple-800',
@@ -54,11 +64,91 @@ function formatAuthors(authors: string[] | null | undefined, max = 5): string {
   return `${authors.slice(0, max).join(', ')} et al.`;
 }
 
-function confidenceLabel(value?: number | null): { text: string; color: string; bg: string } {
-  if (value === 3) return { text: 'High confidence', color: 'text-emerald-700', bg: 'bg-emerald-50 border-emerald-200' };
-  if (value === 2) return { text: 'Medium confidence', color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200' };
-  if (value === 1) return { text: 'Low confidence', color: 'text-red-600', bg: 'bg-red-50 border-red-200' };
-  return { text: '', color: 'text-slate-400', bg: 'bg-slate-50 border-slate-200' };
+const TIER_LABEL_VALUE: Record<string, number> = { high: 9, medium: 5, low: 2 };
+
+function ReuseTypePill({ label }: { label: string }) {
+  return (
+    <span className="inline-block rounded-full bg-violet-50 border border-violet-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-700">
+      {label}
+    </span>
+  );
+}
+
+function ReusedModalityChip({ label }: { label: string }) {
+  return (
+    <span className="inline-block rounded-full bg-blue-50/80 border border-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700">
+      {modalityLabel(label)}
+    </span>
+  );
+}
+
+function ReusePaperCard({ c, bg }: { c: DatasetDetailCitation; bg: string }) {
+  const typeLabel = reuseTypeLabel(c.reuse_type, c.reuse_type_other);
+  const modalities = reusedModalities(c.reused_modalities);
+  const quote = primaryQuote(c.evidence_quotes);
+  const hallucinated = (c.hallucinated_quote_count ?? 0) > 0;
+  return (
+    <div className={`rounded-lg border p-3 ${bg}`}>
+      <a
+        href={doiUrl(c.citing_paper_doi)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-xs font-semibold text-blue-700 hover:text-blue-600 hover:underline leading-snug line-clamp-2"
+      >
+        {c.citing_paper_title || c.citing_paper_doi}
+      </a>
+      <p className="mt-0.5 text-[11px] text-slate-500">
+        {formatAuthors(c.citing_authors, 3)}
+        {c.citing_journal && <> &middot; <em>{c.citing_journal}</em></>}
+        {c.citing_publication_date && (
+          <> &middot; {new Date(c.citing_publication_date).toLocaleDateString()}</>
+        )}
+        {countryLabel(c.citing_senior_author_country) && (
+          <> &middot; {countryLabel(c.citing_senior_author_country)}</>
+        )}
+      </p>
+      {(typeLabel || modalities.length > 0 || c.same_lab != null || c.source_archive) && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {typeLabel && <ReuseTypePill label={typeLabel} />}
+          {modalities.map((m) => (
+            <ReusedModalityChip key={m} label={m} />
+          ))}
+          {c.same_lab === true && (
+            <span
+              className="inline-block rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-medium text-amber-700"
+              title="The reusing authors overlap with the dataset's contributors"
+            >
+              Same lab
+            </span>
+          )}
+          {c.source_archive && (
+            <span className="text-[10px] text-slate-400" title="Where the paper says it obtained the data">
+              via {c.source_archive}
+            </span>
+          )}
+        </div>
+      )}
+      {quote && (
+        <blockquote
+          className="mt-2 border-l-2 border-slate-300 pl-2 text-[11px] text-slate-600 leading-relaxed"
+          title={quote.match_type ? `Quote verified against the paper text (${quote.match_type})` : undefined}
+        >
+          “{quote.quote}”
+        </blockquote>
+      )}
+      {c.reasoning && (
+        <p className="mt-1 text-[11px] text-slate-500 italic leading-relaxed">{c.reasoning}</p>
+      )}
+      {hallucinated && (
+        <p className="mt-1 text-[10px] text-rose-600">
+          {c.hallucinated_quote_count} quote{c.hallucinated_quote_count === 1 ? '' : 's'} could not be matched word for word
+        </p>
+      )}
+      {typeof c.confidence === 'number' && (
+        <p className="mt-1 text-[10px] text-slate-400">Confidence {c.confidence}/10</p>
+      )}
+    </div>
+  );
 }
 
 function PaperCard({
@@ -207,12 +297,12 @@ export default function DatasetDetailPage() {
   const citationsByPrimary = (doi: string): DatasetDetailCitation[] =>
     data?.citations.filter((c) => c.primary_paper_doi === doi) ?? [];
 
-  const secondaryReusePapers = (data?.citations ?? []).filter(
-    (c) => c.classification?.toUpperCase() === 'SECONDARY'
-  );
+  // REUSE from the whole-paper classifier. MENTION / NEITHER / PRIMARY are
+  // deliberately not shown here: only papers that actually used the data.
+  const reusePapers = (data?.citations ?? []).filter((c) => isReuseClassification(c.classification));
 
-  const reusePapersByConfidence = (level: number) =>
-    secondaryReusePapers.filter((c) => c.confidence === level);
+  const reusePapersByTier = (tier: string) =>
+    reusePapers.filter((c) => confidenceTier(c.confidence) === tier);
 
   if (loading) {
     return (
@@ -391,7 +481,7 @@ export default function DatasetDetailPage() {
               <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4">
                 Associated Papers
                 <span className="ml-2 text-slate-300 font-normal">
-                  ({data.primary_papers.length + secondaryReusePapers.length})
+                  ({data.primary_papers.length + reusePapers.length})
                 </span>
               </h2>
               {data.primary_papers.length === 0 ? (
@@ -412,55 +502,28 @@ export default function DatasetDetailPage() {
             </div>
 
             {/* AI-Identified Reuse Papers */}
-            {secondaryReusePapers.length > 0 && (
+            {reusePapers.length > 0 && (
               <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl p-5">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
                   AI-Identified Reuse Papers
-                  <span className="ml-2 text-slate-300 font-normal">({secondaryReusePapers.length})</span>
+                  <span className="ml-2 text-slate-300 font-normal">({reusePapers.length})</span>
                 </h2>
                 <p className="text-[11px] text-slate-400 mb-4">
-                  Papers classified by AI as having reused this dataset.
+                  Papers whose full text shows they reused this dataset's data. Each verdict quotes the passage it was judged from.
                 </p>
                 <div className="space-y-4 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
-                  {[3, 2, 1].map((level) => {
-                    const papers = reusePapersByConfidence(level);
+                  {CONFIDENCE_TIERS.map((tier) => {
+                    const papers = reusePapersByTier(tier);
                     if (papers.length === 0) return null;
-                    const conf = confidenceLabel(level);
+                    const conf = confidenceLabel(TIER_LABEL_VALUE[tier]);
                     return (
-                      <div key={level}>
+                      <div key={tier}>
                         <h3 className={`text-xs font-semibold mb-2 ${conf.color}`}>
                           {conf.text} ({papers.length})
                         </h3>
                         <div className="space-y-2">
                           {papers.map((c, i) => (
-                            <div
-                              key={`${c.citing_paper_doi}-${i}`}
-                              className={`rounded-lg border p-3 ${conf.bg}`}
-                            >
-                              <a
-                                href={doiUrl(c.citing_paper_doi)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-xs font-semibold text-blue-700 hover:text-blue-600 hover:underline leading-snug line-clamp-2"
-                              >
-                                {c.citing_paper_title || c.citing_paper_doi}
-                              </a>
-                              <p className="mt-0.5 text-[11px] text-slate-500">
-                                {formatAuthors(c.citing_authors, 3)}
-                                {c.citing_journal && <> &middot; <em>{c.citing_journal}</em></>}
-                                {c.citing_publication_date && (
-                                  <> &middot; {new Date(c.citing_publication_date).toLocaleDateString()}</>
-                                )}
-                                {countryLabel(c.citing_senior_author_country) && (
-                                  <> &middot; {countryLabel(c.citing_senior_author_country)}</>
-                                )}
-                              </p>
-                              {c.reasoning && (
-                                <p className="mt-1 text-[11px] text-slate-500 italic leading-relaxed">
-                                  {c.reasoning}
-                                </p>
-                              )}
-                            </div>
+                            <ReusePaperCard key={`${c.citing_paper_doi}-${i}`} c={c} bg={conf.bg} />
                           ))}
                         </div>
                       </div>

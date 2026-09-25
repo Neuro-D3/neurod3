@@ -69,6 +69,11 @@ resource "google_secret_manager_secret_version" "openrouter_api_key" {
   secret_data = var.openrouter_api_key
 }
 
+resource "google_secret_manager_secret_version" "openalex_api_key" {
+  secret      = google_secret_manager_secret.this["openalex_api_key"].id
+  secret_data = var.openalex_api_key
+}
+
 resource "google_secret_manager_secret_version" "airflow_fernet_key" {
   secret      = google_secret_manager_secret.this["airflow_fernet_key"].id
   secret_data = var.airflow_fernet_key
@@ -82,11 +87,12 @@ resource "google_secret_manager_secret_iam_member" "api_db_password" {
   member    = "serviceAccount:${google_service_account.api.email}"
 }
 
-# Airflow VM needs all five it consumes plus the DB password.
+# Airflow VM needs all six it consumes plus the DB password.
 resource "google_secret_manager_secret_iam_member" "airflow_access" {
   for_each = toset([
     "db_master_password",
     "openrouter_api_key",
+    "openalex_api_key",
     "airflow_fernet_key",
     "airflow_jwt_secret",
     "airflow_api_secret",

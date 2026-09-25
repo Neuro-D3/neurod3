@@ -337,6 +337,10 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 
 4. **`example_dag`** - Basic Airflow example for learning
 
+5. **`dandi_paper_mapping`, `openneuro_paper_mapping`, `crcns_paper_mapping`, `sparc_paper_mapping`** - Resolve each dataset's primary papers, find citing papers via OpenAlex, fetch their full text, and fill `papers`, `<src>_paper_map` and `<src>_paper_citations`
+
+6. **`paper_reuse_classification`** - LLM classification of every (citing paper, dataset) pair as REUSE / MENTION / NEITHER (or PRIMARY in direct mode). Manual trigger; see [Paper Reuse Classification](#paper-reuse-classification)
+
 ### Running DAGs
 
 1. Access Airflow UI at http://localhost:8080
@@ -344,6 +348,125 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 3. Find your DAG in the list
 4. Toggle the DAG to enable it (if paused)
 5. Click the play button to trigger a manual run, or wait for the scheduled run
+
+---
+
+## Paper Reuse Classification
+
+NeuroD3 tries to answer one question per (paper, dataset) pair: **did this paper actually reuse the dataset's data**, or does it merely cite the paper that described it? The answer feeds the per-dataset reuse counts on the site and the "AI-identified reuse papers" list on each dataset page.
+
+The method follows the [catalystneuro/find_reuse](https://github.com/catalystneuro/find_reuse) project: the whole paper is given to a language model, which must return a label **and quote the passage it judged from**. Every quote is then checked against the paper text, so a fabricated quote is detected rather than trusted.
+
+![Paper reuse classification pipeline](docs/diagrams/reuse_classification_flow.png)
+
+### How a paper gets classified
+
+1. **Ingestion** (`dandi_paper_mapping`, `openneuro_paper_mapping`, `crcns_paper_mapping`, `sparc_paper_mapping`). Each run starts by reading today's OpenAlex budget from the `X-RateLimit-*` headers (logged in `fetch_unmapped_*_ids`) and aborts when fewer than `min_openalex_requests` (default 200) remain, since a spent budget means every OpenAlex call is refused until midnight UTC. Each DAG resolves a dataset's primary papers from the archive's metadata, asks OpenAlex which papers cite them, fetches each citing paper's full text, and records the `dataset ↔ primary paper ↔ citing paper` triple in `<src>_paper_citations`. Full text is cached as one JSON file per paper under `airflow/output/` (mounted at `/opt/airflow/output`; kept out of the DAG folder so the DAG processor never has to walk thousands of cached papers), and `papers.text_status` records whether the article body was actually retrieved.
+2. **Candidate selection** (`paper_reuse_classification`, manual trigger). A pair is picked up when it has never been classified, its last attempt errored, or it was classified with an older prompt version or a different model. Pairs are grouped by citing paper so one paper's text is sent once and reused from the provider's prompt cache for its other datasets. By default pairs are taken in citing-DOI order, so a small run sees one publisher (`10.1002/` is Wiley); set `mix_publishers: true` to deal round-robin across DOI prefixes instead, for a mixed sample that later runs continue.
+3. **Full text**. The DAG reads the cached text. If none exists it fetches on demand through the source chain below. A paper whose body cannot be retrieved is marked `no_full_text` and retried on a later run; abstracts are never classified, because reuse is described in Methods and Data Availability sections.
+4. **Classification**. The prompt contains the full paper plus the dataset's identifier, name and description. The model (`openai/gpt-5.6-luna` on OpenRouter, maximum reasoning effort, temperature 0) returns a label, a 1–10 confidence, reasoning, and verbatim evidence quotes. Transport or parsing failures become `status = error` and never overwrite an earlier good result; a spent or revoked API key aborts the run.
+5. **Serving**. `api/main.py` exposes `reuse_count` per dataset and the labelled citations with their quotes; the dataset detail page and the paper-mapping dashboard render them.
+
+### Labels
+
+| Mode | When it is used | Labels |
+|---|---|---|
+| `citing` | The paper cites the dataset's primary paper (`classification_scope=citation_edges`) | `REUSE` · `MENTION` · `NEITHER` |
+| `direct` | The paper names the dataset identifier itself (`classification_scope=primary_only`) | `PRIMARY` · `REUSE` · `NEITHER` |
+
+- **REUSE**: the authors obtained and analysed data they did not collect (downloading, re-analysing, training on, or benchmarking against it all count). Only REUSE rows also carry `reuse_type` (`TOOL_DEMO`, `BENCHMARK`, `AGGREGATION`, `CONFIRMATORY`, `NOVEL_ANALYSIS`, `ML_TRAINING`, `SIMULATION`, `TEACHING`, `OTHER`), `reused_modalities` (`neurophysiology`, `behavior`, `imaging`, `morphology`, `transcriptomics`, `other`, `unclear`), `same_lab`, and `source_archive`.
+- **MENTION**: the paper refers to the work as background, method or comparison without touching the data. Reviews and commentaries are always MENTION. This is the default; REUSE requires evidence in the text.
+- **NEITHER**: the citation link itself is wrong, or the identifier appears for an unrelated reason.
+- **PRIMARY** (direct mode only): this paper is the one that deposited the dataset.
+
+`ERROR` and `no_full_text` are row statuses, not labels. Every row records `prompt_version` (currently 6, kept in step with upstream) and `classification_model`, and a change to either causes the row to be reclassified.
+
+### Where the full text comes from
+
+`utils/paper_fulltext.py` wraps the [paper-text-fetcher](https://github.com/catalystneuro/paper-text-fetcher) package, the same one find_reuse uses. For each DOI it walks a chain of sources until one returns an article body, and it reports a three-way status so a title and abstract are never mistaken for a paper.
+
+![Full-text source chain](docs/diagrams/fulltext_source_chain.png)
+
+Two of the sources need configuration; none needs an account:
+
+| Setting | Effect |
+|---|---|
+| `PAPER_FETCHER_CONTACT_EMAIL` | Sent to NCBI, CrossRef and **Unpaywall** so they can contact you about traffic. Unpaywall's free API refuses requests without one, so that source (open-access PDFs, extracted with PyMuPDF) is skipped when this is unset. |
+| `ELSEVIER_API_KEY` | Optional. Enables the ScienceDirect full-text API for `10.1016/` DOIs. Requires a free Elsevier developer key. |
+| `PAPER_FETCHER_CACHE_DIR` | Optional. Where the fetcher keeps its JSON-per-DOI cache. Defaults to `/opt/airflow/output/paper_text_fetcher` in the containers (`airflow/output/` on the host). |
+
+Preprints (bioRxiv, medRxiv) and some publisher pages only render their text with JavaScript, so the Airflow image ships **headless Chromium via Playwright** (`playwright install --with-deps chromium` in `airflow/Dockerfile`). It is used only where the diagram shows it; the PMC and Unpaywall paths are plain HTTP.
+
+**Existing checkouts:** the cache used to live at `airflow/dags/output/`. Move it once so nothing is re-fetched:
+
+```bash
+mkdir -p airflow/output && mv airflow/dags/output/* airflow/output/ && rmdir airflow/dags/output
+```
+
+### Benchmark (sanity test)
+
+`reuse_classification_benchmark_test` (in `airflow/dags/reuse_classification_benchmark_test/`) checks that the classifier still finds reuse. It runs the production fetcher, prompt and model over a fixed answer key of **161 (paper, dandiset) pairs that find_reuse's reviewers judged by hand**, and compares the labels with their calls:
+
+- **110 confirmed reuse.** The share labelled REUSE is `reuse_recall`.
+- **51 rejected.** find_reuse's classifier called each of these REUSE and a reviewer disagreed, so they are hard cases. The share labelled REUSE is `false_reuse_rate`.
+
+| Pair set | Pairs | Default where |
+|---|---|---|
+| `smoke` | 20 fixed (10 + 10) | everywhere, unless overridden |
+| `full` | all 161 | staging (`REUSE_BENCHMARK_PAIR_SET=full` in `docker-compose.gce.yml`) |
+
+A run fails when `reuse_recall` drops below `min_reuse_recall` (default 0.8), `false_reuse_rate` rises above `max_false_reuse_rate` (0.5), or fewer than `min_text_coverage` (0.8) of the pairs got full text, which would make the result inconclusive. The thresholds are provisional until a few full runs set a baseline. Each run writes a summary row to `reuse_benchmark_runs` and one row per pair to `reuse_benchmark_results`; production classification tables are never touched. The score task's log lists every disagreement with the model's reasoning, plus `mapping_coverage`: how many answer-key pairs D3's own mapping DAGs produced at all. `dry_run=true` fetches text and builds prompts without any LLM calls.
+
+The staging deploy workflow triggers it after every Airflow deploy. Locally, trigger it from the Airflow UI or:
+
+```bash
+docker compose exec airflow-scheduler airflow dags trigger reuse_classification_benchmark_test
+```
+
+The answer key (`benchmark_pairs.json`) is generated from a find_reuse checkout; rebuild it when their reviewers have judged more pairs:
+
+```bash
+python airflow/dags/reuse_classification_benchmark_test/build_benchmark_pairs.py --find-reuse-dir <path-to-find_reuse>
+```
+
+Unit tests: `docker compose exec airflow-scheduler python -m pytest /opt/airflow/dags/reuse_classification_benchmark_test`.
+
+### Rollout status
+
+This is being delivered in phases, each its own pull request:
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | Shared helpers: vendored classifier, fetcher wrapper, schema helper, image with Chromium, tests | done |
+| 2 | `paper_reuse_classification` DAG switched to whole-paper input and the labels above | done |
+| 3 | Paper-mapping DAGs adopt the fetcher and the new `papers` columns; cache moved out of the DAG folder | done |
+| 4 | API: `reuse_count`, new fields on citations | done |
+| 5 | Site: evidence quotes, modality chips, same-lab badge, new badges | done |
+| 6 | Cleanup: legacy `SECONDARY` compatibility removed from API and site | done |
+
+The retired `SECONDARY` label from the previous excerpt-based classifier is no longer counted anywhere; only `REUSE` rows count as reuse.
+
+### Re-rendering the diagrams
+
+The diagram sources are Mermaid files in `docs/diagrams/`. They are rendered to PNG with the Chromium that is already in the Airflow image, so no local tooling is needed:
+
+```bash
+docker compose cp docs/diagrams airflow-scheduler:/tmp/diagrams
+```
+
+```bash
+docker compose exec airflow-scheduler sh -c "python /tmp/diagrams/render_mermaid.py /tmp/diagrams/reuse_classification_flow.mmd /tmp/reuse_classification_flow.png && python /tmp/diagrams/render_mermaid.py /tmp/diagrams/fulltext_source_chain.mmd /tmp/fulltext_source_chain.png"
+```
+
+```bash
+docker compose cp airflow-scheduler:/tmp/reuse_classification_flow.png docs/diagrams/ && docker compose cp airflow-scheduler:/tmp/fulltext_source_chain.png docs/diagrams/
+```
+
+### Running the unit tests
+
+```bash
+docker compose exec airflow-scheduler python -m pytest /opt/airflow/dags/tests -q
+```
 
 ---
 
@@ -441,6 +564,7 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 - [API Usage Guide](docs/API_USAGE.md) - Detailed API documentation and examples
 - [Database Setup](docs/DATABASE_SETUP.md) - Database configuration details
 - [Data Citation Notes](docs/data_citation_notes.md) - Notes on data citation research
+- [Reuse classification diagrams](docs/diagrams/) - Mermaid sources and rendered PNGs for the pipeline and full-text source chain
 
 ---
 

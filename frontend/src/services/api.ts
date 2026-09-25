@@ -29,8 +29,8 @@ export interface Dataset {
   papers: number | null;
   paper_dois?: string[] | null;
   paper_titles?: string[] | null;
-  /** Number of distinct citing papers classified as SECONDARY reuse by the LLM. */
-  secondary_reuse_count?: number | null;
+  /** Distinct citing papers the LLM classified as reusing this dataset's data (REUSE). */
+  reuse_count?: number | null;
   url: string;
   description?: string;
   authors?: string[] | null;
@@ -120,7 +120,48 @@ export interface PaperMappingPrimaryPaper {
   placeholder_classification_edges_count: number;
 }
 
-export interface PaperMappingCitation {
+/** One verified quote from the classifier; match_type 'not_found' means it was not in the paper. */
+export interface EvidenceQuote {
+  quote: string;
+  match_type?: string;
+  verbatim?: boolean;
+  chars?: number;
+  offset?: number;
+}
+
+/**
+ * Whole-paper reuse classification of one (citing paper, dataset) pair, as
+ * written by the paper_reuse_classification DAG. classification is
+ * REUSE | MENTION | NEITHER (citing mode) or PRIMARY | REUSE | NEITHER (direct
+ * mode); the reuse_* / modality / lab / archive fields are set only for REUSE.
+ */
+export interface ClassificationFields {
+  /** classification, else the row status (placeholder, error, no_full_text), else 'unclassified'. */
+  classification_status?: string | null;
+  classification?: string | null;
+  /** 1–10 (the retired excerpt classifier used 1–3). */
+  confidence?: number | null;
+  status?: string | null;
+  reasoning?: string | null;
+  classification_model?: string | null;
+  classified_at?: string | null;
+  mode?: 'citing' | 'direct' | string | null;
+  prompt_version?: number | null;
+  reuse_type?: string | null;
+  reuse_type_other?: string | null;
+  reused_modalities?: string[] | null;
+  reused_dandi_hosted?: boolean | null;
+  same_lab?: boolean | null;
+  same_lab_confidence?: number | null;
+  source_archive?: string | null;
+  evidence_quotes?: EvidenceQuote[] | null;
+  hallucinated_quote_count?: number | null;
+  error_kind?: string | null;
+  /** Whether the citing paper's body was retrieved: full_text | metadata_only | unavailable. */
+  citing_text_status?: string | null;
+}
+
+export interface PaperMappingCitation extends ClassificationFields {
   source?: 'CRCNS' | 'DANDI' | 'OpenNeuro' | 'SPARC';
   dataset_id?: string;
   primary_paper_doi: string;
@@ -136,14 +177,6 @@ export interface PaperMappingCitation {
   matched_primary_openalex_id?: string | null;
   citation_contexts?: Array<{ context?: string; method?: string; [key: string]: any }> | null;
   contexts_extracted_at?: string | null;
-  classification_status?: string | null;
-  classification?: string | null;
-  same_lab?: boolean | null;
-  confidence?: number | null;
-  status?: string | null;
-  reasoning?: string | null;
-  classification_model?: string | null;
-  classified_at?: string | null;
 }
 
 export interface PaperMappingDatasetDetail {
@@ -171,7 +204,7 @@ export interface DatasetDetailPaper {
   citing_papers_count: number;
 }
 
-export interface DatasetDetailCitation {
+export interface DatasetDetailCitation extends ClassificationFields {
   primary_paper_doi: string;
   primary_paper_title?: string | null;
   citing_paper_doi: string;
@@ -181,10 +214,6 @@ export interface DatasetDetailCitation {
   citing_senior_author_country?: string | null;
   citing_publication_date?: string | null;
   citing_publication_year?: number | null;
-  classification_status?: string | null;
-  classification?: string | null;
-  confidence?: number | null;
-  reasoning?: string | null;
 }
 
 export interface DatasetContributor {
@@ -327,7 +356,7 @@ export async function fetchPaperMappingSummary(params?: {
 export async function fetchPaperMappingDatasets(params?: {
   source?: 'CRCNS' | 'DANDI' | 'OpenNeuro' | 'SPARC';
   search?: string;
-  /** Same bucket labels as summary by_classification (e.g. SECONDARY, NEITHER, placeholder). */
+  /** Same bucket labels as summary by_classification (e.g. REUSE, MENTION, NEITHER, placeholder). */
   classification_bucket?: string;
   sort_by?:
     | 'mapped_papers'
