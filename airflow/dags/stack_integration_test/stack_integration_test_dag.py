@@ -7,6 +7,7 @@ dataset per archive:
     preflight ─▶ ingest ─▶ verify ─▶ map papers (+ small citing-paper backfill)
               ─▶ verify ─▶ classify a few pairs (real LLM calls) ─▶ verify
               ─▶ API check ─▶ site check ─▶ report
+    preflight ─▶ CORS check (browser preflight from each frontend origin) ─▶ report
 
 Each stage triggers the real, deployed DAG (``<archive>_ingestion``,
 ``<archive>_paper_mapping``, ``paper_reuse_classification``) on just the test
@@ -36,6 +37,7 @@ import traceback
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterator, List, Optional
+from urllib.parse import urlsplit
 
 import requests
 from airflow import DAG
@@ -92,7 +94,7 @@ ARCHIVES: Dict[str, Dict[str, str]] = {
 # Per-archive stages in order; used to lay out the report.
 STAGES = ["ingest", "verify_ingest", "map", "verify_map", "classify", "verify_classify", "check_api"]
 GLOBAL_STEPS = ["preflight_database", "preflight_openrouter", "preflight_openalex", "preflight_fetcher",
-                "preflight_api", "check_site"]
+                "preflight_api", "check_site", "check_cors"]
 
 # Triggered DAG for each trigger stage.
 TRIGGERED_DAG = {"ingest": "{key}_ingestion", "map": "{key}_paper_mapping", "classify": "paper_reuse_classification"}
@@ -107,6 +109,35 @@ STATUS_PASS, STATUS_FAIL, STATUS_WARN = "pass", "fail", "warn"
 def triggered_run_id(run_id: str, key: str, stage: str) -> str:
     """Run id given to a triggered DAG run, so the report can point at it."""
     return f"it__{run_id}__{key}__{stage}"
+
+
+def url_origin(url: str) -> str:
+    """scheme://host[:port] of a URL, the form a browser sends in its Origin header."""
+    p = urlsplit(url.strip())
+    return f"{p.scheme}://{p.netloc}" if p.scheme and p.netloc else ""
+
+
+def browser_origins(site_url: str, extra: str) -> List[str]:
+    """
+    Origins the API must accept: the site's own plus any comma-separated extras.
+    Cloud Run serves one service on two hostnames and the browser sends whichever
+    the user opened, so staging lists both.
+    """
+    out: List[str] = []
+    for o in [url_origin(site_url)] + [url_origin(x) for x in extra.split(",")]:
+        if o and o not in out:
+            out.append(o)
+    return out
+
+
+def cors_problem(origin: str, status: int, headers: Dict[str, str]) -> Optional[str]:
+    """Why a browser at `origin` would be blocked by this preflight response, or None."""
+    allowed = {k.lower(): v for k, v in headers.items()}.get("access-control-allow-origin")
+    if status >= 400:
+        return f"preflight from {origin} returned HTTP {status} (origin not in the API's ALLOWED_ORIGINS?)"
+    if allowed not in (origin, "*"):
+        return f"preflight from {origin} got Access-Control-Allow-Origin={allowed!r}; add it to ALLOWED_ORIGINS"
+    return None
 
 
 def build_report(steps: List[Dict[str, Any]], archives: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
@@ -537,8 +568,37 @@ def check_api(*, key: str, **context) -> None:
             raise RuntimeError("API shows no classified citation (the API or its CTE may not read the new columns)")
 
 
+def _site_url(params: Dict[str, Any]) -> str:
+    return (params.get("site_url") or os.environ.get("D3_FRONTEND_URL") or "http://frontend:3000").rstrip("/")
+
+
+def check_cors(**context) -> None:
+    """
+    The API answers server-side calls whatever its CORS settings, so check_api
+    passes even when every browser request is blocked. Send the preflight a
+    browser would, from each frontend origin.
+    """
+    params = context["params"]
+    base = _api_url(params)
+    origins = browser_origins(_site_url(params), params.get("browser_origins") or os.environ.get("D3_FRONTEND_ORIGINS", ""))
+    with step(context, "check_cors") as s:
+        url = f"{base}/api/datasets"
+        s.details.update({"url": url, "origins": {}})
+        problems = []
+        for origin in origins:
+            r = requests.options(url, timeout=30, headers={
+                "Origin": origin, "Access-Control-Request-Method": "GET"})
+            s.details["origins"][origin] = {"http": r.status_code,
+                                           "allow_origin": r.headers.get("access-control-allow-origin")}
+            problem = cors_problem(origin, r.status_code, dict(r.headers))
+            if problem:
+                problems.append(problem)
+        if problems:
+            raise RuntimeError("; ".join(problems))
+
+
 def check_site(**context) -> None:
-    url = (context["params"].get("site_url") or os.environ.get("D3_FRONTEND_URL") or "http://frontend:3000").rstrip("/")
+    url = _site_url(context["params"])
     with step(context, "check_site") as s:
         r = requests.get(url + "/", timeout=60)
         s.details.update({"url": url, "http": r.status_code, "bytes": len(r.content)})
@@ -597,6 +657,10 @@ def _params() -> Dict[str, Any]:
                          description="Empty = $D3_API_URL, else http://api:8000 (local compose)."),
         "site_url": Param(os.environ.get("D3_FRONTEND_URL", ""), type="string", title="Site URL",
                           description="Empty = $D3_FRONTEND_URL, else http://frontend:3000 (local compose)."),
+        "browser_origins": Param(os.environ.get("D3_FRONTEND_ORIGINS", ""), type="string",
+                                 title="Extra browser origins",
+                                 description="Comma-separated frontend URLs the API must allow besides the site URL "
+                                             "(Cloud Run serves each service on two hostnames). Empty = $D3_FRONTEND_ORIGINS."),
     }
     for key, cfg in ARCHIVES.items():
         p[f"{key}_dataset_id"] = Param(cfg["dataset_id"], type="string", title=f"{cfg['label']} test dataset")
@@ -633,6 +697,7 @@ dag = DAG(
 
 preflight_task = PythonOperator(task_id="preflight", python_callable=preflight, dag=dag)
 site_task = PythonOperator(task_id="check_site", python_callable=check_site, trigger_rule="all_done", dag=dag)
+cors_task = PythonOperator(task_id="check_cors", python_callable=check_cors, trigger_rule="all_done", dag=dag)
 report_task = PythonOperator(task_id="report", python_callable=report, trigger_rule="all_done", dag=dag)
 
 
@@ -689,3 +754,5 @@ for key, cfg in ARCHIVES.items():
     preflight_task >> ingest >> v_ingest >> map_ >> v_map >> classify >> v_cls >> api >> site_task
 
 site_task >> report_task
+# Independent of the pipeline, so it reports even when an archive fails early.
+preflight_task >> cors_task >> report_task

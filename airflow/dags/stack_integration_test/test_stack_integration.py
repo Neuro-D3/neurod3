@@ -131,3 +131,34 @@ class TestKnownReusePair:
     def test_each_archive_exposes_the_param(self):
         for key in S.ARCHIVES:
             assert f"{key}_reuse_citing_doi" in S.dag.params
+
+
+class TestCors:
+    SITE = "https://neuro-d3-frontend-4crdc6p33a-uw.a.run.app"
+    ALT = "https://neuro-d3-frontend-601000536186.us-west1.run.app"
+
+    def test_origin_drops_path_and_keeps_port(self):
+        assert S.url_origin(self.SITE + "/datasets?x=1") == self.SITE
+        assert S.url_origin("http://frontend:3000/") == "http://frontend:3000"
+        assert S.url_origin("not a url") == ""
+
+    def test_site_origin_first_then_extras_deduplicated(self):
+        got = S.browser_origins(self.SITE + "/", f" {self.ALT}/ ,{self.SITE},")
+        assert got == [self.SITE, self.ALT]
+
+    def test_allowed_origin_passes(self):
+        assert S.cors_problem(self.ALT, 200, {"Access-Control-Allow-Origin": self.ALT}) is None
+        assert S.cors_problem(self.ALT, 200, {"access-control-allow-origin": "*"}) is None
+
+    def test_rejected_preflight_fails(self):
+        # What staging did before the second hostname was allowed: 400, no header.
+        assert "HTTP 400" in S.cors_problem(self.ALT, 400, {})
+
+    def test_other_origin_echoed_fails(self):
+        assert "ALLOWED_ORIGINS" in S.cors_problem(self.ALT, 200, {"Access-Control-Allow-Origin": self.SITE})
+
+    def test_cors_task_reports_even_if_the_pipeline_fails(self):
+        t = S.dag.get_task("check_cors")
+        assert t.trigger_rule == "all_done"
+        assert "report" in t.downstream_task_ids
+        assert "check_cors" in S.GLOBAL_STEPS
