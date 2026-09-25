@@ -79,3 +79,9 @@ def test_dag_exposes_dataset_ids_defaulting_to_empty(module):
     mod = __import__(module)
     p = mod.dag.params["dataset_ids"] if hasattr(mod.dag.params, "__getitem__") else None
     assert p == [] or getattr(p, "value", None) == []
+
+
+def test_requested_ids_reads_any_list_param():
+    from utils.targeting import requested_ids
+    assert requested_ids({"include_citing_dois": ["10.1186/X", ""]}, "include_citing_dois") == ["10.1186/X"]
+    assert requested_ids({}, "include_citing_dois") == []

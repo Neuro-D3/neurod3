@@ -54,7 +54,7 @@ except Exception:  # pragma: no cover
 
 try:
     from utils.database import get_db_connection, ensure_paper_reuse_classification_columns
-    from utils.targeting import requested_dataset_ids, sql_id_list
+    from utils.targeting import requested_dataset_ids, requested_ids, sql_id_list
     from utils.llm_classify import get_openrouter_api_key, validate_openrouter_api_key
     from utils.classify_fulltext_reuse import (
         classify_paper_reuse,
@@ -78,7 +78,7 @@ try:
     from utils.find_reuse_core import Telemetry
 except ImportError:  # pragma: no cover - direct import outside the dags folder
     from dags.utils.database import get_db_connection, ensure_paper_reuse_classification_columns
-    from dags.utils.targeting import requested_dataset_ids, sql_id_list
+    from dags.utils.targeting import requested_dataset_ids, requested_ids, sql_id_list
     from dags.utils.llm_classify import get_openrouter_api_key, validate_openrouter_api_key
     from dags.utils.classify_fulltext_reuse import (
         classify_paper_reuse,
@@ -212,9 +212,13 @@ def _candidate_status_filter(reclassify: bool, prompt_version: int, model: str) 
     return sql, {"prompt_version": prompt_version, "model": model}
 
 
-def _citation_edge_order_sql(mix_publishers: bool) -> str:
+def _citation_edge_order_sql(mix_publishers: bool, first_dois: str = "") -> str:
     """
     ORDER BY for citation-edge candidates.
+
+    ``first_dois`` (an SQL list from ``sql_id_list``, lower-cased DOIs) puts
+    those citing papers ahead of everything else: the stack integration test
+    uses it to always re-classify a known REUSE pair.
 
     Always: never-classified rows first, then other rows needing work, then
     rows waiting on full text. Within that, by default, citing DOI order
@@ -228,12 +232,13 @@ def _citation_edge_order_sql(mix_publishers: bool) -> str:
         f"WHEN cls.status = '{STATUS_NO_FULL_TEXT}' THEN 2 "
         "ELSE 1 END"
     )
+    first = f"CASE WHEN lower(cit.citing_paper_doi) IN ({first_dois}) THEN 0 ELSE 1 END, " if first_dois else ""
     if not mix_publishers:
-        return f"{priority}, cit.citing_paper_doi, cit.resolved_at DESC"
+        return f"{first}{priority}, cit.citing_paper_doi, cit.resolved_at DESC"
     prefix = "split_part(cit.citing_paper_doi, '/', 1)"
     stable = "md5(cit.citing_paper_doi || '|' || cit.primary_paper_doi)"
     return (
-        f"{priority}, "
+        f"{first}{priority}, "
         f"ROW_NUMBER() OVER (PARTITION BY ({priority}), {prefix} ORDER BY {stable}), "
         f"{prefix}, {stable}"
     )
@@ -413,6 +418,11 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
         # dataset_ids: only pairs for these datasets (the stack integration test).
         requested = requested_dataset_ids(params)
         id_filter = sql_id_list(requested) if requested else ""
+        # include_citing_dois: these citing papers' pairs go first (the
+        # integration test's known REUSE pair). Ordering only: a pair still has
+        # to pass the status filter, so pair it with reclassify_existing.
+        first = [d.lower() for d in requested_ids(params, "include_citing_dois")]
+        first_dois = sql_id_list(first) if first else ""
 
         for source_name, cit_table, cls_table, id_col in sources:
             if max_edges > 0 and len(edges) >= max_edges:
@@ -424,7 +434,7 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
             if scope in ("citation_edges", "both"):
                 edges.extend(_fetch_citation_edge_candidates(
                     cursor, source_name, cit_table, cls_table, id_col, remaining, source_sql, status_params,
-                    mix_publishers=mix_publishers))
+                    mix_publishers=mix_publishers, first_dois=first_dois))
 
             if scope in ("primary_only", "both") and (max_edges <= 0 or len(edges) < max_edges):
                 remaining = max_edges - len(edges) if max_edges > 0 else None
@@ -442,7 +452,7 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
 
 
 def _fetch_citation_edge_candidates(cursor, source_name, cit_table, cls_table, id_col, limit, status_sql, status_params,
-                                    mix_publishers: bool = False):
+                                    mix_publishers: bool = False, first_dois: str = ""):
     """Citation edges (citing paper cites the dataset's primary paper) -> mode citing."""
     sql = f"""
         SELECT cit.{id_col} AS dataset_id, cit.primary_paper_doi, cit.citing_paper_doi
@@ -454,7 +464,7 @@ def _fetch_citation_edge_candidates(cursor, source_name, cit_table, cls_table, i
         WHERE 1=1
           {status_sql}
         ORDER BY
-            {_citation_edge_order_sql(mix_publishers)}
+            {_citation_edge_order_sql(mix_publishers, first_dois)}
         LIMIT %(limit)s;
     """
     cursor.execute(sql, {**status_params, "limit": limit})
@@ -917,7 +927,7 @@ def summarize_classification_run(**context):
         "model", "reasoning_effort", "classification_scope", "source_filter", "max_edges_per_run",
         "batch_size", "dry_run", "reclassify_existing", "fetch_missing_fulltext",
         "temperature", "max_tokens", "max_input_chars", "max_retries", "min_credit_usd", "mix_publishers",
-        "dataset_ids",
+        "dataset_ids", "include_citing_dois",
     )}
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -964,6 +974,9 @@ def _build_dag_params() -> Dict[str, Any]:
         "mix_publishers": False,
         # Classify only pairs for these datasets (use with source_filter). Empty = all.
         "dataset_ids": [],
+        # Put these citing papers' pairs first (with reclassify_existing to redo
+        # already-classified ones). Used by stack_integration_test for a known REUSE.
+        "include_citing_dois": [],
     }
     if Param is not None:
         p["model"] = Param(DEFAULT_MODEL, type="string", title="Model",

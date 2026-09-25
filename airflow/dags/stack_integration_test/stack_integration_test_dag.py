@@ -78,10 +78,15 @@ DAG_ID = "stack_integration_test"
 # full text. CRCNS alm-3 is still keyed by its DOI on staging, so its run also
 # exercises the DOI -> code re-key.
 ARCHIVES: Dict[str, Dict[str, str]] = {
-    "dandi": {"label": "DANDI", "dataset_id": "000402", "ingest_id": "000402"},
-    "openneuro": {"label": "OpenNeuro", "dataset_id": "ds004213", "ingest_id": "ds004213"},
-    "crcns": {"label": "CRCNS", "dataset_id": "alm-3", "ingest_id": "10.6080/k0rb72jw"},
-    "sparc": {"label": "SPARC", "dataset_id": "308", "ingest_id": "308"},
+    # reuse_citing_doi: a citing paper known to reuse the dataset. Its pair is
+    # re-classified first every run and must come back REUSE. 000402's is the
+    # vascular basement membrane paper that analyzed the MICrONS EM volume
+    # (REUSE 10/10 here; the dataset is in find_reuse's reviewed reuse set).
+    "dandi": {"label": "DANDI", "dataset_id": "000402", "ingest_id": "000402",
+              "reuse_citing_doi": "10.1186/s12987-023-00425-4"},
+    "openneuro": {"label": "OpenNeuro", "dataset_id": "ds004213", "ingest_id": "ds004213", "reuse_citing_doi": ""},
+    "crcns": {"label": "CRCNS", "dataset_id": "alm-3", "ingest_id": "10.6080/k0rb72jw", "reuse_citing_doi": ""},
+    "sparc": {"label": "SPARC", "dataset_id": "308", "ingest_id": "308", "reuse_citing_doi": ""},
 }
 
 # Per-archive stages in order; used to lay out the report.
@@ -473,6 +478,32 @@ def verify_classify(*, key: str, **context) -> None:
             s.warn(f"{len(errors)} pair(s) ended in a classifier error")
         if not s.details["with_evidence_quotes"]:
             s.warn("no classification carries evidence quotes")
+
+        # The known REUSE pair must be re-classified this run and still come
+        # back REUSE with evidence: proves the classifier can still say REUSE,
+        # not just that it runs.
+        reuse_doi = (context["params"].get(f"{key}_reuse_citing_doi") or "").strip().lower()
+        if reuse_doi:
+            cur.execute(f"""
+                SELECT status, classification, confidence,
+                       jsonb_array_length(COALESCE(evidence_quotes, '[]'::jsonb)), reasoning
+                FROM {key}_paper_citation_classifications
+                WHERE {id_col} = %s AND lower(citing_paper_doi) = %s AND classified_at >= %s""",
+                        (ds, reuse_doi, since))
+            got = cur.fetchone()
+            s.details["known_reuse_pair"] = {"citing_paper_doi": reuse_doi,
+                                             "label": got[1] if got else None,
+                                             "confidence": got[2] if got else None,
+                                             "evidence_quotes": got[3] if got else None}
+            if not got:
+                raise RuntimeError(f"known REUSE pair {reuse_doi} was not re-classified this run "
+                                   f"(is it still a citation edge of {ds}?)")
+            if got[1] != "REUSE":
+                raise RuntimeError(f"known REUSE pair {reuse_doi} came back {got[1] or got[0]} "
+                                   f"(confidence {got[2]}): {(got[4] or '')[:300]}")
+            if not got[3]:
+                raise RuntimeError(f"known REUSE pair {reuse_doi} is REUSE but has no evidence quotes")
+
         cur.execute("SELECT summary FROM paper_reuse_classification_runs WHERE run_id = %s ORDER BY id DESC LIMIT 1", (rid,))
         run = cur.fetchone()
         if run and isinstance(run[0], dict):
@@ -569,6 +600,10 @@ def _params() -> Dict[str, Any]:
     }
     for key, cfg in ARCHIVES.items():
         p[f"{key}_dataset_id"] = Param(cfg["dataset_id"], type="string", title=f"{cfg['label']} test dataset")
+        p[f"{key}_reuse_citing_doi"] = Param(
+            cfg.get("reuse_citing_doi", ""), type="string", title=f"{cfg['label']} known REUSE citing paper",
+            description="A citing paper known to reuse the test dataset. Classified first every run and "
+                        "must come back REUSE. Empty = no REUSE assertion for this archive.")
         if cfg["ingest_id"] != cfg["dataset_id"]:
             p[f"{key}_ingest_id"] = Param(cfg["ingest_id"], type="string", title=f"{cfg['label']} id to ingest by",
                                           description="CRCNS ingestion matches the DOI, before the code is resolved.")
@@ -641,6 +676,7 @@ for key, cfg in ARCHIVES.items():
         "source_filter": cfg["label"],
         "dataset_ids": [ds],
         "max_edges_per_run": "{{ params.pairs_per_archive }}",
+        "include_citing_dois": ["{{ params." + key + "_reuse_citing_doi }}"],
         "reclassify_existing": True,
         "batch_size": 2,
         "model": "{{ params.model }}",

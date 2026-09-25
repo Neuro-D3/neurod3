@@ -116,3 +116,18 @@ class TestDag:
     def test_crcns_ingests_by_doi_and_maps_by_code(self):
         assert S.ARCHIVES["crcns"]["ingest_id"].startswith("10.6080/")
         assert not S.ARCHIVES["crcns"]["dataset_id"].startswith("10.")
+
+
+class TestKnownReusePair:
+    def test_dandi_has_a_known_reuse_pair_and_the_others_do_not(self):
+        assert S.ARCHIVES["dandi"]["reuse_citing_doi"] == "10.1186/s12987-023-00425-4"
+        assert all(not S.ARCHIVES[k]["reuse_citing_doi"] for k in ("openneuro", "crcns", "sparc"))
+
+    def test_classify_trigger_passes_it_first(self):
+        conf = S.dag.get_task("dandi__classify").conf
+        assert conf["include_citing_dois"] == ["{{ params.dandi_reuse_citing_doi }}"]
+        assert conf["reclassify_existing"] is True  # otherwise an already-classified pair is skipped
+
+    def test_each_archive_exposes_the_param(self):
+        for key in S.ARCHIVES:
+            assert f"{key}_reuse_citing_doi" in S.dag.params

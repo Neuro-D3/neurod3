@@ -21,11 +21,16 @@ LIST_ALL = 1_000_000
 
 
 def requested_dataset_ids(params: Dict[str, Any] | None) -> List[str]:
+    """The `dataset_ids` param as a clean list (see `requested_ids`)."""
+    return requested_ids(params, "dataset_ids")
+
+
+def requested_ids(params: Dict[str, Any] | None, key: str) -> List[str]:
     """
-    The `dataset_ids` param as a clean list: accepts a list or a comma/space
+    A list-of-ids param as a clean list: accepts a list or a comma/space
     separated string, strips blanks, keeps order, drops duplicates.
     """
-    raw = (params or {}).get("dataset_ids")
+    raw = (params or {}).get(key)
     if raw is None:
         return []
     if isinstance(raw, str):
