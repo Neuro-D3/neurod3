@@ -62,6 +62,17 @@ resource "google_cloud_run_v2_service" "frontend" {
       }
     }
   }
+
+  # The Deploy to Staging workflow rolls new images out with `gcloud run services
+  # update`; Terraform only sets the first image. Without this, every apply would
+  # roll the service back to var.frontend_image and undo the last deploy.
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+    ]
+  }
 }
 
 resource "google_cloud_run_v2_service_iam_member" "frontend_public" {
