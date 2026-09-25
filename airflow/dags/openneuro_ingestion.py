@@ -61,7 +61,7 @@ import requests
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
-from utils.database import get_db_connection, create_unified_datasets_view
+from utils.database import get_db_connection, create_unified_datasets_view, apply_schema_ddl
 from utils.targeting import LIST_ALL, keep_requested, requested_dataset_ids
 
 logger = logging.getLogger(__name__)
@@ -1398,7 +1398,7 @@ def create_openneuro_table(**context):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(create_table_sql)
+                apply_schema_ddl(cursor, create_table_sql)
                 # Allow schema evolution without forcing a full drop/recreate.
                 cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS license TEXT;")
                 cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;")

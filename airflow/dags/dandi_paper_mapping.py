@@ -45,6 +45,7 @@ except Exception:  # pragma: no cover
 #
 
 from utils.database import (
+    apply_schema_ddl,
     get_db_connection,
     ensure_paper_reuse_classification_columns,
     backfill_papers_text_status,
@@ -340,7 +341,7 @@ def create_paper_mapping_tables(**context) -> None:
     """
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(ddl)
+            apply_schema_ddl(cursor, ddl)
             # Whole-paper classification columns + runs table (utils/database.py);
             # idempotent, shared with the paper_reuse_classification DAG.
             ensure_paper_reuse_classification_columns(cursor)
