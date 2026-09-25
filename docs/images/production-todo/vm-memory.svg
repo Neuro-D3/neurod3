@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" font-family="Helvetica,Arial,sans-serif" font-size="11">
+<rect width="760" height="300" fill="#ffffff"/>
+<text x="56" y="22" font-size="14" font-weight="bold" fill="#1f2328">Airflow VM: memory used</text>
+<line x1="56" y1="256.0" x2="744" y2="256.0" stroke="#e5e7eb"/>
+<text x="50" y="260.0" text-anchor="end" fill="#57606a">0%</text>
+<line x1="56" y1="202.0" x2="744" y2="202.0" stroke="#e5e7eb"/>
+<text x="50" y="206.0" text-anchor="end" fill="#57606a">25%</text>
+<line x1="56" y1="148.0" x2="744" y2="148.0" stroke="#e5e7eb"/>
+<text x="50" y="152.0" text-anchor="end" fill="#57606a">50%</text>
+<line x1="56" y1="94.0" x2="744" y2="94.0" stroke="#e5e7eb"/>
+<text x="50" y="98.0" text-anchor="end" fill="#57606a">75%</text>
+<line x1="56" y1="40.0" x2="744" y2="40.0" stroke="#e5e7eb"/>
+<text x="50" y="44.0" text-anchor="end" fill="#57606a">100%</text>
+<text x="56.0" y="276" text-anchor="middle" fill="#57606a">09:00</text>
+<text x="170.7" y="276" text-anchor="middle" fill="#57606a">11:00</text>
+<text x="285.3" y="276" text-anchor="middle" fill="#57606a">13:00</text>
+<text x="400.0" y="276" text-anchor="middle" fill="#57606a">15:00</text>
+<text x="514.7" y="276" text-anchor="middle" fill="#57606a">17:00</text>
+<text x="629.3" y="276" text-anchor="middle" fill="#57606a">19:00</text>
+<text x="744.0" y="276" text-anchor="middle" fill="#57606a">21:00</text>
+<text x="400.0" y="292" text-anchor="middle" fill="#57606a">UTC, 2026-09-25</text>
+<line x1="479.3" y1="40" x2="479.3" y2="256" stroke="#9ca3af" stroke-dasharray="4 3"/>
+<text x="482.3" y="50" text-anchor="start" fill="#6b7280" font-size="10">mapping runs start</text>
+<line x1="551.0" y1="40" x2="551.0" y2="256" stroke="#9ca3af" stroke-dasharray="4 3"/>
+<text x="554.0" y="62" text-anchor="start" fill="#6b7280" font-size="10">citation phase</text>
+<line x1="600.7" y1="40" x2="600.7" y2="256" stroke="#9ca3af" stroke-dasharray="4 3"/>
+<text x="603.7" y="74" text-anchor="start" fill="#6b7280" font-size="10">OpenAlex budget 0</text>
+<line x1="724.7" y1="40" x2="724.7" y2="256" stroke="#9ca3af" stroke-dasharray="4 3"/>
+<text x="721.7" y="86" text-anchor="end" fill="#6b7280" font-size="10">CRCNS stopped</text>
+<line x1="56" y1="72.4" x2="744" y2="72.4" stroke="#dc2626" stroke-dasharray="6 3"/>
+<text x="60" y="68.4" fill="#dc2626" font-size="10">85% alert threshold</text>
+<path d="M84.7,217.9 L89.4,137.6 L94.2,123.0 L99.0,122.4 L103.8,187.8 L108.6,232.2 L113.3,211.6 L118.1,210.3 L122.9,224.1 L127.7,205.2 L132.4,204.6 L137.2,204.7 L142.0,204.7 L146.8,203.4 L151.6,190.9 L156.3,204.2 L161.1,204.0 L165.9,203.7 L170.7,203.7 L175.4,203.6 L180.2,203.8 L185.0,203.9 L189.8,204.0 L194.6,203.7 L199.3,203.6 L204.1,203.5 L208.9,203.7 L213.7,203.8 L218.4,203.4 L223.2,203.6 L228.0,203.9 L232.8,203.7 L237.6,203.6 L242.3,203.5 L247.1,203.9 L251.9,209.5 L256.7,205.2 L261.4,210.3 L266.2,208.0 L271.0,208.5 L275.8,205.5 L280.6,204.9 L285.3,204.5 L290.1,205.1 L294.9,205.3 L299.7,205.1 L304.4,204.7 L309.2,193.3 L314.0,191.5 L318.8,193.4 L323.6,172.3 L328.3,193.5 L333.1,193.7 L337.9,185.4 L342.7,193.0 L347.4,193.3 L352.2,193.5 L357.0,193.1 L361.8,193.0 L366.6,193.0 L371.3,193.3 L376.1,193.3 L380.9,193.0 L385.7,192.9 L390.4,193.1 L395.2,192.7 L400.0,193.1 L404.8,193.2 L409.6,193.0 L414.3,193.1 L419.1,193.0 L423.9,191.7 L428.7,184.8 L433.4,184.7 L438.2,184.0 L443.0,184.7 L447.8,185.4 L452.6,185.7 L457.3,185.9 L462.1,185.5 L466.9,185.9 L471.7,185.7 L476.4,185.9 L481.2,185.8 L486.0,185.3 L490.8,175.9 L495.6,174.3 L500.3,176.7 L505.1,170.4 L509.9,177.9 L514.7,176.4 L519.4,175.2 L524.2,176.3 L529.0,177.7 L533.8,175.5 L538.6,172.3 L543.3,177.9 L548.1,168.8 L552.9,164.5 L557.7,157.3 L562.4,147.7 L567.2,148.0 L572.0,149.2 L576.8,146.7 L581.6,135.2 L586.3,138.7 L591.1,139.2 L595.9,137.1 L600.7,134.4 L605.4,134.2 L610.2,131.0 L615.0,131.9 L619.8,132.3 L624.6,129.6 L629.3,128.1 L634.1,124.1 L638.9,118.5 L643.7,122.0 L648.4,123.0 L653.2,120.3 L658.0,121.3 L662.8,118.6 L667.6,121.8 L672.3,120.0 L677.1,128.1 L681.9,129.7 L686.7,128.2 L691.4,132.3 L696.2,130.2 L701.0,130.0 L705.8,128.3 L710.6,128.7 L715.3,126.4 L720.1,124.0 L724.9,117.8 L729.7,184.0 L734.4,184.3 L739.2,184.6 L744.0,184.5" fill="none" stroke="#7c3aed" stroke-width="2"/>
+<rect x="621" y="13" width="10" height="3" fill="#7c3aed"/><text x="635" y="18" fill="#1f2328">memory used %</text>
+</svg>
