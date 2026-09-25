@@ -19,7 +19,7 @@ flowchart TB
       api["neuro-d3-api<br/>FastAPI · :8000 · scale-to-zero"]
     end
 
-    subgraph vm["GCE VM neuro-d3-airflow (e2-medium, 34.169.165.25)"]
+    subgraph vm["GCE VM neuro-d3-airflow (e2-standard-2, 34.169.165.25)"]
       caddy["Caddy :80 (HTTP)"]
       af["airflow-api-server :8080<br/>scheduler · triggerer · dag-processor · init<br/>(LocalExecutor)"]
       proxy["cloudsql-proxy (ADC)"]
@@ -68,7 +68,7 @@ never exposed**. **No NAT** — the VM egresses via its static public IP `34.169
 - **Cloud Run `neuro-d3-api`** — FastAPI, scale-to-zero, public. Reads `dag_data` over the
   **Cloud SQL connector** (unix socket); `DB_PASSWORD` from Secret Manager; CORS allows the
   frontend origin.
-- **GCE VM `neuro-d3-airflow`** (`e2-medium`) — runs the Airflow docker-compose stack:
+- **GCE VM `neuro-d3-airflow`** (`e2-standard-2`, 8 GB) — runs the Airflow docker-compose stack:
   **Caddy** (plain HTTP on :80) → **api-server :8080**, **scheduler / triggerer / dag-processor**
   (LocalExecutor), one-shot **init**, and a **cloudsql-proxy** sidecar (ADC-authed). Image
   pulled from Artifact Registry; secrets fetched from Secret Manager into

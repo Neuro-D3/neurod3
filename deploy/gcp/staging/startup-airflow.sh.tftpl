@@ -29,6 +29,18 @@ APP_DIR="/opt/neuro-d3"
 ENV_FILE="/etc/neuro-d3/airflow.env"
 COMPOSE_FILE="$APP_DIR/deploy/gcp/staging/docker-compose.gce.yml"
 
+# Keep the image the last deploy rolled out. Deploy to Staging edits
+# AIRFLOW_IMAGE in $ENV_FILE, and step 3 below rewrites that file; without this,
+# every reboot reverted Airflow to the bootstrap image until the next deploy.
+# A fresh VM has no env file yet and starts from the bootstrap image as before.
+if [ -f "$ENV_FILE" ]; then
+  PREV_IMAGE="$(grep -m1 '^AIRFLOW_IMAGE=' "$ENV_FILE" | cut -d= -f2- || true)"
+  if [ -n "$PREV_IMAGE" ]; then
+    AIRFLOW_IMAGE="$PREV_IMAGE"
+    echo "Keeping deployed Airflow image: $AIRFLOW_IMAGE"
+  fi
+fi
+
 # ─── 1. Base packages: Docker, gcloud, git ──────────────────────────────────
 export DEBIAN_FRONTEND=noninteractive
 apt-get update

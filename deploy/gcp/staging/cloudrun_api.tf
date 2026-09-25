@@ -84,6 +84,17 @@ resource "google_cloud_run_v2_service" "api" {
     google_project_iam_member.api_cloudsql_client,
     google_secret_manager_secret_iam_member.api_db_password,
   ]
+
+  # The Deploy to Staging workflow rolls new images out with `gcloud run services
+  # update`; Terraform only sets the first image. Without this, every apply would
+  # roll the service back to var.api_image and undo the last deploy.
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+    ]
+  }
 }
 
 # Public access for staging.
