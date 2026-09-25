@@ -50,7 +50,8 @@ from utils.paper_citations import (
     get_openalex_paper_data,
 )
 from utils.paper_fulltext import fetch_fulltext_oa
-from utils.openalex_budget import check_openalex_budget
+from utils.openalex_budget import check_openalex_budget, fetch_openalex_budget, format_budget
+from utils.batch_progress import BatchProgress
 from utils.openneuro_paper_resolution import resolve_papers_for_openneuro_dataset, OpenNeuroPaperResolutionResult
 
 logger = logging.getLogger(__name__)
@@ -949,9 +950,16 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            for rec in dataset_rows:
+            progress = BatchProgress(f"Citations batch {batch_index}", len(dataset_rows), "primary papers",
+                                     counters=metrics, telemetry=telemetry, log=logger)
+            if dataset_rows:
+                logger.info("Citations batch %d: %d datasets, %d primary papers. %s", batch_index,
+                            len({r["openneuro_id"] for r in dataset_rows}), len(dataset_rows),
+                            format_budget(fetch_openalex_budget(session)))
+            for rec_index, rec in enumerate(dataset_rows):
                 openneuro_id = rec["openneuro_id"]
                 primary_doi = normalize_doi(rec.get("paper_doi"))
+                progress.update(rec_index, note=f"starting {openneuro_id} {primary_doi}", force=True)
                 created_at = rec.get("created_at")
                 if not primary_doi or not created_at:
                     continue
@@ -1048,7 +1056,10 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                         max_retries=int(params.get("max_retries", 6)),
                         backoff_seconds=float(params.get("backoff_seconds", 2.0)),
                     )
-                    for citing in citing_papers:
+                    progress.update(note=f"{openneuro_id} {primary_doi}: {len(citing_papers)} citing papers from OpenAlex",
+                                    force=True)
+                    for citing_index, citing in enumerate(citing_papers, 1):
+                        progress.update(note=f"{openneuro_id} {primary_doi}: citing paper {citing_index}/{len(citing_papers)}")
                         citing_doi = normalize_doi(citing.get("doi"))
                         if not citing_doi:
                             continue
@@ -1098,6 +1109,9 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
         conn.commit()
 
     metrics["datasets_with_primary_papers"] = len(seen_datasets)
+    if dataset_rows:
+        progress.update(len(dataset_rows), note="batch finished. " + format_budget(fetch_openalex_budget(session)),
+                        force=True)
     return {"batch_index": batch_index, **metrics, "telemetry": telemetry.to_dict()}
 
 
@@ -1163,7 +1177,12 @@ def extract_and_persist_citation_contexts_batch(*, batch_index: int, dataset_ids
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            for rec in rows:
+            progress = BatchProgress(f"Contexts batch {batch_index}", len(rows), "citation edges",
+                                     counters=metrics, telemetry=telemetry, log=logger)
+            if rows:
+                progress.update(note="starting", force=True)
+            for rec_index, rec in enumerate(rows):
+                progress.update(rec_index, note=f"{rec['openneuro_id']} <- {rec['citing_paper_doi']}")
                 metrics["citation_edges_seen"] += 1
                 if rec.get("contexts_extracted_at") and not force_refresh:
                     continue
@@ -1208,6 +1227,8 @@ def extract_and_persist_citation_contexts_batch(*, batch_index: int, dataset_ids
                 )
                 metrics["citation_edges_updated"] += 1
         conn.commit()
+    if rows:
+        progress.update(len(rows), note="batch finished", force=True)
 
     return {"batch_index": batch_index, **metrics, "telemetry": telemetry.to_dict()}
 
