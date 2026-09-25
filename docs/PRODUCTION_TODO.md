@@ -32,8 +32,15 @@ Numbers below were measured on staging on 2026-09-25, during the first run with
   serially inside the citation task. Up to seven sources are tried, including
   headless Chrome.
 - **Failures are the slowest case.** A paper with no open text tries every
-  source before giving up, averaging 13.6 s. Nothing records the miss, so the
-  next run pays the same cost again.
+  source before giving up, averaging 13.6 s. The miss is recorded (a cache key
+  is written either way), so later runs skip it, but it is never retried.
+- **Duplicates are mostly caught.** 21% of visits were to a citing paper
+  already seen by another dataset or primary (7,374 edges, 5,841 distinct
+  citing papers). Repeats took a median of 0.26 s (cache hit). About 220
+  (~4% of task time) were real double downloads: two tasks reached the same
+  paper before either saved it. The worst case was the primary shared by
+  `alm-1` and `ssc-1`, whose two tasks ended up downloading the same 835
+  citing papers side by side.
 - **Work is split by dataset count, not by work.** 25 datasets per batch, so
   one heavily cited primary (2,000 citing papers) pins one task for hours while
   the other slots finish.
@@ -50,8 +57,10 @@ Numbers below were measured on staging on 2026-09-25, during the first run with
    - Citation tasks only list citing papers and store the edges: minutes per
      archive, about 1 OpenAlex request per 200 citing papers.
    - A separate text stage fetches full text for papers that don't have it yet.
-   - Papers are deduplicated across archives, since `papers` is shared, so a
-     paper cited by two datasets is fetched once.
+   - The text stage works on distinct papers, deduplicated across archives,
+     since `papers` is shared. A paper cited by two datasets is fetched once.
+   - A task claims each DOI before fetching it, for example with a claim row or
+     an advisory lock, so two concurrent tasks never download the same paper.
 
 2. **Fetch full text concurrently, with a limit per source.**
    - Use a thread pool inside each text task (16–32 workers). The work is
@@ -66,11 +75,14 @@ Numbers below were measured on staging on 2026-09-25, during the first run with
    - Build tasks from chunks of about 200 citing papers, so a 2,000-citer
      primary becomes 10 parallel tasks rather than one 3-hour task.
 
-4. **Remember failed full-text lookups.**
-   - Store "unavailable" with the reason and a retry-after date (for example 30
-     days), and skip those papers until then.
-   - This removes the 13.6 s cost from every later run. It was about 30% of
-     citing papers today.
+4. **Retry failed full-text lookups on a schedule.**
+   - Misses are already cached, but permanently, so a paper that becomes open
+     access later is never picked up. They were about 30% of citing papers
+     today.
+   - Store a retry-after date (for example 30 days) with the reason, and
+     re-try only those that are due, in the background at low priority.
+   - Stop the hardest sources early: skip the headless-Chrome path for DOIs
+     whose publisher has never yielded text.
 
 5. **Store paper full text in a persistent shared store (GCS bucket).**
    - Today the text cache lives on the VM boot disk (`/opt/airflow/output`,
@@ -104,8 +116,8 @@ Numbers below were measured on staging on 2026-09-25, during the first run with
      is empty or on Sunday night.
    - The regular VM keeps the UI, the scheduler and daily incremental runs.
    - Target: at about 7 s per citing paper, 20k citing papers is about 40
-     worker-hours. With 20–30 concurrent fetchers that's about 1.5–2 hours,
-     before the savings from items 4 and 7.
+     worker-hours. With 20–30 concurrent fetchers that's about 1.5–2 hours.
+     Later runs are much shorter, since cached papers take about 0.3 s.
    - Price the machine type and spot availability before choosing.
 
 9. **Separate task execution from the scheduler.**
