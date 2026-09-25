@@ -141,8 +141,15 @@ terraform output -raw airflow_url    # https://<static-ip> — self-signed cert 
 
 ## 6. Iterating & teardown
 
-- **New image:** rebuild, push a **new tag/digest**, update `terraform.tfvars`,
-  `terraform apply` (Cloud Run redeploys on the changed ref).
+- **New image:** merge to `main` (or run **Deploy to Staging** by hand with
+  `deploy_all`) and the workflow builds, pushes and rolls out the changed
+  components. Terraform ignores the Cloud Run image after the first apply, so
+  changing `api_image` / `frontend_image` in `terraform.tfvars` does **not**
+  redeploy. To roll an image by hand, push a new tag/digest, then:
+  ```powershell
+  gcloud run services update neuro-d3-api      --image <ref> --region us-west1 --project neuro-d3-staging
+  gcloud run services update neuro-d3-frontend --image <ref> --region us-west1 --project neuro-d3-staging
+  ```
 - **Teardown:** `terraform destroy` works cleanly (`db_deletion_protection = false`,
   buckets `force_destroy = true`). It removes only in-project resources, never the
   platform-owned project/state bucket.
