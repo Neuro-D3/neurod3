@@ -62,6 +62,7 @@ from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
 from utils.database import get_db_connection, create_unified_datasets_view
+from utils.targeting import LIST_ALL, keep_requested, requested_dataset_ids
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,9 @@ dag = DAG(
     is_paused_upon_creation=False,
     params={
         'num_datasets': 5000,  # Default number of datasets to fetch
+        # Ingest only these datasets (list or comma-separated ids; CRCNS takes DOIs).
+        # Empty = the normal full ingestion. Used by stack_integration_test.
+        'dataset_ids': [],
         # OpenNeuro is sensitive to high concurrency; keep this lower than DANDI by default.
         'enrichment_max_workers': 5,
     },
@@ -1417,6 +1421,11 @@ def create_openneuro_table(**context):
 def fetch_openneuro_datasets(**context) -> List[Dict[str, Any]]:
     """Fetch datasets from OpenNeuro GraphQL API."""
     num_datasets = context.get('params', {}).get('num_datasets', 50)
+    # dataset_ids: ingest only these (the stack integration test); list the whole
+    # archive so the requested ones are found wherever they sit in it.
+    requested = requested_dataset_ids(context.get('params'))
+    if requested:
+        num_datasets = LIST_ALL
 
     # Build the Dataset node selection based on schema availability.
     # NOTE: We intentionally do NOT request `latestSnapshot` here because OpenNeuro sometimes
@@ -1520,7 +1529,7 @@ def fetch_openneuro_datasets(**context) -> List[Dict[str, Any]]:
             cursor = page_info.get('endCursor')
         
         logger.info("Successfully fetched %d datasets from OpenNeuro API", len(datasets))
-        return datasets
+        return keep_requested(datasets, requested, archive="OpenNeuro")
     
     except requests.exceptions.RequestException as e:
         logger.error("Error fetching datasets from OpenNeuro API: %s", e)

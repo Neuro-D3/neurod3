@@ -20,6 +20,7 @@ from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
 from utils.database import get_db_connection, create_unified_datasets_view
+from utils.targeting import LIST_ALL, keep_requested, requested_dataset_ids
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,9 @@ dag = DAG(
     is_paused_upon_creation=False,
     params={
         'num_datasets': 5000,
+        # Ingest only these datasets (list or comma-separated ids; CRCNS takes DOIs).
+        # Empty = the normal full ingestion. Used by stack_integration_test.
+        'dataset_ids': [],
         # doi.org is a small shared service; keep concurrency low.
         'enrichment_max_workers': 5,
     },
@@ -252,6 +256,11 @@ def create_crcns_table(**context):
 def fetch_crcns_datasets(**context) -> List[Dict[str, Any]]:
     """Page through DataCite for DOI prefix 10.6080 (CRCNS)."""
     num_datasets = context.get('params', {}).get('num_datasets', 5000)
+    # dataset_ids: ingest only these (the stack integration test); list the whole
+    # archive so the requested ones are found wherever they sit in it.
+    requested = requested_dataset_ids(context.get('params'))
+    if requested:
+        num_datasets = LIST_ALL
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
 
@@ -300,7 +309,9 @@ def fetch_crcns_datasets(**context) -> List[Dict[str, Any]]:
         time.sleep(0.5)
 
     logger.info("Fetched %d CRCNS records from DataCite", len(datasets))
-    return datasets
+    # Before enrichment a CRCNS record is keyed by its DOI; match requested ids
+    # against the DOI (pass e.g. 10.6080/k0ms3qnt for alm-1).
+    return keep_requested(datasets, requested, archive="CRCNS")
 
 
 def _resolve_doi_to_code(doi: str, session: requests.Session) -> Tuple[Optional[str], Optional[str]]:

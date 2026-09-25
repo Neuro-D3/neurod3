@@ -54,6 +54,7 @@ except Exception:  # pragma: no cover
 
 try:
     from utils.database import get_db_connection, ensure_paper_reuse_classification_columns
+    from utils.targeting import requested_dataset_ids, sql_id_list
     from utils.llm_classify import get_openrouter_api_key, validate_openrouter_api_key
     from utils.classify_fulltext_reuse import (
         classify_paper_reuse,
@@ -77,6 +78,7 @@ try:
     from utils.find_reuse_core import Telemetry
 except ImportError:  # pragma: no cover - direct import outside the dags folder
     from dags.utils.database import get_db_connection, ensure_paper_reuse_classification_columns
+    from dags.utils.targeting import requested_dataset_ids, sql_id_list
     from dags.utils.llm_classify import get_openrouter_api_key, validate_openrouter_api_key
     from dags.utils.classify_fulltext_reuse import (
         classify_paper_reuse,
@@ -408,21 +410,26 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
 
         status_sql, status_params = _candidate_status_filter(reclassify, PROMPT_VERSION, model)
 
+        # dataset_ids: only pairs for these datasets (the stack integration test).
+        requested = requested_dataset_ids(params)
+        id_filter = sql_id_list(requested) if requested else ""
+
         for source_name, cit_table, cls_table, id_col in sources:
             if max_edges > 0 and len(edges) >= max_edges:
                 break
             # None -> LIMIT NULL, which Postgres treats as no limit (max_edges_per_run=0).
             remaining = max_edges - len(edges) if max_edges > 0 else None
+            source_sql = status_sql + (f"\n          AND cit.{id_col} IN ({id_filter})" if id_filter else "")
 
             if scope in ("citation_edges", "both"):
                 edges.extend(_fetch_citation_edge_candidates(
-                    cursor, source_name, cit_table, cls_table, id_col, remaining, status_sql, status_params,
+                    cursor, source_name, cit_table, cls_table, id_col, remaining, source_sql, status_params,
                     mix_publishers=mix_publishers))
 
             if scope in ("primary_only", "both") and (max_edges <= 0 or len(edges) < max_edges):
                 remaining = max_edges - len(edges) if max_edges > 0 else None
                 edges.extend(_fetch_primary_candidates(
-                    cursor, source_name, cit_table, cls_table, id_col, remaining, status_sql, status_params))
+                    cursor, source_name, cit_table, cls_table, id_col, remaining, source_sql, status_params))
 
     if max_edges > 0:
         edges = edges[:max_edges]
@@ -910,6 +917,7 @@ def summarize_classification_run(**context):
         "model", "reasoning_effort", "classification_scope", "source_filter", "max_edges_per_run",
         "batch_size", "dry_run", "reclassify_existing", "fetch_missing_fulltext",
         "temperature", "max_tokens", "max_input_chars", "max_retries", "min_credit_usd", "mix_publishers",
+        "dataset_ids",
     )}
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -954,6 +962,8 @@ def _build_dag_params() -> Dict[str, Any]:
         "dry_run": False,
         "reclassify_existing": False,
         "mix_publishers": False,
+        # Classify only pairs for these datasets (use with source_filter). Empty = all.
+        "dataset_ids": [],
     }
     if Param is not None:
         p["model"] = Param(DEFAULT_MODEL, type="string", title="Model",

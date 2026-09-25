@@ -13,6 +13,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 
 from utils.database import get_db_connection, create_unified_datasets_view
+from utils.targeting import LIST_ALL, keep_requested, requested_dataset_ids
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,9 @@ dag = DAG(
     is_paused_upon_creation=False,
     params={
         'num_datasets': 5000,  # Default number of datasets to fetch
+        # Ingest only these datasets (list or comma-separated ids; CRCNS takes DOIs).
+        # Empty = the normal full ingestion. Used by stack_integration_test.
+        'dataset_ids': [],
     },
 )
 
@@ -170,6 +174,11 @@ def create_dandi_table(**context):
 def fetch_dandi_datasets(**context) -> List[Dict[str, Any]]:
     """Fetch datasets from DANDI API and normalize them (no description yet)."""
     num_datasets = context.get('params', {}).get('num_datasets', 50)
+    # dataset_ids: ingest only these (the stack integration test); list the whole
+    # archive so the requested ones are found wherever they sit in it.
+    requested = requested_dataset_ids(context.get('params'))
+    if requested:
+        num_datasets = LIST_ALL
 
     dandi_api_url = "https://api.dandiarchive.org/api/dandisets/"
     datasets: List[Dict[str, Any]] = []
@@ -215,7 +224,7 @@ def fetch_dandi_datasets(**context) -> List[Dict[str, Any]]:
             next_url = data.get("next")
 
         logger.info("Successfully fetched %d datasets from DANDI API", len(datasets))
-        return datasets
+        return keep_requested(datasets, requested, archive="DANDI")
 
     except requests.exceptions.RequestException as e:
         logger.error("Error fetching datasets from DANDI API: %s", e)

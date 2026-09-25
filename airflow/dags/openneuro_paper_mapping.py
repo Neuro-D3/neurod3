@@ -41,6 +41,7 @@ from utils.database import (
 )
 from utils.cache_keys import paper_cache_key_for_doi
 from utils.find_reuse_core import is_definitive_no_paper, normalize_doi, Telemetry
+from utils.targeting import requested_dataset_ids, sql_id_list
 from utils.paper_citations import (
     find_citation_contexts,
     get_alternate_doi,
@@ -323,6 +324,14 @@ def fetch_unmapped_openneuro_ids(**context) -> Dict[str, Any]:
               )
         )
         """
+
+    # dataset_ids: exactly these datasets, mapped or not, unfiltered and uncapped
+    # (the stack integration test). Otherwise the normal selection above.
+    requested = requested_dataset_ids(params)
+    if requested:
+        base_where = f"WHERE d.dataset_id IN ({sql_id_list(requested)})"
+        exclude_keywords = ()
+        max_cap = None
 
     join_mapped_counts = """
     LEFT JOIN (
@@ -1505,6 +1514,9 @@ dag = DAG(
         "include_already_mapped": False,
         # If true, also retry datasets a previous run found no paper for
         "retry_unresolved": False,
+        # Map only these datasets, mapped or not (list or comma-separated ids).
+        # Empty = the normal selection. Used by stack_integration_test.
+        "dataset_ids": [],
         "prioritize_doi_signals": True,
         "backfill_missing_paper_titles": False,
         "min_api_interval_seconds": 0.2,

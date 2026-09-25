@@ -48,6 +48,7 @@ from utils.find_reuse_core import (
     resolve_crossref_metadata,
     resolve_openalex_work,
 )
+from utils.targeting import requested_dataset_ids, sql_id_list
 from utils.paper_citations import (
     find_citation_contexts,
     get_alternate_doi,
@@ -532,6 +533,14 @@ def fetch_unmapped_sparc_ids(**context) -> Dict[str, Any]:
             # A previous run already tried these and found no paper (`papers = 0`).
             # Without this they sort ahead of never-tried datasets on every capped run.
             base_where += "  AND d.papers IS DISTINCT FROM 0"
+
+    # dataset_ids: exactly these datasets, mapped or not, unfiltered and uncapped
+    # (the stack integration test). Otherwise the normal selection above.
+    requested = requested_dataset_ids(params)
+    if requested:
+        base_where = f"WHERE d.dataset_id IN ({sql_id_list(requested)})"
+        exclude_keywords = ()
+        max_cap = None
 
     query = f"""
     SELECT d.dataset_id, d.title, d.description, d.url, d.updated_at
@@ -1661,6 +1670,9 @@ dag = DAG(
         "include_already_mapped": False,
         # If true, also retry datasets a previous run found no paper for
         "retry_unresolved": False,
+        # Map only these datasets, mapped or not (list or comma-separated ids).
+        # Empty = the normal selection. Used by stack_integration_test.
+        "dataset_ids": [],
         "min_api_interval_seconds": 0.2,
         "max_retries": 6,
         "backoff_seconds": 2.0,
