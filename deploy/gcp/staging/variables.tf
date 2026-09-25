@@ -60,9 +60,9 @@ variable "db_deletion_protection" {
 
 # ─── Airflow VM ─────────────────────────────────────────────────────────────
 variable "vm_machine_type" {
-  description = "GCE machine type for the Airflow VM. e2-medium is the staging default (matches prod's VM size); e2-small OOMs Airflow."
+  description = "GCE machine type for the Airflow VM. e2-standard-2 (2 vCPU, 8 GB) is the staging default: e2-medium (4 GB) ran out of memory under the Airflow stack plus whole-paper classification and headless Chromium, and e2-small OOMs outright."
   type        = string
-  default     = "e2-medium"
+  default     = "e2-standard-2"
 }
 
 variable "vm_boot_disk_gb" {

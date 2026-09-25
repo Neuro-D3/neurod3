@@ -130,8 +130,10 @@ pipeline write/cache logic and needs a real DAG run to verify.)
 
 - `db_deletion_protection = false` and the bucket's `force_destroy = true` so
   `terraform destroy` works for staging.
-- The Airflow VM defaults to `e2-small` (2 GB). If Airflow OOMs, bump
-  `vm_machine_type = "e2-medium"` (one line) — this matches prod's VM size.
+- The Airflow VM defaults to `e2-standard-2` (2 vCPU, 8 GB). `e2-medium` (4 GB)
+  ran out of memory once whole-paper classification and headless Chromium were
+  added: the kernel killed Airflow, logging and DNS, and SSH (so deploys) stopped
+  working. `e2-small` (2 GB) OOMs outright.
 - CI/CD via GitHub Actions + Workload Identity Federation is defined in `cicd.tf`
   and `.github/workflows/deploy-staging.yml` — see **CI/CD** below.
 
