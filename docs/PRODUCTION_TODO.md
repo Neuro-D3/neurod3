@@ -200,6 +200,11 @@ e2-standard-2.
      least `db-g1-small` (1.7 GB), or `db-custom-1-3840` (1 vCPU, 3.75 GB) for
      production.
    - The data is small (39 MB); the problem is memory and CPU, not storage.
+   - It also fails tasks. On 2026-09-25 a `paper_reuse_classification` batch
+     finished and saved its labels, but Airflow took ~8 s to store its XCom.
+     The Task SDK re-sent the write and got a duplicate-key 409, and the task
+     was marked failed. Until this is fixed, mark such a task success rather
+     than clearing it, since clearing re-runs (and re-pays for) its LLM calls.
    - Consider separating Airflow's metadata database from `dag_data`.
    - The change restarts the database for a minute or two.
 
