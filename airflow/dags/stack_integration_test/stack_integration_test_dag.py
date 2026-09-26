@@ -1,30 +1,38 @@
 """
 Stack integration test DAG (``stack_integration_test``).
 
-Proves the whole pipeline is wired together after a deploy, on one known
-dataset per archive:
+Proves the whole pipeline is wired together, on two test datasets per archive
+(DANDI, OpenNeuro, CRCNS, SPARC), listed in ``known_pairs.json``:
 
     preflight ─▶ ingest ─▶ verify ─▶ map papers (+ small citing-paper backfill)
-              ─▶ verify ─▶ classify a few pairs (real LLM calls) ─▶ verify
-              ─▶ API check ─▶ site check ─▶ report
+              ─▶ verify ─▶ add the known pairs ─▶ classify (real LLM calls)
+              ─▶ verify labels ─▶ API check ─▶ site check ─▶ report
     preflight ─▶ CORS check (browser preflight from each frontend origin) ─▶ report
 
 Each stage triggers the real, deployed DAG (``<archive>_ingestion``,
 ``<archive>_paper_mapping``, ``paper_reuse_classification``) on just the test
-dataset via its ``dataset_ids`` param and waits for it, so scheduling, pools,
+datasets via its ``dataset_ids`` param and waits for it, so scheduling, pools,
 the image and task wiring are exercised, not only the Python. The four
 archives run side by side; a failure stops that archive's chain and the others
 carry on.
 
+Known pairs: human-reviewed (citing paper, dataset) pairs with an expected
+label (REUSE, MENTION or NEITHER). After mapping, any the mapping did not find
+are added to the citation table (``citation_source = 'stack_test_fixture'``),
+then all are re-classified. A known REUSE pair that comes back as anything
+else, or a known non-REUSE pair that comes back REUSE, fails the run; MENTION
+vs NEITHER, or no full text to read, is a warning. Accuracy over many pairs is
+the benchmark DAG's job, not this one's.
+
 Every step writes a row to ``integration_test_steps`` (stage, archive, status,
 details, duration, error and traceback, and which triggered DAG run to look
-at). ``report`` runs last whatever happened, logs a one-screen report, records
-the run in ``integration_test_runs`` and fails the run naming every failed
-step.
+at). ``report`` runs last whatever happened, logs a one-screen report with a
+line per known pair, records the run in ``integration_test_runs`` and fails
+the run naming every failed step.
 
-Staging runs it after every deploy (deploy-staging.yml). Locally, trigger it
-from the UI. It re-classifies the test pairs on every run (a handful of
-whole-paper LLM calls) so an expired key or a broken model is caught.
+Trigger it by hand from the UI (the DAGs it drives must be unpaused). The API,
+site and browser-origin params default to $D3_API_URL / $D3_FRONTEND_URL /
+$D3_FRONTEND_ORIGINS (set on staging), else to the local compose services.
 """
 
 from __future__ import annotations
@@ -36,7 +44,7 @@ import time
 import traceback
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 import requests
@@ -73,26 +81,56 @@ logger = logging.getLogger(__name__)
 
 DAG_ID = "stack_integration_test"
 
-# One test dataset per archive. ingest_id is what the ingestion DAG matches on
-# (CRCNS listings carry the DOI before the short code is resolved).
-# DANDI 000402 (MICrONS) is a known REUSE (find_reuse's reviewers and our own
-# classifier); the others have a mapped primary paper whose citing papers have
-# full text. CRCNS alm-3 is still keyed by its DOI on staging, so its run also
-# exercises the DOI -> code re-key.
-ARCHIVES: Dict[str, Dict[str, str]] = {
-    # reuse_citing_doi: a citing paper known to reuse the dataset. Its pair is
-    # re-classified first every run and must come back REUSE. 000402's is the
-    # vascular basement membrane paper that analyzed the MICrONS EM volume
-    # (REUSE 10/10 here; the dataset is in find_reuse's reviewed reuse set).
-    "dandi": {"label": "DANDI", "dataset_id": "000402", "ingest_id": "000402",
-              "reuse_citing_doi": "10.1186/s12987-023-00425-4"},
-    "openneuro": {"label": "OpenNeuro", "dataset_id": "ds004213", "ingest_id": "ds004213", "reuse_citing_doi": ""},
-    "crcns": {"label": "CRCNS", "dataset_id": "alm-3", "ingest_id": "10.6080/k0rb72jw", "reuse_citing_doi": ""},
-    "sparc": {"label": "SPARC", "dataset_id": "308", "ingest_id": "308", "reuse_citing_doi": ""},
-}
+# Test datasets and known pairs. ingest_id is what the ingestion DAG matches
+# on (CRCNS listings carry the DOI before the short code is resolved).
+FIXTURE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "known_pairs.json")
+ARCHIVE_LABELS = {"dandi": "DANDI", "openneuro": "OpenNeuro", "crcns": "CRCNS", "sparc": "SPARC"}
+EXPECTED_LABELS = ("REUSE", "MENTION", "NEITHER")
+# citation_source / papers.source / doi_source of rows this test adds.
+FIXTURE_SOURCE = "stack_test_fixture"
+
+
+def build_archives(fixture: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """
+    archive key -> {label, datasets: [{dataset_id, ingest_id}], pairs: [...]},
+    from the fixture, checked so a bad edit fails at parse time, not mid-run.
+    """
+    archives: Dict[str, Dict[str, Any]] = {}
+    for key, label in ARCHIVE_LABELS.items():
+        datasets = list((fixture.get("datasets") or {}).get(key) or [])
+        if not datasets:
+            raise ValueError(f"known_pairs.json lists no {label} test dataset")
+        for d in datasets:
+            if not d.get("dataset_id"):
+                raise ValueError(f"{label} test dataset without a dataset_id: {d}")
+            d.setdefault("ingest_id", d["dataset_id"])
+        archives[key] = {"label": label, "datasets": datasets, "pairs": []}
+    for p in fixture.get("pairs") or []:
+        key = p.get("archive")
+        if key not in archives:
+            raise ValueError(f"known pair for unknown archive {key!r}: {p}")
+        if p.get("expected") not in EXPECTED_LABELS:
+            raise ValueError(f"known pair expected label must be one of {EXPECTED_LABELS}: {p}")
+        if p.get("dataset_id") not in {d["dataset_id"] for d in archives[key]["datasets"]}:
+            raise ValueError(f"known pair's dataset {p.get('dataset_id')!r} is not a {key} test dataset")
+        for field in ("primary_paper_doi", "citing_paper_doi"):
+            if not p.get(field):
+                raise ValueError(f"known pair without {field}: {p}")
+            p[field] = p[field].strip().lower()
+        archives[key]["pairs"].append(p)
+    return archives
+
+
+def load_fixture(path: str = FIXTURE_PATH) -> Dict[str, Any]:
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+ARCHIVES: Dict[str, Dict[str, Any]] = build_archives(load_fixture())
 
 # Per-archive stages in order; used to lay out the report.
-STAGES = ["ingest", "verify_ingest", "map", "verify_map", "classify", "verify_classify", "check_api"]
+STAGES = ["ingest", "verify_ingest", "map", "verify_map", "seed_known_pairs", "classify", "verify_classify",
+          "check_api"]
 GLOBAL_STEPS = ["preflight_database", "preflight_openrouter", "preflight_openalex", "preflight_fetcher",
                 "preflight_api", "check_site", "check_cors"]
 
@@ -140,6 +178,29 @@ def cors_problem(origin: str, status: int, headers: Dict[str, str]) -> Optional[
     return None
 
 
+def judge_known_pair(expected: str, status: Optional[str], label: Optional[str]) -> Tuple[str, str]:
+    """
+    (pass | warn | fail, reason) for one known pair's result this run.
+
+    ``status`` / ``label`` are None when the pair was not re-classified. A wrong
+    side of REUSE fails; MENTION vs NEITHER only warns (both say "not reused");
+    no full text warns, since there was nothing to read.
+    """
+    if status is None:
+        return STATUS_FAIL, "not re-classified this run"
+    if status == "no_full_text":
+        return STATUS_WARN, "not scored: no full text for the citing paper"
+    if status != "classified" or not label:
+        return STATUS_FAIL, f"classifier returned {status} instead of a label"
+    if expected == "REUSE":
+        return (STATUS_PASS, "REUSE as expected") if label == "REUSE" else (STATUS_FAIL, f"expected REUSE, got {label}")
+    if label == "REUSE":
+        return STATUS_FAIL, f"expected {expected}, got REUSE"
+    if label == expected:
+        return STATUS_PASS, f"{label} as expected"
+    return STATUS_WARN, f"expected {expected}, got {label} (both not reused)"
+
+
 def build_report(steps: List[Dict[str, Any]], archives: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
     """
     Lay step rows out as a matrix, mark steps the run never reached, and
@@ -162,7 +223,7 @@ def build_report(steps: List[Dict[str, Any]], archives: Dict[str, Dict[str, str]
             warnings.append(f"{step}: {(s.get('details') or {}).get('warning', '')}")
 
     preflight_failed = any(matrix["(global)"].get(g) == STATUS_FAIL for g in GLOBAL_STEPS if g.startswith("preflight"))
-    for key, cfg in archives.items():
+    for cfg in archives.values():
         label = cfg["label"]
         row: Dict[str, str] = {}
         broken = preflight_failed
@@ -185,14 +246,17 @@ def build_report(steps: List[Dict[str, Any]], archives: Dict[str, Dict[str, str]
                 warnings.append(f"{label} {stage}: {(s.get('details') or {}).get('warning', '')}")
         matrix[label] = row
 
-    return {"matrix": matrix, "failures": failures, "warnings": warnings, "passed": not failures}
+    known_pairs = [kp for s in steps if s["step"] == "verify_classify"
+                   for kp in ((s.get("details") or {}).get("known_pairs") or [])]
+    return {"matrix": matrix, "failures": failures, "warnings": warnings, "passed": not failures,
+            "known_pairs": known_pairs}
 
 
 def format_report(report: Dict[str, Any]) -> str:
     """A fixed-width table, one line per archive, for the task log."""
-    cols = ["ingest", "verify_ingest", "map", "verify_map", "classify", "verify_classify", "check_api"]
+    cols = STAGES
     short = {"ingest": "ingest", "verify_ingest": "v_ing", "map": "map", "verify_map": "v_map",
-             "classify": "classify", "verify_classify": "v_cls", "check_api": "api"}
+             "seed_known_pairs": "seed", "classify": "classify", "verify_classify": "v_cls", "check_api": "api"}
     lines = ["archive    " + " ".join(f"{short[c]:<11}" for c in cols)]
     for label, row in report["matrix"].items():
         if label == "(global)":
@@ -200,6 +264,12 @@ def format_report(report: Dict[str, Any]) -> str:
         lines.append(f"{label:<10} " + " ".join(f"{row.get(c, ''):<11}" for c in cols))
     glob = report["matrix"].get("(global)", {})
     lines.append("global: " + ", ".join(f"{k}={v}" for k, v in glob.items()))
+    if report.get("known_pairs"):
+        lines.append("known pairs:")
+        for kp in report["known_pairs"]:
+            lines.append(f"  {kp.get('result', '?'):<5} {kp.get('archive', ''):<10} {kp.get('dataset_id', ''):<9} "
+                         f"expected {kp.get('expected', ''):<8} got {kp.get('got') or '-':<13} "
+                         f"{kp.get('citing_paper_doi', '')}  ({kp.get('reason', '')})")
     lines.append("RESULT: " + ("PASSED" if report["passed"] else f"FAILED ({len(report['failures'])} failing step(s))"))
     for f in report["failures"]:
         lines.append("  FAIL " + f)
@@ -341,7 +411,7 @@ def _trigger_callback(status: str):
 # ---------------------------------------------------------------------------
 
 def _api_url(params: Dict[str, Any]) -> str:
-    return (params.get("api_url") or os.environ.get("D3_API_URL") or "http://api:8000").rstrip("/")
+    return (params.get("api_url") or DEFAULT_API_URL).rstrip("/")
 
 
 def preflight(**context) -> None:
@@ -418,74 +488,132 @@ def _run_started(context: Dict[str, Any]) -> datetime:
     return getattr(dag_run, "start_date", None) or datetime.now(timezone.utc) - timedelta(hours=6)
 
 
+def _dataset_ids(key: str) -> List[str]:
+    return [d["dataset_id"] for d in ARCHIVES[key]["datasets"]]
+
+
 def verify_ingest(*, key: str, **context) -> None:
     cfg = ARCHIVES[key]
-    ds = context["params"][f"{key}_dataset_id"]
-    ingest_id = context["params"].get(f"{key}_ingest_id") or ds
     with step(context, "verify_ingest", cfg["label"]) as s, get_db_connection() as conn:
         cur = conn.cursor()
-        cur.execute(f"SELECT dataset_id, title, updated_at FROM {key}_dataset WHERE dataset_id = %s", (ds,))
-        row = cur.fetchone()
-        s.details["dataset_id"] = ds
-        if key == "crcns" and ingest_id != ds:
-            cur.execute("SELECT count(*) FROM crcns_dataset WHERE dataset_id = %s", (ingest_id,))
-            still_doi = cur.fetchone()[0]
-            s.details["rows_still_keyed_by_doi"] = still_doi
-            if still_doi:
-                raise RuntimeError(f"CRCNS {ingest_id} is still keyed by its DOI; the DOI -> {ds} re-key did not happen")
-        if not row:
-            raise RuntimeError(f"{key}_dataset has no row for {ds} after ingestion")
-        s.details["title"] = (row[1] or "")[:120]
-        cur.execute("SELECT count(*) FROM unified_datasets WHERE source = %s AND dataset_id = %s", (cfg["label"], ds))
-        s.details["in_unified_datasets"] = bool(cur.fetchone()[0])
-        if not s.details["in_unified_datasets"]:
-            raise RuntimeError(f"{ds} is missing from unified_datasets (what the API and site read)")
+        problems = []
+        s.details["datasets"] = {}
+        for d in cfg["datasets"]:
+            ds, ingest_id = d["dataset_id"], d["ingest_id"]
+            info: Dict[str, Any] = {}
+            s.details["datasets"][ds] = info
+            if key == "crcns" and ingest_id != ds:
+                cur.execute("SELECT count(*) FROM crcns_dataset WHERE dataset_id = %s", (ingest_id,))
+                info["rows_still_keyed_by_doi"] = cur.fetchone()[0]
+                if info["rows_still_keyed_by_doi"]:
+                    problems.append(f"CRCNS {ingest_id} is still keyed by its DOI; the DOI -> {ds} re-key did not happen")
+            cur.execute(f"SELECT title FROM {key}_dataset WHERE dataset_id = %s", (ds,))
+            row = cur.fetchone()
+            if not row:
+                problems.append(f"{key}_dataset has no row for {ds} after ingestion")
+                continue
+            info["title"] = (row[0] or "")[:120]
+            cur.execute("SELECT count(*) FROM unified_datasets WHERE source = %s AND dataset_id = %s", (cfg["label"], ds))
+            info["in_unified_datasets"] = bool(cur.fetchone()[0])
+            if not info["in_unified_datasets"]:
+                problems.append(f"{ds} is missing from unified_datasets (what the API and site read)")
+        if problems:
+            raise RuntimeError("; ".join(problems))
 
 
 def verify_map(*, key: str, **context) -> None:
     cfg = ARCHIVES[key]
-    ds = context["params"][f"{key}_dataset_id"]
     since = _run_started(context)
     id_col = f"{key}_id"
     with step(context, "verify_map", cfg["label"]) as s, get_db_connection() as conn:
         cur = conn.cursor()
-        cur.execute(f"SELECT paper_doi, resolved_at FROM {key}_paper_map WHERE {id_col} = %s", (ds,))
-        maps = cur.fetchall()
-        s.details["primary_papers"] = [m[0] for m in maps]
-        if not maps:
-            raise RuntimeError(f"no primary paper resolved for {ds}")
-        s.details["resolved_this_run"] = sum(1 for m in maps if m[1] and m[1] >= since)
-        if not s.details["resolved_this_run"]:
-            s.warn("primary paper mapping was not refreshed by this run")
-        cur.execute(f"""
-            SELECT count(*), count(*) FILTER (WHERE p.text_status = 'full_text'),
-                   count(*) FILTER (WHERE c.resolved_at >= %s)
-            FROM {key}_paper_citations c LEFT JOIN papers p ON p.paper_doi = c.citing_paper_doi
-            WHERE c.{id_col} = %s""", (since, ds))
-        edges, full_text, fresh = cur.fetchone()
-        s.details.update({"citation_edges": edges, "citing_with_full_text": full_text, "edges_touched_this_run": fresh})
-        if not edges:
-            raise RuntimeError(f"no citing papers found for {ds}'s primary paper(s)")
-        if not full_text:
-            s.warn("no citing paper has full text yet; classification will have nothing to read")
-        cur.execute(f"SELECT papers FROM {key}_dataset WHERE dataset_id = %s", (ds,))
-        s.details["papers_column"] = (cur.fetchone() or [None])[0]
+        problems, stale, unresolved = [], [], []
+        seeded = {p["dataset_id"] for p in cfg["pairs"]}
+        s.details["datasets"] = {}
+        for ds in _dataset_ids(key):
+            info: Dict[str, Any] = {}
+            s.details["datasets"][ds] = info
+            cur.execute(f"SELECT paper_doi, resolved_at FROM {key}_paper_map WHERE {id_col} = %s", (ds,))
+            maps = cur.fetchall()
+            info["primary_papers"] = [m[0] for m in maps]
+            if not maps:
+                # A dataset whose known pair supplies the primary paper is still
+                # testable (seed_known_pairs adds it); mapping is only broken if
+                # no test dataset of the archive got one.
+                (unresolved if ds in seeded else problems).append(f"no primary paper resolved for {ds}")
+                continue
+            if not any(m[1] and m[1] >= since for m in maps):
+                stale.append(ds)
+            cur.execute(f"""
+                SELECT count(*), count(*) FILTER (WHERE p.text_status = 'full_text'),
+                       count(*) FILTER (WHERE c.resolved_at >= %s)
+                FROM {key}_paper_citations c LEFT JOIN papers p ON p.paper_doi = c.citing_paper_doi
+                WHERE c.{id_col} = %s""", (since, ds))
+            edges, full_text, fresh = cur.fetchone()
+            info.update({"citation_edges": edges, "citing_with_full_text": full_text, "edges_touched_this_run": fresh})
+            if not edges:
+                problems.append(f"no citing papers found for {ds}'s primary paper(s)")
+        if len(unresolved) == len(cfg["datasets"]):
+            problems.append("mapping resolved no primary paper for any test dataset")
+        if problems:
+            raise RuntimeError("; ".join(problems + unresolved))
+        if unresolved:
+            s.warn("; ".join(unresolved) + " (the known pair's primary paper is added before classification)")
+        if stale:
+            s.warn(f"primary paper mapping was not refreshed by this run for {stale}")
+
+
+def seed_known_pairs(*, key: str, **context) -> None:
+    """
+    Make sure every known pair is a citation edge. Mapping with a small
+    citing-paper cap may not reach it; the pair is added (source
+    'stack_test_fixture') so the label check always has it. Rows mapping found
+    itself are left as they are.
+    """
+    cfg = ARCHIVES[key]
+    id_col = f"{key}_id"
+    rid = context.get("run_id", "unknown")
+    with step(context, "seed_known_pairs", cfg["label"]) as s, get_db_connection() as conn:
+        cur = conn.cursor()
+        s.details["pairs"] = []
+        for p in cfg["pairs"]:
+            ds, primary, citing = p["dataset_id"], p["primary_paper_doi"], p["citing_paper_doi"]
+            cur.execute(f"""SELECT 1 FROM {key}_paper_citations
+                            WHERE {id_col} = %s AND lower(primary_paper_doi) = %s AND lower(citing_paper_doi) = %s""",
+                        (ds, primary, citing))
+            found = cur.fetchone() is not None
+            if not found:
+                for doi in (primary, citing):
+                    cur.execute("INSERT INTO papers (paper_doi, source) VALUES (%s, %s) ON CONFLICT (paper_doi) DO NOTHING",
+                                (doi, FIXTURE_SOURCE))
+                cur.execute(f"""INSERT INTO {key}_paper_map ({id_col}, paper_doi, doi_source, run_id)
+                                VALUES (%s, %s, %s, %s) ON CONFLICT ({id_col}, paper_doi) DO NOTHING""",
+                            (ds, primary, FIXTURE_SOURCE, rid))
+                cur.execute(f"""INSERT INTO {key}_paper_citations
+                                    ({id_col}, primary_paper_doi, citing_paper_doi, citation_source, run_id)
+                                VALUES (%s, %s, %s, %s, %s)
+                                ON CONFLICT ({id_col}, primary_paper_doi, citing_paper_doi) DO NOTHING""",
+                            (ds, primary, citing, FIXTURE_SOURCE, rid))
+            s.details["pairs"].append({"dataset_id": ds, "citing_paper_doi": citing, "expected": p["expected"],
+                                       "found_by_mapping": found})
+        conn.commit()
+        if not cfg["pairs"]:
+            s.warn("no known pairs for this archive; its labels are not checked")
 
 
 def verify_classify(*, key: str, **context) -> None:
     cfg = ARCHIVES[key]
-    ds = context["params"][f"{key}_dataset_id"]
     since = _run_started(context)
     id_col = f"{key}_id"
     rid = triggered_run_id(context.get("run_id", "unknown"), key, "classify")
-    with step(context, "verify_classify", cfg["label"], log_hint=f"DAG paper_reuse_classification, run {rid}") as s, \
-            get_db_connection() as conn:
+    hint = f"DAG paper_reuse_classification, run {rid}"
+    with step(context, "verify_classify", cfg["label"], log_hint=hint) as s, get_db_connection() as conn:
         cur = conn.cursor()
         cur.execute(f"""
             SELECT status, classification, prompt_version, classification_model, hallucinated_quote_count,
                    jsonb_array_length(COALESCE(evidence_quotes, '[]'::jsonb)), error_kind, reasoning
             FROM {key}_paper_citation_classifications
-            WHERE {id_col} = %s AND classified_at >= %s""", (ds, since))
+            WHERE {id_col} = ANY(%s) AND classified_at >= %s""", (_dataset_ids(key), since))
         rows = cur.fetchall()
         s.details["rows_this_run"] = len(rows)
         s.details["labels"] = {}
@@ -500,40 +628,41 @@ def verify_classify(*, key: str, **context) -> None:
         if errors:
             s.details["errors"] = [f"{r[6]}: {(r[7] or '')[:200]}" for r in errors]
         if not rows:
-            raise RuntimeError(f"no classification rows written for {ds} in this run")
-        if not classified:
-            raise RuntimeError(f"no pair classified for {ds}: {s.details['labels']}; errors: {s.details.get('errors')}")
-        if PROMPT_VERSION not in s.details["prompt_versions"]:
+            raise RuntimeError(f"no classification rows written for {_dataset_ids(key)} in this run")
+        if classified and PROMPT_VERSION not in s.details["prompt_versions"]:
             raise RuntimeError(f"classified with prompt version {s.details['prompt_versions']}, expected {PROMPT_VERSION}")
+
+        # Each known pair must have been re-classified this run, on the right
+        # side of REUSE (see judge_known_pair).
+        failed, warned = [], []
+        s.details["known_pairs"] = []
+        for p in cfg["pairs"]:
+            cur.execute(f"""
+                SELECT status, classification, confidence, jsonb_array_length(COALESCE(evidence_quotes, '[]'::jsonb)),
+                       reasoning
+                FROM {key}_paper_citation_classifications
+                WHERE {id_col} = %s AND lower(primary_paper_doi) = %s AND lower(citing_paper_doi) = %s
+                  AND classified_at >= %s""", (p["dataset_id"], p["primary_paper_doi"], p["citing_paper_doi"], since))
+            got = cur.fetchone()
+            result, reason = judge_known_pair(p["expected"], got[0] if got else None, got[1] if got else None)
+            if result == STATUS_PASS and p["expected"] == "REUSE" and not (got[3] or 0):
+                result, reason = STATUS_FAIL, "REUSE but no evidence quotes"
+            s.details["known_pairs"].append({
+                "archive": cfg["label"], "dataset_id": p["dataset_id"], "citing_paper_doi": p["citing_paper_doi"],
+                "expected": p["expected"], "got": (got[1] or got[0]) if got else None,
+                "confidence": got[2] if got else None, "result": result, "reason": reason,
+                "reasoning": ((got[4] or "")[:300] if got else None)})
+            line = f"{p['dataset_id']} <- {p['citing_paper_doi']}: {reason}"
+            if result == STATUS_FAIL:
+                failed.append(line)
+            elif result == STATUS_WARN:
+                warned.append(line)
+        if failed:
+            raise RuntimeError("known pair(s) wrong: " + "; ".join(failed))
+        if warned:
+            s.warn("; ".join(warned))
         if errors:
             s.warn(f"{len(errors)} pair(s) ended in a classifier error")
-        if not s.details["with_evidence_quotes"]:
-            s.warn("no classification carries evidence quotes")
-
-        # The known REUSE pair must be re-classified this run and still come
-        # back REUSE with evidence: proves the classifier can still say REUSE,
-        # not just that it runs.
-        reuse_doi = (context["params"].get(f"{key}_reuse_citing_doi") or "").strip().lower()
-        if reuse_doi:
-            cur.execute(f"""
-                SELECT status, classification, confidence,
-                       jsonb_array_length(COALESCE(evidence_quotes, '[]'::jsonb)), reasoning
-                FROM {key}_paper_citation_classifications
-                WHERE {id_col} = %s AND lower(citing_paper_doi) = %s AND classified_at >= %s""",
-                        (ds, reuse_doi, since))
-            got = cur.fetchone()
-            s.details["known_reuse_pair"] = {"citing_paper_doi": reuse_doi,
-                                             "label": got[1] if got else None,
-                                             "confidence": got[2] if got else None,
-                                             "evidence_quotes": got[3] if got else None}
-            if not got:
-                raise RuntimeError(f"known REUSE pair {reuse_doi} was not re-classified this run "
-                                   f"(is it still a citation edge of {ds}?)")
-            if got[1] != "REUSE":
-                raise RuntimeError(f"known REUSE pair {reuse_doi} came back {got[1] or got[0]} "
-                                   f"(confidence {got[2]}): {(got[4] or '')[:300]}")
-            if not got[3]:
-                raise RuntimeError(f"known REUSE pair {reuse_doi} is REUSE but has no evidence quotes")
 
         cur.execute("SELECT summary FROM paper_reuse_classification_runs WHERE run_id = %s ORDER BY id DESC LIMIT 1", (rid,))
         run = cur.fetchone()
@@ -544,32 +673,37 @@ def verify_classify(*, key: str, **context) -> None:
 
 def check_api(*, key: str, **context) -> None:
     cfg = ARCHIVES[key]
-    ds = context["params"][f"{key}_dataset_id"]
     base = _api_url(context["params"])
     with step(context, "check_api", cfg["label"]) as s:
-        url = f"{base}/api/datasets/{cfg['label']}/{ds}"
-        r = requests.get(url, timeout=60)
-        s.details.update({"url": url, "http": r.status_code})
-        r.raise_for_status()
-        body = r.json()
-        cites = body.get("citations") or []
-        labelled = [c for c in cites if c.get("classification")]
-        s.details.update({
-            "primary_papers": len(body.get("primary_papers") or []),
-            "citations": len(cites),
-            "labelled_citations": len(labelled),
-            "labels": sorted({c["classification"] for c in labelled}),
-        })
-        if not body.get("dataset"):
-            raise RuntimeError("API returned no dataset")
-        if not s.details["primary_papers"]:
-            raise RuntimeError("API shows no primary paper for the dataset")
-        if not labelled:
-            raise RuntimeError("API shows no classified citation (the API or its CTE may not read the new columns)")
+        problems = []
+        s.details["datasets"] = {}
+        for ds in _dataset_ids(key):
+            url = f"{base}/api/datasets/{cfg['label']}/{ds}"
+            r = requests.get(url, timeout=60)
+            info: Dict[str, Any] = {"url": url, "http": r.status_code}
+            s.details["datasets"][ds] = info
+            if r.status_code != 200:
+                problems.append(f"{ds}: HTTP {r.status_code}")
+                continue
+            body = r.json()
+            cites = body.get("citations") or []
+            attempted = [c for c in cites
+                         if (c.get("classification_status") or "unclassified") not in ("unclassified", "placeholder")]
+            info.update({"primary_papers": len(body.get("primary_papers") or []), "citations": len(cites),
+                         "attempted_citations": len(attempted),
+                         "labels": sorted({c.get("classification_status") for c in attempted})})
+            if not body.get("dataset"):
+                problems.append(f"{ds}: API returned no dataset")
+            elif not info["primary_papers"]:
+                problems.append(f"{ds}: API shows no primary paper")
+            elif not attempted:
+                problems.append(f"{ds}: API shows no classified citation (does it read the new columns?)")
+        if problems:
+            raise RuntimeError("; ".join(problems))
 
 
 def _site_url(params: Dict[str, Any]) -> str:
-    return (params.get("site_url") or os.environ.get("D3_FRONTEND_URL") or "http://frontend:3000").rstrip("/")
+    return (params.get("site_url") or DEFAULT_SITE_URL).rstrip("/")
 
 
 def check_cors(**context) -> None:
@@ -580,7 +714,7 @@ def check_cors(**context) -> None:
     """
     params = context["params"]
     base = _api_url(params)
-    origins = browser_origins(_site_url(params), params.get("browser_origins") or os.environ.get("D3_FRONTEND_ORIGINS", ""))
+    origins = browser_origins(_site_url(params), params.get("browser_origins") or DEFAULT_BROWSER_ORIGINS)
     with step(context, "check_cors") as s:
         url = f"{base}/api/datasets"
         s.details.update({"url": url, "origins": {}})
@@ -645,33 +779,32 @@ def report(**context) -> Dict[str, Any]:
 # DAG
 # ---------------------------------------------------------------------------
 
+# Where the test reaches the API and site. Staging sets these in
+# docker-compose.gce.yml; locally they fall back to the compose services, so
+# the trigger form is always pre-filled.
+DEFAULT_API_URL = os.environ.get("D3_API_URL") or "http://api:8000"
+DEFAULT_SITE_URL = os.environ.get("D3_FRONTEND_URL") or "http://frontend:3000"
+DEFAULT_BROWSER_ORIGINS = os.environ.get("D3_FRONTEND_ORIGINS") or "http://localhost:3000"
+
+
 def _params() -> Dict[str, Any]:
-    p: Dict[str, Any] = {
-        "citing_papers_per_primary": Param(5, type="integer", title="Citing papers per primary paper",
+    return {
+        "citing_papers_per_primary": Param(10, type="integer", title="Citing papers per primary paper",
                                            description="Mapping backfill cap for the test datasets."),
-        "pairs_per_archive": Param(2, type="integer", title="Pairs classified per archive",
-                                   description="Whole-paper LLM calls per archive (re-classified every run)."),
+        "extra_pairs_per_archive": Param(1, type="integer", title="Mapped pairs classified per archive",
+                                         description="Pairs found by mapping, classified on top of the known pairs "
+                                                     "(whole-paper LLM calls, re-done every run)."),
         "min_openalex_requests": Param(50, type="integer", title="Min OpenAlex requests left today"),
         "model": Param(DEFAULT_MODEL, type="string", title="Classification model"),
-        "api_url": Param(os.environ.get("D3_API_URL", ""), type="string", title="API base URL",
-                         description="Empty = $D3_API_URL, else http://api:8000 (local compose)."),
-        "site_url": Param(os.environ.get("D3_FRONTEND_URL", ""), type="string", title="Site URL",
-                          description="Empty = $D3_FRONTEND_URL, else http://frontend:3000 (local compose)."),
-        "browser_origins": Param(os.environ.get("D3_FRONTEND_ORIGINS", ""), type="string",
-                                 title="Extra browser origins",
+        "api_url": Param(DEFAULT_API_URL, type="string", title="API base URL",
+                         description="Defaults to $D3_API_URL (staging), else http://api:8000 (local compose)."),
+        "site_url": Param(DEFAULT_SITE_URL, type="string", title="Site URL",
+                          description="Defaults to $D3_FRONTEND_URL (staging), else http://frontend:3000."),
+        "browser_origins": Param(DEFAULT_BROWSER_ORIGINS, type="string", title="Extra browser origins",
                                  description="Comma-separated frontend URLs the API must allow besides the site URL "
-                                             "(Cloud Run serves each service on two hostnames). Empty = $D3_FRONTEND_ORIGINS."),
+                                             "(Cloud Run serves each service on two hostnames). Defaults to "
+                                             "$D3_FRONTEND_ORIGINS, else http://localhost:3000."),
     }
-    for key, cfg in ARCHIVES.items():
-        p[f"{key}_dataset_id"] = Param(cfg["dataset_id"], type="string", title=f"{cfg['label']} test dataset")
-        p[f"{key}_reuse_citing_doi"] = Param(
-            cfg.get("reuse_citing_doi", ""), type="string", title=f"{cfg['label']} known REUSE citing paper",
-            description="A citing paper known to reuse the test dataset. Classified first every run and "
-                        "must come back REUSE. Empty = no REUSE assertion for this archive.")
-        if cfg["ingest_id"] != cfg["dataset_id"]:
-            p[f"{key}_ingest_id"] = Param(cfg["ingest_id"], type="string", title=f"{cfg['label']} id to ingest by",
-                                          description="CRCNS ingestion matches the DOI, before the code is resolved.")
-    return p
 
 
 dag = DAG(
@@ -683,11 +816,12 @@ dag = DAG(
         "email_on_failure": False,
         "retries": 0,
     },
-    description="Wiring test: one dataset per archive through ingestion, mapping, classification and the API",
+    description="Wiring test: two datasets per archive through ingestion, mapping, classification, the API "
+                "and the site, with known reuse / non-reuse pairs checked",
     schedule=None,
     catchup=False,
     max_active_runs=1,
-    # Manual / deploy-triggered only, so unpaused is safe.
+    # Triggered by hand only, so unpaused is safe.
     is_paused_upon_creation=False,
     # Templated conf keeps real types (lists, ints, bools), not their string forms.
     render_template_as_native_obj=True,
@@ -708,12 +842,14 @@ def _trigger(key: str, stage: str, conf: Dict[str, Any], timeout_min: int) -> Tr
         trigger_run_id="it__{{ run_id }}__" + key + "__" + stage,
         conf=conf,
         wait_for_completion=True,
-        poke_interval=20,
+        # The triggered runs take seconds to minutes; a long poke adds dead time
+        # to every stage.
+        poke_interval=5,
         allowed_states=["success"],
         failed_states=["failed"],
         # A paused target DAG leaves the triggered run queued, so the wait ends in
         # this timeout (fail_when_dag_is_paused is not supported on Airflow 3 yet);
-        # the failure callback then says so. The deploy step unpauses these DAGs.
+        # the failure callback then says so. Unpause these DAGs before a run.
         execution_timeout=timedelta(minutes=timeout_min),
         on_success_callback=_trigger_callback(STATUS_PASS),
         on_failure_callback=_trigger_callback(STATUS_FAIL),
@@ -722,14 +858,14 @@ def _trigger(key: str, stage: str, conf: Dict[str, Any], timeout_min: int) -> Tr
 
 
 for key, cfg in ARCHIVES.items():
-    ds = "{{ params." + key + "_dataset_id }}"
-    ingest_id = "{{ params." + key + "_ingest_id }}" if cfg["ingest_id"] != cfg["dataset_id"] else ds
+    dataset_ids = [d["dataset_id"] for d in cfg["datasets"]]
+    known_citing = [p["citing_paper_doi"] for p in cfg["pairs"]]
 
-    ingest = _trigger(key, "ingest", {"dataset_ids": [ingest_id]}, 30)
+    ingest = _trigger(key, "ingest", {"dataset_ids": [d["ingest_id"] for d in cfg["datasets"]]}, 30)
     v_ingest = PythonOperator(task_id=f"{key}__verify_ingest", python_callable=verify_ingest,
                               op_kwargs={"key": key}, dag=dag)
     map_ = _trigger(key, "map", {
-        "dataset_ids": [ds],
+        "dataset_ids": dataset_ids,
         "max_citing_papers_per_primary": "{{ params.citing_papers_per_primary }}",
         "min_openalex_requests": "{{ params.min_openalex_requests }}",
         "batch_size": 1,
@@ -737,13 +873,17 @@ for key, cfg in ARCHIVES.items():
         "write_run_artifacts": False,
     }, 30)
     v_map = PythonOperator(task_id=f"{key}__verify_map", python_callable=verify_map, op_kwargs={"key": key}, dag=dag)
+    seed = PythonOperator(task_id=f"{key}__seed_known_pairs", python_callable=seed_known_pairs,
+                          op_kwargs={"key": key}, dag=dag)
     classify = _trigger(key, "classify", {
         "source_filter": cfg["label"],
-        "dataset_ids": [ds],
-        "max_edges_per_run": "{{ params.pairs_per_archive }}",
-        "include_citing_dois": ["{{ params." + key + "_reuse_citing_doi }}"],
+        "dataset_ids": dataset_ids,
+        # The known pairs first, then a few pairs mapping found.
+        "include_citing_dois": known_citing,
+        "max_edges_per_run": "{{ params.extra_pairs_per_archive + " + str(len(known_citing)) + " }}",
         "reclassify_existing": True,
-        "batch_size": 2,
+        # One paper per task, so the pairs are classified in parallel.
+        "batch_size": 1,
         "model": "{{ params.model }}",
         "min_credit_usd": 1.0,
     }, 20)
@@ -751,7 +891,7 @@ for key, cfg in ARCHIVES.items():
                            op_kwargs={"key": key}, dag=dag)
     api = PythonOperator(task_id=f"{key}__check_api", python_callable=check_api, op_kwargs={"key": key}, dag=dag)
 
-    preflight_task >> ingest >> v_ingest >> map_ >> v_map >> classify >> v_cls >> api >> site_task
+    preflight_task >> ingest >> v_ingest >> map_ >> v_map >> seed >> classify >> v_cls >> api >> site_task
 
 site_task >> report_task
 # Independent of the pipeline, so it reports even when an archive fails early.

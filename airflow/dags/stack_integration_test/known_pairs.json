@@ -1,0 +1,126 @@
+{
+  "description": "Test datasets and human-reviewed (citing paper, dataset) pairs for stack_integration_test. Each archive has two datasets. After mapping, every known pair is added to the archive's citation table (citation_source 'stack_test_fixture') if mapping did not find it, then re-classified every run: a known REUSE pair must come back REUSE and a known non-REUSE pair must not. MENTION vs NEITHER is a warning, not a failure: this is a wiring test; accuracy is the benchmark DAG's job. DANDI's REUSE pair comes from find_reuse's human-reviewed answer key; the others were chosen from staging labels by the current classifier and approved by a human reviewer. Avoid the answer key's rejected (NOT_REUSE) pairs here: they are cases find_reuse's own classifier got wrong, so they belong in the benchmark (e.g. 000362, whose citing paper reused sibling Dandiset 000168).",
+  "datasets": {
+    "dandi": [
+      {
+        "dataset_id": "000034",
+        "ingest_id": "000034"
+      },
+      {
+        "dataset_id": "001550",
+        "ingest_id": "001550"
+      }
+    ],
+    "openneuro": [
+      {
+        "dataset_id": "ds003404",
+        "ingest_id": "ds003404"
+      },
+      {
+        "dataset_id": "ds002675",
+        "ingest_id": "ds002675"
+      }
+    ],
+    "crcns": [
+      {
+        "dataset_id": "aa-2",
+        "ingest_id": "10.6080/k0jw8bsc"
+      },
+      {
+        "dataset_id": "pfc-5",
+        "ingest_id": "10.6080/k0zc811b"
+      }
+    ],
+    "sparc": [
+      {
+        "dataset_id": "135",
+        "ingest_id": "135"
+      },
+      {
+        "dataset_id": "85",
+        "ingest_id": "85"
+      }
+    ]
+  },
+  "pairs": [
+    {
+      "archive": "dandi",
+      "dataset_id": "000034",
+      "primary_paper_doi": "10.7554/elife.61834",
+      "citing_paper_doi": "10.1038/s41592-024-02232-7",
+      "expected": "REUSE",
+      "reviewer": "rly",
+      "source": "find_reuse benchmark answer key (human call: reuse)"
+    },
+    {
+      "archive": "dandi",
+      "dataset_id": "001550",
+      "primary_paper_doi": "10.1038/s41586-024-08433-6",
+      "citing_paper_doi": "10.1038/s41586-025-09805-2",
+      "expected": "MENTION",
+      "reviewer": "Nate Rose, 2026-09-26",
+      "source": "staging label (gpt-5.6-luna, prompt v6, confidence 10)",
+      "evidence": "Instead, we found the brain reduced interference by dynamically amplifying task-relevant sensory and motor representations and suppressing task-irrelevant dimensions 31, 37, 49 (Figs. 4 and 5)."
+    },
+    {
+      "archive": "openneuro",
+      "dataset_id": "ds003404",
+      "primary_paper_doi": "10.1016/j.neuroimage.2021.118069",
+      "citing_paper_doi": "10.1038/s41380-024-02767-3",
+      "expected": "REUSE",
+      "reviewer": "Nate Rose, 2026-09-26",
+      "source": "staging label (gpt-5.6-luna, prompt v6, confidence 10, CONFIRMATORY)",
+      "evidence": "Using GSR and normalizing relative to that control sample, we found that patients in the Rutgers sample (22 psychosis, 19 healthy controls) again could be differentiated"
+    },
+    {
+      "archive": "openneuro",
+      "dataset_id": "ds002675",
+      "primary_paper_doi": "10.1101/2020.01.10.20017004",
+      "citing_paper_doi": "10.3389/fnbeh.2024.1326115",
+      "expected": "MENTION",
+      "reviewer": "Nate Rose, 2026-09-26",
+      "source": "staging label (gpt-5.6-luna, prompt v6, confidence 10)",
+      "evidence": "Adults aged 18-24 with TBI had language processing return to normal functioning by 6 months post-injury (Coffey et al., 2021)."
+    },
+    {
+      "archive": "crcns",
+      "dataset_id": "aa-2",
+      "primary_paper_doi": "10.1007/s10827-006-7059-4",
+      "citing_paper_doi": "10.3390/e25101413",
+      "expected": "REUSE",
+      "reviewer": "Nate Rose, 2026-09-26",
+      "source": "staging label (gpt-5.6-luna, prompt v6, confidence 10, TOOL_DEMO)",
+      "evidence": "As an example, we will use a data set recorded from zebra finches and made available on the Collaborative Research in Computational Neuroscience data sharing website"
+    },
+    {
+      "archive": "crcns",
+      "dataset_id": "pfc-5",
+      "primary_paper_doi": "10.1016/j.cub.2017.05.046",
+      "citing_paper_doi": "10.1007/s11571-022-09836-9",
+      "expected": "MENTION",
+      "reviewer": "Nate Rose, 2026-09-26",
+      "source": "staging label (gpt-5.6-luna, prompt v6, confidence 10)",
+      "evidence": "Second, there is a wide consensus that WM does not only implicates the PFC, but involves several different areas, in particular the hippocampus and the parieto-occipital regions (Johnson et al. 2017)."
+    },
+    {
+      "archive": "sparc",
+      "dataset_id": "135",
+      "primary_paper_doi": "10.1113/jp273259",
+      "citing_paper_doi": "10.1161/circulationaha.121.054976",
+      "expected": "REUSE",
+      "reviewer": "Nate Rose, 2026-09-26",
+      "source": "staging label (gpt-5.6-luna, prompt v6, confidence 9, SIMULATION)",
+      "evidence": "Lastly, our experimental findings regarding the membrane clock and Ca 2+ clock remodeling in HFpEF were integrated into a quantitative human SAN model 39 (Figure 6A)."
+    },
+    {
+      "archive": "sparc",
+      "dataset_id": "85",
+      "primary_paper_doi": "10.1088/1741-2552/ab7ad4",
+      "citing_paper_doi": "10.1088/1741-2552/ac9643",
+      "expected": "NEITHER",
+      "reviewer": "Nate Rose, 2026-09-26",
+      "source": "staging label (gpt-5.6-luna, prompt v6, confidence 10)",
+      "evidence": "The citing paper does not cite the dataset's primary paper anywhere in its text (a citation OpenAlex lists but the paper does not contain)."
+    }
+  ]
+}

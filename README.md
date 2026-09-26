@@ -341,6 +341,10 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 
 6. **`paper_reuse_classification`** - LLM classification of every (citing paper, dataset) pair as REUSE / MENTION / NEITHER (or PRIMARY in direct mode). Manual trigger; see [Paper Reuse Classification](#paper-reuse-classification)
 
+7. **`stack_integration_test`** - Wiring test: two datasets per archive through ingestion, mapping, classification, the API and the site, with known pairs checked. Manual trigger; see [Stack integration test](#stack-integration-test)
+
+8. **`reuse_classification_benchmark_test`** - Classifier accuracy against find_reuse's 161 human-reviewed pairs. Manual trigger; see [Benchmark](#benchmark-sanity-test)
+
 ### Running DAGs
 
 1. Access Airflow UI at http://localhost:8080
@@ -417,7 +421,7 @@ mkdir -p airflow/output && mv airflow/dags/output/* airflow/output/ && rmdir air
 
 A run fails when `reuse_recall` drops below `min_reuse_recall` (default 0.8), `false_reuse_rate` rises above `max_false_reuse_rate` (0.5), or fewer than `min_text_coverage` (0.8) of the pairs got full text, which would make the result inconclusive. The thresholds are provisional until a few full runs set a baseline. Each run writes a summary row to `reuse_benchmark_runs` and one row per pair to `reuse_benchmark_results`; production classification tables are never touched. The score task's log lists every disagreement with the model's reasoning, plus `mapping_coverage`: how many answer-key pairs D3's own mapping DAGs produced at all. `dry_run=true` fetches text and builds prompts without any LLM calls.
 
-The staging deploy workflow triggers it after every Airflow deploy. Locally, trigger it from the Airflow UI or:
+Trigger it by hand (it is no longer run by the staging deploy workflow), from the Airflow UI or:
 
 ```bash
 docker compose exec airflow-scheduler airflow dags trigger reuse_classification_benchmark_test
@@ -430,6 +434,31 @@ python airflow/dags/reuse_classification_benchmark_test/build_benchmark_pairs.py
 ```
 
 Unit tests: `docker compose exec airflow-scheduler python -m pytest /opt/airflow/dags/reuse_classification_benchmark_test`.
+
+### Stack integration test
+
+`stack_integration_test` (in `airflow/dags/stack_integration_test/`) proves the pipeline is wired together, end to end, on a small fixed set: **two datasets per archive** (DANDI, OpenNeuro, CRCNS, SPARC), listed in `known_pairs.json`. It triggers the real DAGs on just those datasets (their `dataset_ids` param) and waits for each:
+
+1. **Preflight:** database, OpenRouter key and credit, OpenAlex budget, the full-text fetcher, the API.
+2. **Ingest** the datasets, and check they are in `unified_datasets`.
+3. **Map papers** (up to 10 citing papers per primary paper), and check each dataset has a primary paper and citing papers.
+4. **Add the known pairs.** Each dataset has a known (citing paper, dataset) pair with a reviewed label: at least one REUSE per archive, and MENTION and NEITHER across the set. If mapping did not reach a pair, the test adds it (`citation_source = 'stack_test_fixture'`).
+5. **Classify** the known pairs plus one mapped pair per archive (real LLM calls, about 12 per run), and check them: a known REUSE pair that comes back as anything else, or a known non-REUSE pair that comes back REUSE, **fails** the run. MENTION vs NEITHER, or no full text to read, is a **warning**. Accuracy over many pairs is the benchmark's job.
+6. **API, site and CORS:** each dataset's API page shows its primary paper and a classified citation; the site loads; the API allows the browser origins.
+
+The `report` task runs last and logs a one-screen table (a row per archive, a line per known pair). Every step is also in `integration_test_steps`, and each run in `integration_test_runs`.
+
+**Before triggering, unpause the DAGs it drives:** the four `*_ingestion`, the four `*_paper_mapping` and `paper_reuse_classification`. A paused one leaves the test waiting until its timeout (the failure then names the DAG to unpause).
+
+The trigger form is pre-filled: locally with the compose services (`http://api:8000`, `http://frontend:3000`), on staging with the Cloud Run URLs from `D3_API_URL`, `D3_FRONTEND_URL` and `D3_FRONTEND_ORIGINS` in `docker-compose.gce.yml`. Trigger from the UI or:
+
+```bash
+docker compose exec airflow-scheduler airflow dags trigger stack_integration_test
+```
+
+Known pairs: DANDI's REUSE pair comes from the benchmark's answer key; the others were picked from staging labels and approved by a reviewer, recorded in the fixture with the evidence quote. To change a test dataset or pair, edit `known_pairs.json`; the DAG checks it when it loads.
+
+Unit tests: `docker compose exec airflow-scheduler python -m pytest /opt/airflow/dags/stack_integration_test`.
 
 ### Rollout status
 

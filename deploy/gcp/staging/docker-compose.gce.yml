@@ -44,6 +44,13 @@ x-airflow-common:
     # reuse_classification_benchmark_test runs all 161 answer-key pairs on
     # staging (the smoke set of 20 is the default everywhere else).
     REUSE_BENCHMARK_PAIR_SET: ${REUSE_BENCHMARK_PAIR_SET:-full}
+    # Where stack_integration_test reaches the staging API and site (Cloud Run;
+    # Terraform outputs api_url / frontend_url). The frontend is also served on
+    # the project-number hostname, and the API must allow both (allowed_origins).
+    # These become the defaults in the test's trigger form.
+    D3_API_URL: ${D3_API_URL:-https://neuro-d3-api-4crdc6p33a-uw.a.run.app}
+    D3_FRONTEND_URL: ${D3_FRONTEND_URL:-https://neuro-d3-frontend-4crdc6p33a-uw.a.run.app}
+    D3_FRONTEND_ORIGINS: ${D3_FRONTEND_ORIGINS:-https://neuro-d3-frontend-601000536186.us-west1.run.app}
     # Public base URL for the api-server's absolute links. Staging serves the UI
     # over PLAIN HTTP (Caddy :80 — see ./deploy/gcp/staging/Caddyfile), so this MUST
     # be http://: an https base URL makes Airflow emit https links / set Secure

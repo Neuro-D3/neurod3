@@ -6,6 +6,8 @@ Run inside the Airflow container:
     python -m pytest /opt/airflow/dags/stack_integration_test
 """
 
+import importlib
+import json
 import os
 import sys
 
@@ -114,23 +116,118 @@ class TestDag:
         assert S.dag.get_task("report").trigger_rule == "all_done"
 
     def test_crcns_ingests_by_doi_and_maps_by_code(self):
-        assert S.ARCHIVES["crcns"]["ingest_id"].startswith("10.6080/")
-        assert not S.ARCHIVES["crcns"]["dataset_id"].startswith("10.")
+        for d in S.ARCHIVES["crcns"]["datasets"]:
+            assert d["ingest_id"].startswith("10.6080/")
+            assert not d["dataset_id"].startswith("10.")
+
+    def test_polls_triggered_runs_often(self):
+        assert S.dag.get_task("dandi__map").poke_interval <= 5
 
 
-class TestKnownReusePair:
-    def test_dandi_has_a_known_reuse_pair_and_the_others_do_not(self):
-        assert S.ARCHIVES["dandi"]["reuse_citing_doi"] == "10.1186/s12987-023-00425-4"
-        assert all(not S.ARCHIVES[k]["reuse_citing_doi"] for k in ("openneuro", "crcns", "sparc"))
+FIXTURE = {
+    "datasets": {k: [{"dataset_id": f"{k}-1"}, {"dataset_id": f"{k}-2"}] for k in S.ARCHIVE_LABELS},
+    "pairs": [{"archive": "dandi", "dataset_id": "dandi-1", "primary_paper_doi": "10.1/P",
+               "citing_paper_doi": "10.2/C", "expected": "REUSE"}],
+}
 
-    def test_classify_trigger_passes_it_first(self):
+
+class TestFixture:
+    def test_shipped_fixture_has_two_datasets_per_archive(self):
+        for key, cfg in S.ARCHIVES.items():
+            assert len(cfg["datasets"]) == 2, key
+
+    def test_shipped_pairs_are_human_reviewed_and_on_a_test_dataset(self):
+        pairs = [p for cfg in S.ARCHIVES.values() for p in cfg["pairs"]]
+        assert pairs
+        for p in pairs:
+            assert p["reviewer"] and p["source"]
+            assert p["expected"] in S.EXPECTED_LABELS
+
+    def test_every_expected_label_is_represented(self):
+        expected = {p["expected"] for cfg in S.ARCHIVES.values() for p in cfg["pairs"]}
+        assert expected == set(S.EXPECTED_LABELS)
+
+    def test_dois_are_lower_cased_and_ingest_id_defaults(self):
+        archives = S.build_archives(json.loads(json.dumps(FIXTURE)))
+        p = archives["dandi"]["pairs"][0]
+        assert (p["primary_paper_doi"], p["citing_paper_doi"]) == ("10.1/p", "10.2/c")
+        assert archives["sparc"]["datasets"][0]["ingest_id"] == "sparc-1"
+
+    @pytest.mark.parametrize("mutate,message", [
+        (lambda f: f["datasets"].pop("crcns"), "no CRCNS test dataset"),
+        (lambda f: f["pairs"][0].update(expected="SECONDARY"), "expected label"),
+        (lambda f: f["pairs"][0].update(dataset_id="elsewhere"), "not a dandi test dataset"),
+        (lambda f: f["pairs"][0].update(archive="kaggle"), "unknown archive"),
+        (lambda f: f["pairs"][0].pop("citing_paper_doi"), "citing_paper_doi"),
+    ])
+    def test_bad_fixture_fails_at_parse_time(self, mutate, message):
+        f = json.loads(json.dumps(FIXTURE))
+        mutate(f)
+        with pytest.raises(ValueError, match=message):
+            S.build_archives(f)
+
+
+class TestKnownPairs:
+    @pytest.mark.parametrize("expected,status,label,result", [
+        ("REUSE", "classified", "REUSE", "pass"),
+        ("REUSE", "classified", "MENTION", "fail"),
+        ("MENTION", "classified", "MENTION", "pass"),
+        ("MENTION", "classified", "NEITHER", "warn"),   # both say "not reused"
+        ("NEITHER", "classified", "REUSE", "fail"),
+        ("NEITHER", "no_full_text", None, "warn"),      # nothing to read, not scored
+        ("REUSE", "error", None, "fail"),
+        ("REUSE", None, None, "fail"),                  # not re-classified this run
+    ])
+    def test_judge(self, expected, status, label, result):
+        assert S.judge_known_pair(expected, status, label)[0] == result
+
+    def test_seed_runs_between_mapping_and_classification(self):
+        seed = S.dag.get_task("crcns__seed_known_pairs")
+        assert seed.upstream_task_ids == {"crcns__verify_map"}
+        assert seed.downstream_task_ids == {"crcns__classify"}
+
+    def test_classify_puts_known_pairs_first_and_classifies_them_in_parallel(self):
         conf = S.dag.get_task("dandi__classify").conf
-        assert conf["include_citing_dois"] == ["{{ params.dandi_reuse_citing_doi }}"]
+        known = [p["citing_paper_doi"] for p in S.ARCHIVES["dandi"]["pairs"]]
+        assert conf["include_citing_dois"] == known
+        assert conf["dataset_ids"] == [d["dataset_id"] for d in S.ARCHIVES["dandi"]["datasets"]]
+        assert conf["max_edges_per_run"] == "{{ params.extra_pairs_per_archive + " + str(len(known)) + " }}"
         assert conf["reclassify_existing"] is True  # otherwise an already-classified pair is skipped
+        assert conf["batch_size"] == 1
 
-    def test_each_archive_exposes_the_param(self):
-        for key in S.ARCHIVES:
-            assert f"{key}_reuse_citing_doi" in S.dag.params
+    def test_report_lists_every_known_pair(self):
+        kp = {"archive": "DANDI", "dataset_id": "000034", "citing_paper_doi": "10.1/x", "expected": "REUSE",
+              "got": "MENTION", "result": "fail", "reason": "expected REUSE, got MENTION"}
+        steps = all_global() + [row(st, "DANDI") for st in S.STAGES if st != "verify_classify"]
+        steps.append(row("verify_classify", "DANDI", "fail", error="RuntimeError: known pair(s) wrong",
+                         details={"known_pairs": [kp]}))
+        rep = S.build_report(steps, {"dandi": {"label": "DANDI"}})
+        assert rep["known_pairs"] == [kp] and not rep["passed"]
+        line = next(ln for ln in S.format_report(rep).splitlines() if "10.1/x" in ln)
+        assert line.split()[:6] == ["fail", "DANDI", "000034", "expected", "REUSE", "got"] and "MENTION" in line
+
+
+class TestFormDefaults:
+    def test_url_params_are_prefilled(self):
+        for name in ("api_url", "site_url", "browser_origins"):
+            p = S.dag.params.get_param(name) if hasattr(S.dag.params, "get_param") else S.dag.params[name]
+            assert getattr(p, "value", p), name
+
+    def test_local_defaults_without_env(self, monkeypatch):
+        for var in ("D3_API_URL", "D3_FRONTEND_URL", "D3_FRONTEND_ORIGINS"):
+            monkeypatch.delenv(var, raising=False)
+        mod = importlib.reload(S)
+        assert (mod.DEFAULT_API_URL, mod.DEFAULT_SITE_URL, mod.DEFAULT_BROWSER_ORIGINS) ==             ("http://api:8000", "http://frontend:3000", "http://localhost:3000")
+
+    def test_staging_env_overrides(self, monkeypatch):
+        monkeypatch.setenv("D3_API_URL", "https://api.example.run.app")
+        monkeypatch.setenv("D3_FRONTEND_URL", "https://site.example.run.app")
+        mod = importlib.reload(S)
+        assert mod.DEFAULT_API_URL == "https://api.example.run.app"
+        assert mod.DEFAULT_SITE_URL == "https://site.example.run.app"
+        monkeypatch.delenv("D3_API_URL")
+        monkeypatch.delenv("D3_FRONTEND_URL")
+        importlib.reload(S)
 
 
 class TestCors:
