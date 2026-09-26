@@ -112,7 +112,12 @@ def fake_db(rows):
 def dag_module(request, monkeypatch):
     pytest.importorskip("airflow")
     mod = importlib.import_module(f"{request.param}_paper_mapping")
-    monkeypatch.setattr(mod, "fetch_openalex_budget", lambda session=None: {"remaining": 9000, "limit": 10000})
+    def fake_budget(session=None, telemetry=None):
+        if telemetry is not None:  # the real probe counts itself too
+            telemetry.total_requests += 1
+        return {"remaining": 9000, "limit": 10000}
+
+    monkeypatch.setattr(mod, "fetch_openalex_budget", fake_budget)
     return request.param, mod
 
 
@@ -133,6 +138,8 @@ def test_citation_batch_logs_each_primary_paper_and_the_finish(dag_module, monke
                                                     params={"max_citing_papers_per_primary": 10})
 
     assert out["citation_edges_upserted"] == 6
+    # The budget probes at the start and end are OpenAlex requests too.
+    assert out["telemetry"]["total_requests"] == 2
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "Citations batch 7: 1 datasets, 2 primary papers. OpenAlex budget: 9,000 of 10,000" in text
     assert "Citations batch 7: 0/2 primary papers (0%)" in text and "starting ds1 10.1/a" in text

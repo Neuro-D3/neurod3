@@ -72,7 +72,8 @@ def parse_budget_headers(headers: Mapping[str, str]) -> Dict[str, Any]:
     }
 
 
-def fetch_openalex_budget(session: Optional[requests.Session] = None, timeout: int = 20) -> Dict[str, Any]:
+def fetch_openalex_budget(session: Optional[requests.Session] = None, timeout: int = 20,
+                          telemetry: Any = None) -> Dict[str, Any]:
     """
     One cheap authenticated request to read today's budget.
 
@@ -80,10 +81,15 @@ def fetch_openalex_budget(session: Optional[requests.Session] = None, timeout: i
     status) and the numbers are None, so callers can log and move on rather
     than fail a run over a monitoring call. A 429 here is itself the answer:
     the budget is already spent.
+
+    The probe is itself a metered request; pass the caller's ``telemetry``
+    (find_reuse_core.Telemetry) so it is counted in total_requests.
     """
     s = session or requests.Session()
     url = openalex_polite_url(PROBE_URL)
     out: Dict[str, Any] = {"status": None, "authenticated": bool(openalex_api_key()), "error": None}
+    if telemetry is not None:
+        telemetry.total_requests += 1
     try:
         resp = s.get(url, headers=openalex_request_headers(url) or None, timeout=timeout)
     except requests.RequestException as exc:

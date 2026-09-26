@@ -259,3 +259,90 @@ class TestCors:
         assert t.trigger_rule == "all_done"
         assert "report" in t.downstream_task_ids
         assert "check_cors" in S.GLOBAL_STEPS
+
+
+class TestMissingGlobalStep:
+    @pytest.mark.parametrize("missing", ["check_site", "check_cors", "preflight_api"])
+    def test_a_killed_global_check_fails_the_run(self, missing):
+        steps = [row(g) for g in S.GLOBAL_STEPS if g != missing] + all_stages("DANDI") + all_stages("SPARC")
+        rep = S.build_report(steps, TWO)
+        assert rep["matrix"]["(global)"][missing] == "missing"
+        assert not rep["passed"]
+        assert any(f.startswith(f"{missing}: no result recorded") for f in rep["failures"])
+
+
+class TestWarningsAreVisible:
+    """A warning passes the check but ends the task as skipped, not green."""
+
+    @pytest.fixture
+    def recorded(self, monkeypatch):
+        rows = []
+        monkeypatch.setattr(S, "_record", lambda run_id, name, archive, status, **k: rows.append((name, status)))
+        return rows
+
+    def test_warning_is_recorded_then_skips_the_task(self, recorded):
+        with pytest.raises(S.AirflowSkipException, match="WARNING DANDI verify_map: stale"):
+            with S.step({"run_id": "r"}, "verify_map", "DANDI") as s:
+                s.warn("stale")
+        assert recorded == [("verify_map", "warn")]
+
+    def test_a_clean_check_passes(self, recorded):
+        with S.step({"run_id": "r"}, "verify_map", "DANDI"):
+            pass
+        assert recorded == [("verify_map", "pass")]
+
+    def test_a_multi_check_task_can_defer_the_skip(self, recorded):
+        with S.step({"run_id": "r"}, "preflight_openalex", skip_on_warn=False) as s:
+            s.warn("no key")
+        assert recorded == [("preflight_openalex", "warn")]
+
+    def test_the_chain_continues_after_a_warning_but_not_after_a_failure(self):
+        for key in S.ARCHIVES:
+            for stage in S.STAGES:
+                if stage == "ingest":
+                    continue  # its upstream is preflight, which can also end skipped
+                assert S.dag.get_task(f"{key}__{stage}").trigger_rule == "none_failed", (key, stage)
+            assert S.dag.get_task(f"{key}__ingest").trigger_rule == "none_failed"
+
+    def test_report_says_passed_with_warnings(self):
+        steps = all_global() + all_stages("DANDI") + all_stages("SPARC")
+        steps[-1] = row(steps[-1]["step"], "SPARC", "warn", details={"warning": "only no full text"})
+        rep = S.build_report(steps, TWO)
+        assert rep["passed"] and rep["warnings"]
+        assert "RESULT: PASSED WITH 1 WARNING(S)" in S.format_report(rep)
+
+    def test_clean_report_says_passed(self):
+        rep = S.build_report(all_global() + all_stages("DANDI") + all_stages("SPARC"), TWO)
+        assert "RESULT: PASSED\n" in S.format_report(rep) + "\n"
+
+
+class TestCheckApi:
+    class Resp:
+        def __init__(self, body, status=200):
+            self.status_code, self._body = status, body
+
+        def json(self):
+            return self._body
+
+    @pytest.fixture
+    def run(self, monkeypatch):
+        monkeypatch.setattr(S, "_record", lambda *a, **k: None)
+        monkeypatch.setitem(S.ARCHIVES, "dandi", {"label": "DANDI", "datasets": [{"dataset_id": "1"}], "pairs": []})
+
+        def go(citations):
+            body = {"dataset": {"id": "1"}, "primary_papers": [{"doi": "10.1/p"}], "citations": citations}
+            monkeypatch.setattr(S.requests, "get", lambda *a, **k: self.Resp(body))
+            S.check_api(key="dandi", run_id="r", params={"api_url": "http://api"})
+        return go
+
+    def test_a_real_label_passes(self, run):
+        run([{"classification": "MENTION", "classification_status": "MENTION"}])
+
+    def test_only_no_full_text_warns(self, run):
+        with pytest.raises(S.AirflowSkipException, match="only 'no full text'"):
+            run([{"classification": None, "classification_status": "no_full_text"}])
+
+    @pytest.mark.parametrize("status", ["error", "placeholder", "unclassified"])
+    def test_errors_and_unattempted_rows_fail(self, run, status):
+        with pytest.raises(S.AirflowFailException, match="no labelled citation"):
+            run([{"classification": None, "classification_status": status}])

@@ -158,12 +158,16 @@ def create_dandi_table(**context):
             with conn.cursor() as cursor:
                 apply_schema_ddl(cursor, create_table_sql)
                 # Allow schema evolution without forcing drop/recreate.
-                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;")
-                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS full_description TEXT;")
-                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS authors JSONB;")
-                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS contributors JSONB;")
-                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS license TEXT;")
-                cursor.execute("ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;")
+                # Through apply_schema_ddl: ADD COLUMN / CREATE INDEX IF NOT EXISTS still take
+                # a table lock when nothing changes, so it skips the ones already in place.
+                apply_schema_ddl(cursor, """
+                    ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;
+                    ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS full_description TEXT;
+                    ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS authors JSONB;
+                    ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS contributors JSONB;
+                    ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS license TEXT;
+                    ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;
+                """)
                 conn.commit()
         logger.info("Successfully created dandi_dataset table (or it already exists)")
     except Exception as e:

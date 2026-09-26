@@ -1400,17 +1400,21 @@ def create_openneuro_table(**context):
             with conn.cursor() as cursor:
                 apply_schema_ddl(cursor, create_table_sql)
                 # Allow schema evolution without forcing a full drop/recreate.
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS license TEXT;")
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;")
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS full_description TEXT;")
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS authors JSONB;")
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS contributors JSONB;")
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;")
-                # Indexes (create after columns exist, otherwise upgrades can fail)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_dataset_id ON openneuro_dataset(dataset_id);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_modality ON openneuro_dataset(modality);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_papers ON openneuro_dataset(papers DESC);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_public ON openneuro_dataset(public);")
+                # Through apply_schema_ddl: ADD COLUMN / CREATE INDEX IF NOT EXISTS still take
+                # a table lock when nothing changes, so it skips the ones already in place.
+                apply_schema_ddl(cursor, """
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS license TEXT;
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS full_description TEXT;
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS authors JSONB;
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS contributors JSONB;
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;
+                    -- Indexes (create after columns exist, otherwise upgrades can fail)
+                    CREATE INDEX IF NOT EXISTS idx_openneuro_dataset_id ON openneuro_dataset(dataset_id);
+                    CREATE INDEX IF NOT EXISTS idx_openneuro_modality ON openneuro_dataset(modality);
+                    CREATE INDEX IF NOT EXISTS idx_openneuro_papers ON openneuro_dataset(papers DESC);
+                    CREATE INDEX IF NOT EXISTS idx_openneuro_public ON openneuro_dataset(public);
+                """)
                 conn.commit()
         logger.info("Successfully created openneuro_dataset table (or it already exists)")
     except Exception as e:

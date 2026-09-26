@@ -8,7 +8,7 @@ START, the VM instance id and EVENTS are set for the 2026-09-25 staging run; edi
 them for another window. Also writes raw.json with the fetched points.
 """
 import json, os, sys, urllib.parse, urllib.request
-from datetime import datetime, timezone
+from datetime import datetime
 
 TOKEN = os.environ["TOKEN"]; PROJECT = "neuro-d3-staging"; VM_ID = "8119844806665421049"
 START, END = "2026-09-25T09:00:00Z", sys.argv[1]
@@ -21,7 +21,8 @@ def series(filt, reducer=None, aligner="ALIGN_MEAN", period="300s"):
         q["aggregation.crossSeriesReducer"] = reducer
     url = f"https://monitoring.googleapis.com/v3/projects/{PROJECT}/timeSeries?" + urllib.parse.urlencode(q)
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {TOKEN}"})
-    d = json.load(urllib.request.urlopen(req))
+    with urllib.request.urlopen(req) as resp:
+        d = json.load(resp)
     out = []
     for ts in d.get("timeSeries", []):
         pts = []
@@ -40,7 +41,8 @@ data = {
   "sqlcpu": series('metric.type="cloudsql.googleapis.com/database/cpu/utilization" AND resource.type="cloudsql_database"'),
   "sqlmem": series('metric.type="cloudsql.googleapis.com/database/memory/utilization" AND resource.type="cloudsql_database"'),
 }
-json.dump({k: [(l, [(t.isoformat(), v) for t, v in p]) for l, p in s] for k, s in data.items()}, open(os.path.join(OUT, "raw.json"), "w"), indent=0)
+with open(os.path.join(OUT, "raw.json"), "w") as f:
+    json.dump({k: [(l, [(t.isoformat(), v) for t, v in p]) for l, p in s] for k, s in data.items()}, f, indent=0)
 
 EVENTS = [("2026-09-25T16:23:00+00:00", "mapping runs start"),
           ("2026-09-25T17:38:00+00:00", "citation phase"),
@@ -82,7 +84,8 @@ def svg(title, lines, ymax, unit, fname, ref=None):
         s.append(f'<rect x="{lx}" y="13" width="10" height="3" fill="{color}"/><text x="{lx+14}" y="18" fill="#1f2328">{name}</text>')
         lx += 14 + 7 * len(name) + 18
     s.append("</svg>")
-    open(os.path.join(OUT, fname), "w").write("\n".join(s))
+    with open(os.path.join(OUT, fname), "w") as f:
+        f.write("\n".join(s))
 
 pts = lambda k, scale=1.0: [(t, v * scale) for t, v in (data[k][0][1] if data[k] else [])]
 svg("Airflow VM (e2-standard-2): CPU utilization", [("CPU %", "#2563eb", pts("cpu", 100))], 100, "%", "vm-cpu.svg")

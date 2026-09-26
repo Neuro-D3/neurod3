@@ -448,6 +448,16 @@ Unit tests: `docker compose exec airflow-scheduler python -m pytest /opt/airflow
 
 The `report` task runs last and logs a one-screen table (a row per archive, a line per known pair). Every step is also in `integration_test_steps`, and each run in `integration_test_runs`.
 
+**Reading the result in the Airflow grid:**
+
+| Task state | Means |
+|---|---|
+| green (success) | the check passed |
+| pink (skipped) | the check passed **with a warning**; the chain carried on. The task's log starts with `WARNING` and says what |
+| red (failed) | the check failed; that archive's chain stops |
+
+The `report` task follows the same rule: red when anything failed, pink when the run passed with warnings (`RESULT: PASSED WITH N WARNING(S)`), green only when everything was clean. So a run that finishes without red still needs a look if its `report` is pink.
+
 **Before triggering, unpause the DAGs it drives:** the four `*_ingestion`, the four `*_paper_mapping` and `paper_reuse_classification`. A paused one leaves the test waiting until its timeout (the failure then names the DAG to unpause).
 
 The trigger form is pre-filled: locally with the compose services (`http://api:8000`, `http://frontend:3000`), on staging with the Cloud Run URLs from `D3_API_URL`, `D3_FRONTEND_URL` and `D3_FRONTEND_ORIGINS` in `docker-compose.gce.yml`. Trigger from the UI or:

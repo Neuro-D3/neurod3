@@ -240,14 +240,18 @@ def create_sparc_table(**context):
             with conn.cursor() as cursor:
                 apply_schema_ddl(cursor, create_table_sql)
                 # Tolerate older deployments — additive columns only.
-                cursor.execute("ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS doi VARCHAR(255);")
-                cursor.execute("ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;")
-                cursor.execute("ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS full_description TEXT;")
-                cursor.execute("ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS authors JSONB;")
-                cursor.execute("ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS contributors JSONB;")
-                cursor.execute("ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS license TEXT;")
-                cursor.execute("ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;")
-                cursor.execute("ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS n_files INTEGER;")
+                # Through apply_schema_ddl: ADD COLUMN / CREATE INDEX IF NOT EXISTS still take
+                # a table lock when nothing changes, so it skips the ones already in place.
+                apply_schema_ddl(cursor, """
+                    ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS doi VARCHAR(255);
+                    ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;
+                    ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS full_description TEXT;
+                    ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS authors JSONB;
+                    ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS contributors JSONB;
+                    ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS license TEXT;
+                    ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;
+                    ALTER TABLE sparc_dataset ADD COLUMN IF NOT EXISTS n_files INTEGER;
+                """)
                 conn.commit()
         logger.info("Successfully created sparc_dataset table (or it already exists)")
     except Exception as e:

@@ -49,7 +49,7 @@ from urllib.parse import urlsplit
 
 import requests
 from airflow import DAG
-from airflow.exceptions import AirflowFailException
+from airflow.exceptions import AirflowFailException, AirflowSkipException
 from psycopg2.extras import Json
 
 try:
@@ -219,6 +219,9 @@ def build_report(steps: List[Dict[str, Any]], archives: Dict[str, Dict[str, str]
         matrix.setdefault("(global)", {})[step] = status
         if status == STATUS_FAIL:
             failures.append(f"{step}: {(s.get('error') or '').splitlines()[0][:200] if s else ''}")
+        elif status == "missing":
+            # A killed or never-run global check must not read as a pass.
+            failures.append(f"{step}: no result recorded (task killed or never ran)")
         elif status == STATUS_WARN:
             warnings.append(f"{step}: {(s.get('details') or {}).get('warning', '')}")
 
@@ -270,7 +273,13 @@ def format_report(report: Dict[str, Any]) -> str:
             lines.append(f"  {kp.get('result', '?'):<5} {kp.get('archive', ''):<10} {kp.get('dataset_id', ''):<9} "
                          f"expected {kp.get('expected', ''):<8} got {kp.get('got') or '-':<13} "
                          f"{kp.get('citing_paper_doi', '')}  ({kp.get('reason', '')})")
-    lines.append("RESULT: " + ("PASSED" if report["passed"] else f"FAILED ({len(report['failures'])} failing step(s))"))
+    if not report["passed"]:
+        result = f"FAILED ({len(report['failures'])} failing step(s), {len(report['warnings'])} warning(s))"
+    elif report["warnings"]:
+        result = f"PASSED WITH {len(report['warnings'])} WARNING(S): review them below"
+    else:
+        result = "PASSED"
+    lines.append("RESULT: " + result)
     for f in report["failures"]:
         lines.append("  FAIL " + f)
     for w in report["warnings"]:
@@ -355,11 +364,16 @@ class _Step:
 
 
 @contextmanager
-def step(context: Dict[str, Any], name: str, archive: str = "", log_hint: Optional[str] = None) -> Iterator[_Step]:
+def step(context: Dict[str, Any], name: str, archive: str = "", log_hint: Optional[str] = None,
+         skip_on_warn: bool = True) -> Iterator[_Step]:
     """
     Run one check and record it. Any exception is recorded with its traceback
     and re-raised as AirflowFailException (a check failing is not worth a
-    retry); a check can also call `s.warn()` to pass with a warning.
+    retry). A check can also call `s.warn()`: the step is recorded as a
+    warning and the task ends as *skipped* (pink in the grid, not green), so a
+    warning is visible; the tasks after it use trigger_rule none_failed and
+    still run. ``skip_on_warn=False`` records the warning without skipping,
+    for a caller that runs several checks in one task.
     """
     run_id = context.get("run_id", "unknown")
     s = _Step()
@@ -377,6 +391,8 @@ def step(context: Dict[str, Any], name: str, archive: str = "", log_hint: Option
     status = STATUS_WARN if s.warning else STATUS_PASS
     _record(run_id, name, archive, status, details=s.details, started=t0, log_hint=log_hint)
     logger.info("%s %s %s: %s", archive or "global", name, status.upper(), json.dumps(s.details, default=str))
+    if s.warning and skip_on_warn:
+        raise AirflowSkipException(f"WARNING {archive + ' ' if archive else ''}{name}: {s.warning}")
 
 
 def _trigger_callback(status: str):
@@ -418,11 +434,14 @@ def preflight(**context) -> None:
     """Everything the later stages need, checked up front with a clear failure each."""
     params = context["params"]
     failed: List[str] = []
+    warned: List[str] = []
 
     def run(name: str, fn) -> None:
         try:
-            with step(context, name) as s:
+            with step(context, name, skip_on_warn=False) as s:
                 fn(s)
+            if s.warning:
+                warned.append(f"{name}: {s.warning}")
         except AirflowFailException as e:
             failed.append(str(e))
 
@@ -477,6 +496,8 @@ def preflight(**context) -> None:
     run("preflight_api", api)
     if failed:
         raise AirflowFailException("Preflight failed: " + " | ".join(failed))
+    if warned:
+        raise AirflowSkipException("WARNING preflight: " + " | ".join(warned))
 
 
 # ---------------------------------------------------------------------------
@@ -675,7 +696,8 @@ def check_api(*, key: str, **context) -> None:
     cfg = ARCHIVES[key]
     base = _api_url(context["params"])
     with step(context, "check_api", cfg["label"]) as s:
-        problems = []
+        problems: List[str] = []
+        unlabelled: List[str] = []
         s.details["datasets"] = {}
         for ds in _dataset_ids(key):
             url = f"{base}/api/datasets/{cfg['label']}/{ds}"
@@ -687,19 +709,25 @@ def check_api(*, key: str, **context) -> None:
                 continue
             body = r.json()
             cites = body.get("citations") or []
-            attempted = [c for c in cites
-                         if (c.get("classification_status") or "unclassified") not in ("unclassified", "placeholder")]
+            labelled = [c for c in cites if (c.get("classification") or "").strip()]
+            no_text = [c for c in cites if c.get("classification_status") == "no_full_text"]
             info.update({"primary_papers": len(body.get("primary_papers") or []), "citations": len(cites),
-                         "attempted_citations": len(attempted),
-                         "labels": sorted({c.get("classification_status") for c in attempted})})
+                         "labelled_citations": len(labelled), "no_full_text_citations": len(no_text),
+                         "labels": sorted({c["classification"] for c in labelled})})
             if not body.get("dataset"):
                 problems.append(f"{ds}: API returned no dataset")
             elif not info["primary_papers"]:
                 problems.append(f"{ds}: API shows no primary paper")
-            elif not attempted:
-                problems.append(f"{ds}: API shows no classified citation (does it read the new columns?)")
+            elif not labelled and no_text:
+                # Classified, but only "no full text": the API shows the rows,
+                # there is just no label to show yet.
+                unlabelled.append(ds)
+            elif not labelled:
+                problems.append(f"{ds}: API shows no labelled citation (does it read the new columns?)")
         if problems:
             raise RuntimeError("; ".join(problems))
+        if unlabelled:
+            s.warn(f"no labelled citation for {unlabelled}, only 'no full text'")
 
 
 def _site_url(params: Dict[str, Any]) -> str:
@@ -772,6 +800,10 @@ def report(**context) -> Dict[str, Any]:
     logger.info("=== Stack integration test ===\n%s", format_report(rep))
     if not rep["passed"]:
         raise AirflowFailException("Stack integration test FAILED:\n" + "\n".join(rep["failures"]))
+    if rep["warnings"]:
+        # Skipped, not green: the run passed but something needs a look.
+        raise AirflowSkipException(f"Stack integration test PASSED WITH {len(rep['warnings'])} WARNING(S):\n"
+                                   + "\n".join(rep["warnings"]))
     return rep
 
 
@@ -835,6 +867,11 @@ cors_task = PythonOperator(task_id="check_cors", python_callable=check_cors, tri
 report_task = PythonOperator(task_id="report", python_callable=report, trigger_rule="all_done", dag=dag)
 
 
+# Tasks in an archive's chain run when every upstream succeeded or was skipped
+# (a warning), and stop after a failure.
+CHAIN_TRIGGER_RULE = "none_failed"
+
+
 def _trigger(key: str, stage: str, conf: Dict[str, Any], timeout_min: int) -> TriggerDagRunOperator:
     return TriggerDagRunOperator(
         task_id=f"{key}__{stage}",
@@ -853,6 +890,8 @@ def _trigger(key: str, stage: str, conf: Dict[str, Any], timeout_min: int) -> Tr
         execution_timeout=timedelta(minutes=timeout_min),
         on_success_callback=_trigger_callback(STATUS_PASS),
         on_failure_callback=_trigger_callback(STATUS_FAIL),
+        # Runs after an upstream check that ended skipped (a warning).
+        trigger_rule=CHAIN_TRIGGER_RULE,
         dag=dag,
     )
 
@@ -863,7 +902,7 @@ for key, cfg in ARCHIVES.items():
 
     ingest = _trigger(key, "ingest", {"dataset_ids": [d["ingest_id"] for d in cfg["datasets"]]}, 30)
     v_ingest = PythonOperator(task_id=f"{key}__verify_ingest", python_callable=verify_ingest,
-                              op_kwargs={"key": key}, dag=dag)
+                              op_kwargs={"key": key}, trigger_rule=CHAIN_TRIGGER_RULE, dag=dag)
     map_ = _trigger(key, "map", {
         "dataset_ids": dataset_ids,
         "max_citing_papers_per_primary": "{{ params.citing_papers_per_primary }}",
@@ -872,9 +911,10 @@ for key, cfg in ARCHIVES.items():
         "enable_citation_enrichment": True,
         "write_run_artifacts": False,
     }, 30)
-    v_map = PythonOperator(task_id=f"{key}__verify_map", python_callable=verify_map, op_kwargs={"key": key}, dag=dag)
+    v_map = PythonOperator(task_id=f"{key}__verify_map", python_callable=verify_map, op_kwargs={"key": key},
+                           trigger_rule=CHAIN_TRIGGER_RULE, dag=dag)
     seed = PythonOperator(task_id=f"{key}__seed_known_pairs", python_callable=seed_known_pairs,
-                          op_kwargs={"key": key}, dag=dag)
+                          op_kwargs={"key": key}, trigger_rule=CHAIN_TRIGGER_RULE, dag=dag)
     classify = _trigger(key, "classify", {
         "source_filter": cfg["label"],
         "dataset_ids": dataset_ids,
@@ -888,8 +928,9 @@ for key, cfg in ARCHIVES.items():
         "min_credit_usd": 1.0,
     }, 20)
     v_cls = PythonOperator(task_id=f"{key}__verify_classify", python_callable=verify_classify,
-                           op_kwargs={"key": key}, dag=dag)
-    api = PythonOperator(task_id=f"{key}__check_api", python_callable=check_api, op_kwargs={"key": key}, dag=dag)
+                           op_kwargs={"key": key}, trigger_rule=CHAIN_TRIGGER_RULE, dag=dag)
+    api = PythonOperator(task_id=f"{key}__check_api", python_callable=check_api, op_kwargs={"key": key},
+                         trigger_rule=CHAIN_TRIGGER_RULE, dag=dag)
 
     preflight_task >> ingest >> v_ingest >> map_ >> v_map >> seed >> classify >> v_cls >> api >> site_task
 

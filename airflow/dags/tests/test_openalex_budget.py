@@ -79,6 +79,12 @@ class TestFetchOpenalexBudget:
         b = B.fetch_openalex_budget(session=FakeSession(FakeResponse(429, {"X-RateLimit-Remaining": "0", "X-RateLimit-Limit": "10000"}, "spent")))
         assert b["status"] == 429 and b["remaining"] == 0 and b["error"] == "spent"
 
+    def test_probe_is_counted_in_the_callers_telemetry(self, keyed):
+        from utils.find_reuse_core import Telemetry
+        tel = Telemetry(total_requests=5)
+        B.fetch_openalex_budget(session=FakeSession(FakeResponse(200, HEADERS)), telemetry=tel)
+        assert tel.total_requests == 6
+
 
 class TestCheckOpenalexBudget:
     def test_logs_and_passes_when_plenty_remains(self, keyed, caplog):

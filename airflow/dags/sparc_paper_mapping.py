@@ -1114,7 +1114,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
             if dataset_rows:
                 logger.info("Citations batch %d: %d datasets, %d primary papers. %s", batch_index,
                             len({r["sparc_id"] for r in dataset_rows}), len(dataset_rows),
-                            format_budget(fetch_openalex_budget(session)))
+                            format_budget(fetch_openalex_budget(session, telemetry=telemetry)))
             for rec_index, rec in enumerate(dataset_rows):
                 sparc_id = rec["sparc_id"]
                 primary_doi = normalize_doi(rec.get("paper_doi"))
@@ -1267,7 +1267,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
 
     metrics["datasets_with_primary_papers"] = len(seen_datasets)
     if dataset_rows:
-        progress.update(len(dataset_rows), note="batch finished. " + format_budget(fetch_openalex_budget(session)),
+        progress.update(len(dataset_rows), note="batch finished. " + format_budget(fetch_openalex_budget(session, telemetry=telemetry)),
                         force=True)
     return {"batch_index": batch_index, **metrics, "telemetry": telemetry.to_dict()}
 
