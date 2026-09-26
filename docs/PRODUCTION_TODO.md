@@ -241,9 +241,13 @@ e2-standard-2.
 ### P1: infrastructure
 
 10. **Upgrade Cloud SQL.**
-   - Memory is at 100% on `db-f1-micro` (0.6 GB) even at idle. Move to at
-     least `db-g1-small` (1.7 GB), or `db-custom-1-3840` (1 vCPU, 3.75 GB) for
-     production.
+   - Memory is at 100% on `db-f1-micro` (0.6 GB) even at idle. Warm, the
+     dashboard's summary query takes ~1.9 s and the dataset list ~2.3 s.
+   - **Staging: `db-g1-small`** (shared core, 1.7 GB, ~$26/mo). One
+     Terraform variable (`db_tier`). Do this before production work starts.
+   - **Production: `db-custom-2-7680`** (2 vCPU, 7.5 GB, ~$100/mo), or
+     `db-custom-1-3840` (1 vCPU, 3.75 GB, ~$50/mo) if load testing shows it's
+     enough. Dedicated cores avoid shared-core throttling during backfills.
    - The data is small (39 MB); the problem is memory and CPU, not storage.
    - It also fails tasks. On 2026-09-25 a `paper_reuse_classification` batch
      finished and saved its labels, but Airflow took ~8 s to store its XCom.
@@ -289,15 +293,45 @@ e2-standard-2.
       doesn't replace items 1–3, 12 and 13.
     - Soak it on staging with `stack_integration_test` before production.
 
+16. **Fail the deploy pipeline when the stack integration test fails.**
+    - Today `stack_integration_test` is triggered by hand after a deploy.
+    - Target: after deploying, the GitHub Actions workflow triggers it through
+      the Airflow REST API, polls until the run finishes (it takes ~5–10 min),
+      and fails the job, naming the failed steps from the report, when the
+      run fails. A red deploy then means "pushed, but the stack isn't wired".
+    - Needs: the runner can reach the Airflow API (the VM's HTTPS endpoint) and
+      has credentials for it (an Airflow user for CI, its password in Secret
+      Manager, read by the deployer service account through Workload Identity).
+    - Unpause the DAGs the test drives before triggering (4 ingestion, 4
+      mapping, `paper_reuse_classification`).
+    - The VM needs `D3_API_URL`, `D3_FRONTEND_URL` and `D3_FRONTEND_ORIGINS`
+      (Cloud Run URLs and `allowed_origins`), written by the startup script
+      from Terraform, so the test needs no parameters.
+
 ### P2: user-facing and visibility
 
-16. **Frontend production build.** Staging serves the React development server
-    (a 3 MB unminified `bundle.js`).
-17. **API latency.**
-    - `/api/paper-mapping/summary` takes 2.5 s: cache it or use a materialised
-      view. Recheck after item 10.
-    - Consider `min_instance_count = 1` on the API to avoid cold starts.
-18. **Progress and metrics for long tasks.**
+17. **Frontend production build.**
+    - Staging runs `npm start`, the React development server, which compiles
+      the app with webpack after the container starts. Cloud Run scales the
+      frontend to zero, so every cold start compiles again: about **70 s**
+      from instance start to a usable page (Cloud Run logs, 2026-09-26,
+      08:28:08 → 08:29:20; same at 07:56, 06:15, 05:29). The port opens
+      before the compile ends, so the first visitor waits the whole time. It
+      then downloads a 3.2 MB unminified `bundle.js`.
+    - Build at image build time (`npm run build`) and serve the static files
+      with nginx. Expected cold start ~1–2 s, bundle roughly 0.5–1 MB.
+    - A production build bakes `REACT_APP_API_URL` in at build time, so the
+      deploy workflow must pass the API URL as a Docker build argument.
+    - Turn CPU throttling back on for the frontend (it's `cpu-throttling:
+      false` today, so CPU is billed whenever an instance is up); a static
+      server doesn't need always-on CPU.
+18. **API cold starts and latency.**
+    - Keep one API instance warm: `min_instance_count = 1` on the API's Cloud
+      Run service (a few dollars a month). Today it scales to zero and the
+      first dashboard request waits for Python to start.
+    - `/api/paper-mapping/summary` takes 1.9–4.8 s: cache it or use a
+      materialised view. Recheck after item 10.
+19. **Progress and metrics for long tasks.**
     - Progress logging is done (`utils/batch_progress.py`).
     - Still to do: time per source for full-text fetches, and a dashboard for
       citing papers per minute, the OpenAlex budget and the text hit rate.
@@ -312,8 +346,9 @@ committing; spot prices vary.
 |---|---|---|---|
 | Airflow VM (UI, scheduler, daily runs) | e2-standard-2, ~$49/mo | e2-standard-2, with tasks moved to a worker (item 12). e2-standard-4 if they stay local | $49–98 |
 | Backfill VM, weekends only | — | e2-highcpu-16, ~10 h per weekend: ~$0.40/h on-demand, ~$0.12/h spot | $5–17 |
-| Cloud SQL | db-f1-micro, ~$8/mo + storage | db-g1-small (~$26) or db-custom-1-3840 (~$50) | $26–50 |
+| Cloud SQL | db-f1-micro, ~$8/mo + storage (→ db-g1-small, ~$26) | db-custom-1-3840 (~$50) or db-custom-2-7680 (~$100) | $50–100 |
 | Paper text store | boot disk (free, not durable) | GCS Standard, 10–50 GB at ~$0.02/GB | < $1 |
 | Boot disk, Cloud Run, Artifact Registry | ~$5–10/mo | same | $5–10 |
 | OpenAlex | free key, 10k requests/day | free, or a paid tier if item 7 shows it's needed | TBD |
-| **Total** | **~$65–70/mo** | lean: **~$85/mo**; comfortable: **~$175/mo** | |
+| API warm instance (item 18) | scales to zero | `min_instance_count = 1` | ~$5 |
+| **Total** | **~$65–70/mo** (~$85 with db-g1-small) | lean: **~$115/mo**; comfortable: **~$230/mo** | |
