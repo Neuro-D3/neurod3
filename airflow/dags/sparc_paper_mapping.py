@@ -36,6 +36,7 @@ except Exception:  # pragma: no cover
     from airflow.operators.python import PythonOperator  # type: ignore
 
 from utils.database import (
+    apply_schema_ddl,
     get_db_connection,
     ensure_paper_reuse_classification_columns,
     backfill_papers_text_status,
@@ -48,6 +49,7 @@ from utils.find_reuse_core import (
     resolve_crossref_metadata,
     resolve_openalex_work,
 )
+from utils.targeting import requested_dataset_ids, sql_id_list
 from utils.paper_citations import (
     find_citation_contexts,
     get_alternate_doi,
@@ -55,7 +57,8 @@ from utils.paper_citations import (
     get_openalex_paper_data,
 )
 from utils.paper_fulltext import fetch_fulltext_oa
-from utils.openalex_budget import check_openalex_budget
+from utils.openalex_budget import check_openalex_budget, fetch_openalex_budget, format_budget
+from utils.batch_progress import BatchProgress
 
 try:
     from airflow.models.xcom_arg import XComArg
@@ -499,7 +502,7 @@ def create_sparc_paper_mapping_tables(**_context) -> None:
     """
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(ddl)
+            apply_schema_ddl(cursor, ddl)
             # Whole-paper classification columns + runs table (utils/database.py);
             # idempotent, shared with the paper_reuse_classification DAG.
             ensure_paper_reuse_classification_columns(cursor)
@@ -532,6 +535,14 @@ def fetch_unmapped_sparc_ids(**context) -> Dict[str, Any]:
             # A previous run already tried these and found no paper (`papers = 0`).
             # Without this they sort ahead of never-tried datasets on every capped run.
             base_where += "  AND d.papers IS DISTINCT FROM 0"
+
+    # dataset_ids: exactly these datasets, mapped or not, unfiltered and uncapped
+    # (the stack integration test). Otherwise the normal selection above.
+    requested = requested_dataset_ids(params)
+    if requested:
+        base_where = f"WHERE d.dataset_id IN ({sql_id_list(requested)})"
+        exclude_keywords = ()
+        max_cap = None
 
     query = f"""
     SELECT d.dataset_id, d.title, d.description, d.url, d.updated_at
@@ -1098,9 +1109,16 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            for rec in dataset_rows:
+            progress = BatchProgress(f"Citations batch {batch_index}", len(dataset_rows), "primary papers",
+                                     counters=metrics, telemetry=telemetry, log=logger)
+            if dataset_rows:
+                logger.info("Citations batch %d: %d datasets, %d primary papers. %s", batch_index,
+                            len({r["sparc_id"] for r in dataset_rows}), len(dataset_rows),
+                            format_budget(fetch_openalex_budget(session, telemetry=telemetry)))
+            for rec_index, rec in enumerate(dataset_rows):
                 sparc_id = rec["sparc_id"]
                 primary_doi = normalize_doi(rec.get("paper_doi"))
+                progress.update(rec_index, note=f"starting {sparc_id} {primary_doi}", force=True)
                 created_at = rec.get("created_at")
                 if not primary_doi or not created_at:
                     continue
@@ -1196,7 +1214,10 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                         max_retries=int(params.get("max_retries", 6)),
                         backoff_seconds=float(params.get("backoff_seconds", 2.0)),
                     )
-                    for citing in citing_papers:
+                    progress.update(note=f"{sparc_id} {primary_doi}: {len(citing_papers)} citing papers from OpenAlex",
+                                    force=True)
+                    for citing_index, citing in enumerate(citing_papers, 1):
+                        progress.update(note=f"{sparc_id} {primary_doi}: citing paper {citing_index}/{len(citing_papers)}")
                         citing_doi = normalize_doi(citing.get("doi"))
                         if not citing_doi:
                             continue
@@ -1245,6 +1266,9 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
         conn.commit()
 
     metrics["datasets_with_primary_papers"] = len(seen_datasets)
+    if dataset_rows:
+        progress.update(len(dataset_rows), note="batch finished. " + format_budget(fetch_openalex_budget(session, telemetry=telemetry)),
+                        force=True)
     return {"batch_index": batch_index, **metrics, "telemetry": telemetry.to_dict()}
 
 
@@ -1310,7 +1334,12 @@ def extract_and_persist_citation_contexts_batch(*, batch_index: int, dataset_ids
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            for rec in rows:
+            progress = BatchProgress(f"Contexts batch {batch_index}", len(rows), "citation edges",
+                                     counters=metrics, telemetry=telemetry, log=logger)
+            if rows:
+                progress.update(note="starting", force=True)
+            for rec_index, rec in enumerate(rows):
+                progress.update(rec_index, note=f"{rec['sparc_id']} <- {rec['citing_paper_doi']}")
                 metrics["citation_edges_seen"] += 1
                 if rec.get("contexts_extracted_at") and not force_refresh:
                     continue
@@ -1355,6 +1384,8 @@ def extract_and_persist_citation_contexts_batch(*, batch_index: int, dataset_ids
                 )
                 metrics["citation_edges_updated"] += 1
         conn.commit()
+    if rows:
+        progress.update(len(rows), note="batch finished", force=True)
 
     return {"batch_index": batch_index, **metrics, "telemetry": telemetry.to_dict()}
 
@@ -1661,6 +1692,9 @@ dag = DAG(
         "include_already_mapped": False,
         # If true, also retry datasets a previous run found no paper for
         "retry_unresolved": False,
+        # Map only these datasets, mapped or not (list or comma-separated ids).
+        # Empty = the normal selection. Used by stack_integration_test.
+        "dataset_ids": [],
         "min_api_interval_seconds": 0.2,
         "max_retries": 6,
         "backoff_seconds": 2.0,

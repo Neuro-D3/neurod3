@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" font-family="Helvetica,Arial,sans-serif" font-size="11">
+<rect width="760" height="300" fill="#ffffff"/>
+<text x="56" y="22" font-size="14" font-weight="bold" fill="#1f2328">Airflow VM (e2-standard-2): CPU utilization</text>
+<line x1="56" y1="256.0" x2="744" y2="256.0" stroke="#e5e7eb"/>
+<text x="50" y="260.0" text-anchor="end" fill="#57606a">0%</text>
+<line x1="56" y1="202.0" x2="744" y2="202.0" stroke="#e5e7eb"/>
+<text x="50" y="206.0" text-anchor="end" fill="#57606a">25%</text>
+<line x1="56" y1="148.0" x2="744" y2="148.0" stroke="#e5e7eb"/>
+<text x="50" y="152.0" text-anchor="end" fill="#57606a">50%</text>
+<line x1="56" y1="94.0" x2="744" y2="94.0" stroke="#e5e7eb"/>
+<text x="50" y="98.0" text-anchor="end" fill="#57606a">75%</text>
+<line x1="56" y1="40.0" x2="744" y2="40.0" stroke="#e5e7eb"/>
+<text x="50" y="44.0" text-anchor="end" fill="#57606a">100%</text>
+<text x="56.0" y="276" text-anchor="middle" fill="#57606a">09:00</text>
+<text x="170.7" y="276" text-anchor="middle" fill="#57606a">11:00</text>
+<text x="285.3" y="276" text-anchor="middle" fill="#57606a">13:00</text>
+<text x="400.0" y="276" text-anchor="middle" fill="#57606a">15:00</text>
+<text x="514.7" y="276" text-anchor="middle" fill="#57606a">17:00</text>
+<text x="629.3" y="276" text-anchor="middle" fill="#57606a">19:00</text>
+<text x="744.0" y="276" text-anchor="middle" fill="#57606a">21:00</text>
+<text x="400.0" y="292" text-anchor="middle" fill="#57606a">UTC, 2026-09-25</text>
+<line x1="479.3" y1="40" x2="479.3" y2="256" stroke="#9ca3af" stroke-dasharray="4 3"/>
+<text x="482.3" y="50" text-anchor="start" fill="#6b7280" font-size="10">mapping runs start</text>
+<line x1="551.0" y1="40" x2="551.0" y2="256" stroke="#9ca3af" stroke-dasharray="4 3"/>
+<text x="554.0" y="62" text-anchor="start" fill="#6b7280" font-size="10">citation phase</text>
+<line x1="600.7" y1="40" x2="600.7" y2="256" stroke="#9ca3af" stroke-dasharray="4 3"/>
+<text x="603.7" y="74" text-anchor="start" fill="#6b7280" font-size="10">OpenAlex budget 0</text>
+<line x1="724.7" y1="40" x2="724.7" y2="256" stroke="#9ca3af" stroke-dasharray="4 3"/>
+<text x="721.7" y="86" text-anchor="end" fill="#6b7280" font-size="10">CRCNS stopped</text>
+<path d="M60.8,93.1 L65.6,94.5 L70.3,91.8 L75.1,90.3 L79.9,93.9 L84.7,40.0 L89.4,40.0 L94.2,80.3 L99.0,95.0 L103.8,136.2 L108.6,106.5 L113.3,145.4 L118.1,138.5 L122.9,104.2 L127.7,145.8 L132.4,161.6 L137.2,152.0 L142.0,163.2 L146.8,210.2 L151.6,207.3 L156.3,215.9 L161.1,215.4 L165.9,215.8 L170.7,214.6 L175.4,215.8 L180.2,213.8 L185.0,210.9 L189.8,211.4 L194.6,214.3 L199.3,214.8 L204.1,214.6 L208.9,215.4 L213.7,214.3 L218.4,215.6 L223.2,216.3 L228.0,193.7 L232.8,216.5 L237.6,217.7 L242.3,216.3 L247.1,213.3 L251.9,193.8 L256.7,120.3 L261.4,209.1 L266.2,212.0 L271.0,213.4 L275.8,203.7 L280.6,213.4 L285.3,213.5 L290.1,212.7 L294.9,215.0 L299.7,212.8 L304.4,213.7 L309.2,145.5 L314.0,165.7 L318.8,219.3 L323.6,213.4 L328.3,219.5 L333.1,220.5 L337.9,202.5 L342.7,219.8 L347.4,218.6 L352.2,219.3 L357.0,216.3 L361.8,218.8 L366.6,220.5 L371.3,218.8 L376.1,220.4 L380.9,220.1 L385.7,219.8 L390.4,220.2 L395.2,219.0 L400.0,218.4 L404.8,219.4 L409.6,220.9 L414.3,221.4 L419.1,220.3 L423.9,197.8 L428.7,147.1 L433.4,148.5 L438.2,165.4 L443.0,158.8 L447.8,210.0 L452.6,221.6 L457.3,221.7 L462.1,224.8 L466.9,218.1 L471.7,224.5 L476.4,223.7 L481.2,223.4 L486.0,217.8 L490.8,173.1 L495.6,169.4 L500.3,174.3 L505.1,171.2 L509.9,165.3 L514.7,168.8 L519.4,166.7 L524.2,171.0 L529.0,163.8 L533.8,170.7 L538.6,81.3 L543.3,125.6 L548.1,111.7 L552.9,118.9 L557.7,97.9 L562.4,104.0 L567.2,96.9 L572.0,84.8 L576.8,98.2 L581.6,72.9 L586.3,74.4 L591.1,74.0 L595.9,72.0 L600.7,67.5 L605.4,72.7 L610.2,89.5 L615.0,80.3 L619.8,80.0 L624.6,74.6 L629.3,82.1 L634.1,82.4 L638.9,84.0 L643.7,81.7 L648.4,82.7 L653.2,76.4 L658.0,71.2 L662.8,87.3 L667.6,85.1 L672.3,76.0 L677.1,68.6 L681.9,86.3 L686.7,90.0 L691.4,109.7 L696.2,93.8 L701.0,96.8 L705.8,73.9 L710.6,76.9 L715.3,71.0 L720.1,80.7 L724.9,82.1 L729.7,214.0 L734.4,217.0 L739.2,215.7" fill="none" stroke="#2563eb" stroke-width="2"/>
+<rect x="677" y="13" width="10" height="3" fill="#2563eb"/><text x="691" y="18" fill="#1f2328">CPU %</text>
+</svg>

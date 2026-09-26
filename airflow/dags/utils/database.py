@@ -8,6 +8,7 @@ This is a utility module, not a DAG file.
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
 from datetime import datetime
+import re
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from sqlalchemy import create_engine, text
@@ -576,30 +577,114 @@ def _table_exists(cursor, table_name: str) -> bool:
     return bool(row and row[0])
 
 
+_ADD_COLUMN_RE = re.compile(r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", re.I)
+_ALTER_TABLE_RE = re.compile(r"^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)\s", re.I)
+_CREATE_INDEX_RE = re.compile(
+    r"^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?IF\s+NOT\s+EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", re.I)
+
+
+def _top_level_clauses(text: str) -> int:
+    """Number of comma-separated clauses, ignoring commas inside parentheses."""
+    depth, clauses = 0, 1
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            clauses += 1
+    return clauses
+
+
+def split_sql_statements(sql: str) -> List[str]:
+    """Split a plain DDL script on `;` (no $$ bodies or quoted semicolons), dropping `--` comments."""
+    lines = [line.split("--", 1)[0] for line in sql.splitlines()]
+    return [s.strip() for s in "\n".join(lines).split(";") if s.strip()]
+
+
+def apply_schema_ddl(cursor, sql: str) -> Dict[str, int]:
+    """
+    Run a DAG's start-up DDL, skipping statements that would change nothing.
+
+    `ALTER TABLE t ADD COLUMN IF NOT EXISTS c` and `CREATE INDEX IF NOT EXISTS i`
+    still take a table lock when the column / index already exists (ACCESS
+    EXCLUSIVE and SHARE respectively). Every ingestion, mapping and
+    classification run starts with such DDL, so overlapping runs deadlocked
+    against each other's inserts. Statements whose column(s) or index already
+    exist are skipped; everything else runs as before.
+    """
+    ran = skipped = 0
+    columns_cache: Dict[str, set] = {}
+    for stmt in split_sql_statements(sql):
+        alter = _ALTER_TABLE_RE.match(stmt)
+        adds = _ADD_COLUMN_RE.findall(stmt) if alter else []
+        # Only a pure "ADD COLUMN IF NOT EXISTS ..." ALTER can be skipped: every
+        # top-level clause must be one (commas inside parentheses don't count).
+        if alter and adds and _top_level_clauses(stmt[alter.end():]) == len(adds):
+            table = alter.group(1).lower()
+            if table not in columns_cache:
+                columns_cache[table] = {c.lower() for c in _existing_columns(cursor, table)}
+            if all(c.lower() in columns_cache[table] for c in adds):
+                skipped += 1
+                continue
+        index = _CREATE_INDEX_RE.match(stmt)
+        if index:
+            cursor.execute("SELECT to_regclass(%s) IS NOT NULL;", (f"public.{index.group(1)}",))
+            row = cursor.fetchone()
+            exists = row[0] if row is not None and not isinstance(row, dict) else (row or {}).get("?column?")
+            if exists:
+                skipped += 1
+                continue
+        cursor.execute(stmt)
+        ran += 1
+        if alter:
+            columns_cache.pop(alter.group(1).lower(), None)
+    return {"ran": ran, "skipped": skipped}
+
+
+def _existing_columns(cursor, table: str) -> set:
+    """Column names of a public table (a catalog read; takes no table lock)."""
+    cursor.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = %s;",
+        (table,),
+    )
+    return {row[0] if not isinstance(row, dict) else row["column_name"] for row in cursor.fetchall()}
+
+
 def ensure_paper_reuse_classification_columns(cursor) -> Dict[str, Any]:
     """
     Add the whole-paper classification columns and the runs table.
 
-    Idempotent: every statement is ``IF NOT EXISTS``. Tables that do not exist
-    yet (a source whose mapping DAG has never run) are skipped; their own DAG
-    creates them and calls this again. Returns which tables were touched.
+    Idempotent. Tables that do not exist yet (a source whose mapping DAG has
+    never run) are skipped; their own DAG creates them and calls this again.
+    Returns which tables were touched and which columns were added.
+
+    Only missing columns are ALTERed. ``ALTER TABLE ... ADD COLUMN IF NOT
+    EXISTS`` takes an ACCESS EXCLUSIVE lock even when the column exists, and
+    every mapping / classification run calls this at start-up, so two runs at
+    once deadlocked (one altering ``papers`` while another held it and waited on
+    a classification table). With the schema current, this takes no table lock.
     """
     touched: List[str] = []
+    added: List[str] = []
 
     for table, _id_col in PAPER_CITATION_CLASSIFICATION_TABLES:
         if not _table_exists(cursor, table):
             continue
+        have = _existing_columns(cursor, table)
         for column, col_type in PAPER_CITATION_CLASSIFICATION_COLUMNS:
-            cursor.execute(
-                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type};"
-            )
+            if column not in have:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type};")
+                added.append(f"{table}.{column}")
         touched.append(table)
 
     if _table_exists(cursor, "papers"):
+        have = _existing_columns(cursor, "papers")
         for column, col_type in PAPERS_FULLTEXT_FETCHER_COLUMNS:
-            cursor.execute(
-                f"ALTER TABLE papers ADD COLUMN IF NOT EXISTS {column} {col_type};"
-            )
+            if column not in have:
+                cursor.execute(f"ALTER TABLE papers ADD COLUMN IF NOT EXISTS {column} {col_type};")
+                added.append(f"papers.{column}")
         backfill_papers_text_status(cursor)
         touched.append("papers")
 
@@ -608,5 +693,5 @@ def ensure_paper_reuse_classification_columns(cursor) -> Dict[str, Any]:
 
     import logging
     logging.getLogger(__name__).info(
-        "ensure_paper_reuse_classification_columns touched: %s", touched)
-    return {"tables": touched}
+        "ensure_paper_reuse_classification_columns touched: %s; added: %s", touched, added or "none")
+    return {"tables": touched, "added_columns": added}

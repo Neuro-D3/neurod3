@@ -255,3 +255,22 @@ class TestDagShape:
         assert p["max_input_chars"] == C.DEFAULT_MAX_INPUT_CHARS
         assert p["fetch_missing_fulltext"] is True
         assert p["dry_run"] is False
+
+
+class TestFirstDois:
+    def test_known_pairs_are_ordered_before_everything(self):
+        sql = D._citation_edge_order_sql(False, "'10.1186/s12987-023-00425-4'")
+        assert sql.startswith("CASE WHEN lower(cit.citing_paper_doi) IN ('10.1186/s12987-023-00425-4') THEN 0 ELSE 1 END, ")
+        # The normal order still follows.
+        assert "CASE WHEN cls.id IS NULL THEN 0" in sql
+
+    def test_also_with_mixed_publishers(self):
+        assert D._citation_edge_order_sql(True, "'10.1/x'").startswith("CASE WHEN lower(cit.citing_paper_doi) IN ('10.1/x')")
+
+    def test_no_first_dois_leaves_the_order_unchanged(self):
+        assert D._citation_edge_order_sql(False) == D._citation_edge_order_sql(False, "")
+        assert not D._citation_edge_order_sql(False).startswith("CASE WHEN lower(")
+
+    def test_param_defaults_empty(self):
+        p = D._build_dag_params()["include_citing_dois"]
+        assert getattr(p, "value", p) == []

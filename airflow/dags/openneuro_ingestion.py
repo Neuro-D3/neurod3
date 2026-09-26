@@ -61,7 +61,8 @@ import requests
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
-from utils.database import get_db_connection, create_unified_datasets_view
+from utils.database import get_db_connection, create_unified_datasets_view, apply_schema_ddl
+from utils.targeting import LIST_ALL, keep_requested, requested_dataset_ids
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,9 @@ dag = DAG(
     is_paused_upon_creation=False,
     params={
         'num_datasets': 5000,  # Default number of datasets to fetch
+        # Ingest only these datasets (list or comma-separated ids; CRCNS takes DOIs).
+        # Empty = the normal full ingestion. Used by stack_integration_test.
+        'dataset_ids': [],
         # OpenNeuro is sensitive to high concurrency; keep this lower than DANDI by default.
         'enrichment_max_workers': 5,
     },
@@ -1394,19 +1398,23 @@ def create_openneuro_table(**context):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(create_table_sql)
+                apply_schema_ddl(cursor, create_table_sql)
                 # Allow schema evolution without forcing a full drop/recreate.
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS license TEXT;")
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;")
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS full_description TEXT;")
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS authors JSONB;")
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS contributors JSONB;")
-                cursor.execute("ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;")
-                # Indexes (create after columns exist, otherwise upgrades can fail)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_dataset_id ON openneuro_dataset(dataset_id);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_modality ON openneuro_dataset(modality);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_papers ON openneuro_dataset(papers DESC);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_openneuro_public ON openneuro_dataset(public);")
+                # Through apply_schema_ddl: ADD COLUMN / CREATE INDEX IF NOT EXISTS still take
+                # a table lock when nothing changes, so it skips the ones already in place.
+                apply_schema_ddl(cursor, """
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS license TEXT;
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS papers INTEGER;
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS full_description TEXT;
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS authors JSONB;
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS contributors JSONB;
+                    ALTER TABLE openneuro_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;
+                    -- Indexes (create after columns exist, otherwise upgrades can fail)
+                    CREATE INDEX IF NOT EXISTS idx_openneuro_dataset_id ON openneuro_dataset(dataset_id);
+                    CREATE INDEX IF NOT EXISTS idx_openneuro_modality ON openneuro_dataset(modality);
+                    CREATE INDEX IF NOT EXISTS idx_openneuro_papers ON openneuro_dataset(papers DESC);
+                    CREATE INDEX IF NOT EXISTS idx_openneuro_public ON openneuro_dataset(public);
+                """)
                 conn.commit()
         logger.info("Successfully created openneuro_dataset table (or it already exists)")
     except Exception as e:
@@ -1417,6 +1425,11 @@ def create_openneuro_table(**context):
 def fetch_openneuro_datasets(**context) -> List[Dict[str, Any]]:
     """Fetch datasets from OpenNeuro GraphQL API."""
     num_datasets = context.get('params', {}).get('num_datasets', 50)
+    # dataset_ids: ingest only these (the stack integration test); list the whole
+    # archive so the requested ones are found wherever they sit in it.
+    requested = requested_dataset_ids(context.get('params'))
+    if requested:
+        num_datasets = LIST_ALL
 
     # Build the Dataset node selection based on schema availability.
     # NOTE: We intentionally do NOT request `latestSnapshot` here because OpenNeuro sometimes
@@ -1520,7 +1533,7 @@ def fetch_openneuro_datasets(**context) -> List[Dict[str, Any]]:
             cursor = page_info.get('endCursor')
         
         logger.info("Successfully fetched %d datasets from OpenNeuro API", len(datasets))
-        return datasets
+        return keep_requested(datasets, requested, archive="OpenNeuro")
     
     except requests.exceptions.RequestException as e:
         logger.error("Error fetching datasets from OpenNeuro API: %s", e)

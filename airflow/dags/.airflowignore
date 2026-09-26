@@ -25,3 +25,4 @@ tests/**
 # answer-key builder and tests are not DAGs.
 reuse_classification_benchmark_test/build_*.py
 reuse_classification_benchmark_test/test_*.py
+stack_integration_test/test_*.py
