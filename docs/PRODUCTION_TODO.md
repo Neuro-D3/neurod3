@@ -162,7 +162,7 @@ e2-standard-2.
      `papers.fulltext_cache_key` would then point at files that no longer exist.
    - Put the text in a bucket, keyed by normalised DOI, read and written by
      both mapping and classification.
-   - That also lets a separate backfill VM (item 10) and the regular VM share
+   - That also lets a separate backfill VM (item 11) and the regular VM share
      one cache.
    - Add a lifecycle policy, and a one-time upload of the existing cache.
 
@@ -193,9 +193,54 @@ e2-standard-2.
      8,412 citing papers checked".
    - Also store the run's parameters in `<archive>_paper_resolution_runs`.
 
+9. **Version labels by the find_reuse commit, and relabel when the labels change.**
+   - **Why:** staging has 380 labels from the June snippet classifier
+     (PRIMARY / SECONDARY / NEITHER / UNKNOWN, `gpt-5.4-nano`) mixed in with
+     today's (REUSE / MENTION / NEITHER). Nothing records which classifier
+     produced a label, and old labels are only redone after the whole
+     never-classified backlog (7,456 pairs).
+   - **Anchor on the upstream commit.** `utils/classify_fulltext_reuse.py` is
+     vendored from catalystneuro/find_reuse; the commit
+     (`3fac8ce14259e467fa40f9d7f0da96f19c1bd1d7`, 2026-09-18) is only in its
+     docstring today. Make it `FIND_REUSE_COMMIT` / `FIND_REUSE_COMMIT_DATE`
+     constants, with a unit test that the docstring and constants agree.
+     Re-vendoring means updating those two lines.
+   - **Every classification row stores `reuse_commit`.** New labels always
+     carry the latest hash. Backfill: current rows → `3fac8ce`; the June rows →
+     `legacy`.
+   - **Registry table `classification_label_versions`:** `reuse_commit`,
+     `commit_date` (hashes can't be ordered), `first_used_at`, `labels` (JSON
+     of the label sets: citing and direct labels, REUSE sub-types,
+     modalities), `label_fingerprint`, `labels_changed`, and `reuse_release`
+     (empty until find_reuse tags releases). The DAG registers the current
+     commit automatically on its first run with it.
+   - **Outdated = the labels changed** (decided 2026-09-26). A new commit with
+     the same label sets doesn't make older rows outdated. A commit whose
+     fingerprint differs flips `labels_changed`, and every row from an earlier
+     commit with different labels becomes outdated. A future major find_reuse
+     release that cuts new labels is exactly this case.
+   - **DAG param `relabel_order`:** `new_first` (default, today's order),
+     `outdated_first`, `outdated_only`.
+   - **"No full text" on an outdated row replaces the old label** (decided
+     2026-09-26). Otherwise ~40% of outdated rows would never lose their old
+     label and would be re-picked by every relabel run. Errors and dry runs
+     still never replace a real label, and "no full text" never replaces a
+     current one.
+   - **History table `paper_reuse_classification_history`:** every replaced
+     label is copied there, whole (`to_jsonb`), with its `reuse_commit`, in
+     the same statement as the upsert. Note: don't use `FOR UPDATE` in that
+     CTE; Postgres then hides the row from it when the upsert updates it.
+   - **Dashboard:** outdated labels shown as their own bucket ("Older
+     classifier", with a breakdown by old label), filterable, and badged in
+     the dataset panel with the old commit on hover.
+   - **Starting point:** local branch `wip/relabel-order-draft` (e36e2d9) has a
+     working draft of the history table, the write guard, `relabel_order` and
+     the dashboard bucket, keyed on prompt version instead of the commit. Its
+     guard and history were checked against a real database.
+
 ### P1: infrastructure
 
-9. **Upgrade Cloud SQL.**
+10. **Upgrade Cloud SQL.**
    - Memory is at 100% on `db-f1-micro` (0.6 GB) even at idle. Move to at
      least `db-g1-small` (1.7 GB), or `db-custom-1-3840` (1 vCPU, 3.75 GB) for
      production.
@@ -208,7 +253,7 @@ e2-standard-2.
    - Consider separating Airflow's metadata database from `dag_data`.
    - The change restarts the database for a minute or two.
 
-10. **A separate large VM for the backfill, on a schedule (for example weekends).**
+11. **A separate large VM for the backfill, on a schedule (for example weekends).**
     - A `backfill` Airflow queue served by a worker on a large VM (for example a
       16-vCPU high-CPU machine, spot if acceptable).
     - A GCE instance schedule starts it on Saturday and stops it when the queue
@@ -217,42 +262,42 @@ e2-standard-2.
     - Target: at about 7 s per citing paper, 20k citing papers is about 40
       worker-hours. With 20–30 concurrent fetchers that's about 1.5–2 hours.
       Later runs are much shorter, since cached papers take about 0.3 s.
-    - Needs items 5 (shared text store) and 11 (a worker outside the scheduler).
+    - Needs items 5 (shared text store) and 12 (a worker outside the scheduler).
 
-11. **Separate task execution from the scheduler.**
+12. **Separate task execution from the scheduler.**
     - Move from LocalExecutor, where tasks run inside the scheduler container,
       to CeleryExecutor or a dedicated worker container with CPU and memory
       limits. Heavy tasks then can't slow the UI or the scheduler.
 
-12. **Pools per resource instead of one mapping pool.**
+13. **Pools per resource instead of one mapping pool.**
     - `openalex_pool`, `fulltext_pool`, `chrome_pool` (and the existing
       classification pool), each sized to that resource's limit.
     - Set their sizes in config so they survive a VM reboot.
       `PAPER_MAPPING_API_POOL_SLOTS` currently resets to 2 at start-up.
 
-13. **Memory safety on the Airflow VM.**
+14. **Memory safety on the Airflow VM.**
     - Add a 2–4 GB swap file (startup script).
     - Set container memory limits.
     - Alert when memory is above 85%.
 
-14. **Upgrade Airflow 3.1.5 → 3.3.x.**
+15. **Upgrade Airflow 3.1.5 → 3.3.x.**
     - 3.3.2 is current (2026-09-17). 3.2.0 added UI performance work and ~42×
       faster rendered-field cleanup for DAGs with many mapped tasks, which
       matches ours. 3.2.0 also moved to SQLAlchemy 2.0, so check custom SQL
       and plugins.
     - None of the 3.2–3.3 notes mention scheduler or pool changes, so this
-      doesn't replace items 1–3, 11 and 12.
+      doesn't replace items 1–3, 12 and 13.
     - Soak it on staging with `stack_integration_test` before production.
 
 ### P2: user-facing and visibility
 
-15. **Frontend production build.** Staging serves the React development server
+16. **Frontend production build.** Staging serves the React development server
     (a 3 MB unminified `bundle.js`).
-16. **API latency.**
+17. **API latency.**
     - `/api/paper-mapping/summary` takes 2.5 s: cache it or use a materialised
-      view. Recheck after item 9.
+      view. Recheck after item 10.
     - Consider `min_instance_count = 1` on the API to avoid cold starts.
-17. **Progress and metrics for long tasks.**
+18. **Progress and metrics for long tasks.**
     - Progress logging is done (`utils/batch_progress.py`).
     - Still to do: time per source for full-text fetches, and a dashboard for
       citing papers per minute, the OpenAlex budget and the text hit rate.
@@ -265,7 +310,7 @@ committing; spot prices vary.
 
 | Component | Staging today | Production proposal | Monthly (≈) |
 |---|---|---|---|
-| Airflow VM (UI, scheduler, daily runs) | e2-standard-2, ~$49/mo | e2-standard-2, with tasks moved to a worker (item 11). e2-standard-4 if they stay local | $49–98 |
+| Airflow VM (UI, scheduler, daily runs) | e2-standard-2, ~$49/mo | e2-standard-2, with tasks moved to a worker (item 12). e2-standard-4 if they stay local | $49–98 |
 | Backfill VM, weekends only | — | e2-highcpu-16, ~10 h per weekend: ~$0.40/h on-demand, ~$0.12/h spot | $5–17 |
 | Cloud SQL | db-f1-micro, ~$8/mo + storage | db-g1-small (~$26) or db-custom-1-3840 (~$50) | $26–50 |
 | Paper text store | boot disk (free, not durable) | GCS Standard, 10–50 GB at ~$0.02/GB | < $1 |
