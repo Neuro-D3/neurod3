@@ -97,8 +97,8 @@ class TestBuildReuseMetrics:
         )
         assert (m["independent_reuse_count"], m["same_lab_reuse_count"]) == (1, 0)
         assert m["reuse_papers"][0] == {
-            "doi": "10.1/a", "title": None, "first_author": "Ann Other", "publication_date": None,
-            "same_lab": False, "same_lab_basis": [],
+            "doi": "10.1/a", "title": None, "first_author": "Ann Other", "author_count": 1,
+            "publication_date": None, "same_lab": False, "same_lab_basis": [],
         }
 
     def test_per_year_runs_from_publication_to_the_current_year(self):
@@ -191,6 +191,7 @@ class TestStagingExample:
         assert m["same_lab_reuse_count"] == 1
         assert m["mention_count"] == 11
         assert m["last_reuse"]["doi"] == "10.1186/s12883-023-03468-0"
+        assert (m["last_reuse"]["first_author"], m["last_reuse"]["author_count"]) == ("Sajjad Farashi", 5)
         assert m["coverage"] == {"citing_papers": 20, "classified": 14, "no_full_text": 6, "pending": 0}
 
     def test_same_lab_reuse_is_backed_by_both_signals(self):

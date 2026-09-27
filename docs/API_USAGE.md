@@ -164,7 +164,7 @@ curl "http://localhost:8000/api/datasets/DANDI/000016" | jq '.citations[] | sele
 | `mention_count` | citing papers labelled `MENTION` |
 | `per_year` | `{year, reuse, mentions}` from the publication year (or the first dated paper, if earlier) to the current year, zeros included; undated papers are counted in `undated` |
 | `last_reuse` | the most recent reuse paper (same shape as `reuse_papers` items) |
-| `reuse_papers` | `{doi, title, first_author, publication_date, same_lab, same_lab_basis}`, newest first; `same_lab_basis` lists `classifier` and/or `author_names` |
+| `reuse_papers` | `{doi, title, first_author, author_count, publication_date, same_lab, same_lab_basis}`, newest first; `same_lab_basis` lists `classifier` and/or `author_names` |
 | `coverage` | `citing_papers` found, `classified` (has a label), `no_full_text` (the classifier or the mapping found no text), `pending` (the rest, including errors) |
 
 Dataset ids may contain slashes (CRCNS DOIs, Kaggle): the route reads everything between the source and `/metrics` as the id.

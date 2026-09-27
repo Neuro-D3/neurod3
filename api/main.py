@@ -1173,6 +1173,7 @@ def build_reuse_metrics(
             "doi": doi,
             "title": paper.get("title"),
             "first_author": _first_author(paper.get("authors")),
+            "author_count": len(paper["authors"]) if isinstance(paper.get("authors"), list) else 0,
             "publication_date": paper.get("publication_date"),
             "same_lab": bool(basis),
             "same_lab_basis": basis,
