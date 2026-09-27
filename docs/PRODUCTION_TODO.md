@@ -350,6 +350,37 @@ e2-standard-2.
       probably affected too). If the data is fine, make "not refreshed, but
       a primary already exists" a note in the report instead of a warning,
       so the test isn't pink on every run.
+21. **Catch false-positive reuse labels before they reach the Dataset impact card.**
+    - **Why:** dataset pages now show reuse counts to dataset authors, so a
+      wrong REUSE is visible and inflates the headline number. Two known
+      cases, both a sibling dataset from the same lab:
+      - DANDI 000362 ← "Deep-prior ODEs augment fluorescence imaging with
+        chemical sensors" (`10.1038/s41467-024-53232-2`). find_reuse's human
+        reviewer: it reuses Dandiset 000168, not 000362 (answer key
+        NOT_REUSE). It was taken out of the stack test for this reason.
+      - OpenNeuro ds003509 (SimonConflict) ← Farashi et al. 2023
+        (`10.1186/s12883-023-03468-0`). The paper used the "Parkinson's
+        Rests" data from predict.cs.unm.edu, the Cavanagh lab's site, while
+        ds003509 is that lab's Simon-task dataset. Classifier: REUSE,
+        `source_archive` "Lab website".
+    - **Checks to build:**
+      - **Identifier in the text:** does the full text name this dataset
+        (accession such as `ds003509` or `DANDI:000362`, its DOI or URL)? A
+        REUSE with none gets a "needs review" flag.
+      - **Source vs. archive:** flag REUSE labels whose `source_archive`
+        isn't the dataset's archive ("Lab website", "GigaScience Database" on
+        an OpenNeuro dataset). Some are legitimate mirrors, so flag rather
+        than relabel.
+      - **Sibling datasets:** when the dataset's authors have other datasets,
+        check which one the text identifies (000168 vs 000362); relabel or
+        flag.
+      - **Benchmark:** add both pairs, and any the checks confirm, as hard
+        cases.
+      - **Review queue:** list flagged labels with their evidence quote on
+        the paper-mapping dashboard; a reviewer confirms or overrides, and an
+        override survives reclassification (see item 9, label versioning).
+      - **Metrics:** decide whether flagged, unreviewed reuses count (for
+        example count them, and show "N unverified" on the card).
 
 ## Projected cost
 
