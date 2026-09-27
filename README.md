@@ -301,6 +301,7 @@ The FastAPI backend provides REST endpoints for accessing neuroscience datasets.
 - `GET /api/health` - Database health check (includes view status)
 - `GET /api/datasets` - Fetch datasets with optional filters (source, modality, search)
 - `GET /api/datasets/stats` - Get dataset statistics
+- `GET /api/datasets/{source}/{id}/metrics` - Reuse metrics for one dataset (see [docs/API_USAGE.md](docs/API_USAGE.md#dataset-reuse-metrics))
 - `POST /api/refresh-view` - Manually create or refresh the unified_datasets view
 - `GET /api/debug/view-info` - Debug endpoint to check view status and data sources
 

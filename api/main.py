@@ -12,7 +12,10 @@ import os
 import sys
 from pathlib import Path
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import logging
+import re
+import unicodedata
 
 # Add dags directory to path so we can import shared utilities
 dags_path = Path(__file__).parent.parent / "dags"
@@ -1022,6 +1025,297 @@ async def get_dataset_stats(
     except Exception as e:
         logger.exception("Unexpected error in /api/datasets/stats")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+# --- Dataset reuse metrics ---------------------------------------------------
+
+# Paper-mapping tables per archive: the table-name prefix ({prefix}_dataset,
+# {prefix}_paper_map, {prefix}_paper_citations,
+# {prefix}_paper_citation_classifications) and their dataset id column.
+_ARCHIVE_PAPER_TABLES: Dict[str, Tuple[str, str]] = {
+    "DANDI": ("dandi", "dandi_id"),
+    "OpenNeuro": ("openneuro", "openneuro_id"),
+    "CRCNS": ("crcns", "crcns_id"),
+    "SPARC": ("sparc", "sparc_id"),
+}
+
+# A citing paper is labelled once per primary paper it cites. Its label for the
+# dataset is the first of these it has (the order the citation lists use).
+LABEL_PRECEDENCE: Tuple[str, ...] = ("REUSE", "PRIMARY", "MENTION", "NEITHER")
+
+# papers.text_status values meaning the mapping found no full text to classify.
+NO_TEXT_STATUSES: Tuple[str, ...] = ("metadata_only", "unavailable")
+
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
+
+
+def _author_key(name: Any) -> Optional[Tuple[str, str]]:
+    """
+    Loose identity for an author name: (last word of the surname, first initial).
+
+    Reads both "Last, First M." (archive metadata) and "First M. Last"
+    (OpenAlex). Accents, apostrophes, hyphens and stray invisible characters
+    are dropped, so "Pirio-Richardson, Sarah" and "Sarah Pirio Richardson"
+    match. None when the name lacks a surname or a first name.
+    """
+    if isinstance(name, dict):
+        name = name.get("name")
+    if not isinstance(name, str):
+        return None
+    text = unicodedata.normalize("NFKD", name)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    text = re.sub(r"['’]", "", text)
+    if "," in text:
+        last, _, first = text.partition(",")
+        last_words = re.sub(r"[^a-z]+", " ", last).split()
+        first_words = re.sub(r"[^a-z]+", " ", first).split()
+    else:
+        words = re.sub(r"[^a-z]+", " ", text).split()
+        while len(words) > 2 and words[-1] in _NAME_SUFFIXES:
+            words.pop()
+        last_words, first_words = words[-1:], words[:-1]
+    if not last_words or not first_words:
+        return None
+    return last_words[-1], first_words[0][0]
+
+
+def _author_keys(names: Any) -> set:
+    if not isinstance(names, list):
+        return set()
+    return {key for key in (_author_key(n) for n in names) if key}
+
+
+def _first_author(authors: Any) -> Optional[str]:
+    if not isinstance(authors, list) or not authors:
+        return None
+    first = authors[0]
+    if isinstance(first, dict):
+        first = first.get("name")
+    return first if isinstance(first, str) else None
+
+
+def _year_of(publication_year: Any, publication_date: Any) -> Optional[int]:
+    if isinstance(publication_year, int):
+        return publication_year
+    if isinstance(publication_date, str) and re.match(r"\d{4}", publication_date):
+        return int(publication_date[:4])
+    return None
+
+
+def build_reuse_metrics(
+    edges: List[Dict[str, Any]],
+    *,
+    lab_names: List[Any],
+    published_year: Optional[int],
+    current_year: int,
+) -> Dict[str, Any]:
+    """
+    Reuse metrics for one dataset from its citation edges.
+
+    `edges` has one row per (primary paper, citing paper): the edge's
+    classification, status and same_lab, and the citing paper's publication
+    date and year, text_status and (on REUSE rows) title and authors.
+    `lab_names` are the dataset's authors plus its primary papers' authors.
+
+    Counts are of distinct citing papers. A reuse counts as same lab when the
+    classifier said so or one of its authors' names matches `lab_names`;
+    otherwise it is independent. Years run from the dataset's publication
+    (or the first dated paper, if earlier) to the current year.
+    """
+    papers: Dict[str, Dict[str, Any]] = {}
+    for row in edges:
+        paper = papers.setdefault(
+            row["citing_paper_doi"], {"labels": set(), "statuses": set(), "same_lab": set()}
+        )
+        if row.get("classification"):
+            paper["labels"].add(row["classification"])
+        if row.get("status"):
+            paper["statuses"].add(row["status"])
+        if row.get("classification") == "REUSE" and row.get("same_lab") is not None:
+            paper["same_lab"].add(bool(row["same_lab"]))
+        for key in ("publication_date", "publication_year", "text_status", "title", "authors"):
+            if row.get(key) is not None:
+                paper.setdefault(key, row[key])
+
+    lab_keys = _author_keys(lab_names)
+    coverage = {"citing_papers": len(papers), "classified": 0, "no_full_text": 0, "pending": 0}
+    by_year: Dict[int, Dict[str, int]] = {}
+    undated = {"reuse": 0, "mentions": 0}
+    reuse_papers: List[Dict[str, Any]] = []
+    mention_count = 0
+    for doi, paper in papers.items():
+        label = next((l for l in LABEL_PRECEDENCE if l in paper["labels"]), None)
+        if label:
+            coverage["classified"] += 1
+        elif "no_full_text" in paper["statuses"] or paper.get("text_status") in NO_TEXT_STATUSES:
+            coverage["no_full_text"] += 1
+        else:
+            coverage["pending"] += 1
+        if label not in ("REUSE", "MENTION"):
+            continue
+
+        bucket = "reuse" if label == "REUSE" else "mentions"
+        year = _year_of(paper.get("publication_year"), paper.get("publication_date"))
+        if year is None:
+            undated[bucket] += 1
+        else:
+            by_year.setdefault(year, {"reuse": 0, "mentions": 0})[bucket] += 1
+        if label == "MENTION":
+            mention_count += 1
+            continue
+
+        basis = []
+        if True in paper["same_lab"]:
+            basis.append("classifier")
+        if _author_keys(paper.get("authors")) & lab_keys:
+            basis.append("author_names")
+        reuse_papers.append({
+            "doi": doi,
+            "title": paper.get("title"),
+            "first_author": _first_author(paper.get("authors")),
+            "publication_date": paper.get("publication_date"),
+            "same_lab": bool(basis),
+            "same_lab_basis": basis,
+        })
+
+    reuse_papers.sort(key=lambda p: (p["publication_date"] or "", p["doi"]), reverse=True)
+    same_lab_count = sum(1 for p in reuse_papers if p["same_lab"])
+    known_years = [y for y in (published_year, min(by_year, default=None)) if y is not None]
+    per_year = []
+    if known_years:
+        start, end = min(known_years), max([current_year, *by_year])
+        per_year = [
+            {"year": y, **by_year.get(y, {"reuse": 0, "mentions": 0})} for y in range(start, end + 1)
+        ]
+    return {
+        "reuse_count": len(reuse_papers),
+        "independent_reuse_count": len(reuse_papers) - same_lab_count,
+        "same_lab_reuse_count": same_lab_count,
+        "mention_count": mention_count,
+        "last_reuse": reuse_papers[0] if reuse_papers else None,
+        "per_year": per_year,
+        "undated": undated,
+        "coverage": coverage,
+        "reuse_papers": reuse_papers,
+    }
+
+
+def _fetch_metric_edges(cursor, prefix: str, id_col: str, dataset_id: str) -> List[Dict[str, Any]]:
+    """The dataset's citation edges in the shape build_reuse_metrics reads."""
+    citations = f"{prefix}_paper_citations"
+    classifications = f"{prefix}_paper_citation_classifications"
+    if not (_paper_mapping_relation_exists(cursor, citations) and _paper_mapping_relation_exists(cursor, "papers")):
+        return []
+    has_labels = _paper_mapping_relation_exists(cursor, classifications)
+    if has_labels:
+        label_cols = sql.SQL("cc.classification, cc.status, cc.same_lab")
+        label_join = sql.SQL(
+            "LEFT JOIN {cls} cc ON cc.{id} = c.{id} "
+            "AND cc.primary_paper_doi = c.primary_paper_doi "
+            "AND cc.citing_paper_doi = c.citing_paper_doi"
+        ).format(cls=sql.Identifier(classifications), id=sql.Identifier(id_col))
+        is_reuse = sql.SQL("cc.classification = 'REUSE'")
+    else:
+        label_cols = sql.SQL("NULL::text AS classification, NULL::text AS status, NULL::boolean AS same_lab")
+        label_join = sql.SQL("")
+        is_reuse = sql.SQL("FALSE")
+    text_status = sql.SQL(
+        "p.text_status" if "text_status" in _table_columns(cursor, "papers") else "NULL::text"
+    )
+    query = sql.SQL(
+        """
+        SELECT
+            c.citing_paper_doi,
+            {label_cols},
+            p.publication_date,
+            p.publication_year,
+            {text_status} AS text_status,
+            CASE WHEN {is_reuse} THEN p.title END AS title,
+            CASE WHEN {is_reuse} THEN p.authors END AS authors
+        FROM {citations} c
+        {label_join}
+        LEFT JOIN papers p ON p.paper_doi = c.citing_paper_doi
+        WHERE c.{id} = %s;
+        """
+    ).format(
+        label_cols=label_cols,
+        text_status=text_status,
+        is_reuse=is_reuse,
+        citations=sql.Identifier(citations),
+        label_join=label_join,
+        id=sql.Identifier(id_col),
+    )
+    cursor.execute(query, (dataset_id,))
+    return [dict(r) for r in cursor.fetchall()]
+
+
+# Registered before the detail route: its `{dataset_id:path}` would otherwise
+# read "<id>/metrics" as the dataset id.
+@app.get("/api/datasets/{source}/{dataset_id:path}/metrics")
+async def get_dataset_metrics(source: str, dataset_id: str):
+    """
+    Reuse metrics for one dataset: reuse, independent reuse, mentions, counts
+    per year, the latest reuse and how many citing papers were classified
+    (see build_reuse_metrics). Archives without paper mapping answer
+    {"tracked": false}.
+    """
+    canonical_source = {s.lower(): s for s in ALLOWED_SOURCES}.get(source.lower())
+    if canonical_source is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    base = {"source": canonical_source, "dataset_id": dataset_id}
+    if canonical_source not in _ARCHIVE_PAPER_TABLES:
+        return {**base, "tracked": False}
+    prefix, id_col = _ARCHIVE_PAPER_TABLES[canonical_source]
+    dataset_table, map_table = f"{prefix}_dataset", f"{prefix}_paper_map"
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cursor:
+                if not _paper_mapping_relation_exists(cursor, dataset_table):
+                    raise HTTPException(status_code=404, detail="Dataset not found")
+                authors_col = sql.SQL(
+                    "authors" if "authors" in _table_columns(cursor, dataset_table) else "NULL::jsonb AS authors"
+                )
+                cursor.execute(
+                    sql.SQL("SELECT created_at, {authors} FROM {table} WHERE dataset_id = %s LIMIT 1;").format(
+                        authors=authors_col, table=sql.Identifier(dataset_table)
+                    ),
+                    (dataset_id,),
+                )
+                dataset = cursor.fetchone()
+                if not dataset:
+                    raise HTTPException(status_code=404, detail="Dataset not found")
+
+                lab_names: List[Any] = list(dataset["authors"]) if isinstance(dataset["authors"], list) else []
+                if _paper_mapping_relation_exists(cursor, map_table) and _paper_mapping_relation_exists(cursor, "papers"):
+                    cursor.execute(
+                        sql.SQL(
+                            "SELECT p.authors FROM {map} m JOIN papers p ON p.paper_doi = m.paper_doi WHERE m.{id} = %s;"
+                        ).format(map=sql.Identifier(map_table), id=sql.Identifier(id_col)),
+                        (dataset_id,),
+                    )
+                    for row in cursor.fetchall():
+                        if isinstance(row["authors"], list):
+                            lab_names.extend(row["authors"])
+                edges = _fetch_metric_edges(cursor, prefix, id_col, dataset_id)
+    except HTTPException:
+        raise
+    except psycopg.Error as e:
+        logger.exception("Database query error in /api/datasets/%s/%s/metrics", canonical_source, dataset_id)
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+
+    created_at = dataset["created_at"]
+    metrics = build_reuse_metrics(
+        edges,
+        lab_names=lab_names,
+        published_year=created_at.year if created_at else None,
+        current_year=datetime.now(timezone.utc).year,
+    )
+    return {
+        **base,
+        "tracked": True,
+        "published": created_at.date().isoformat() if created_at else None,
+        **metrics,
+    }
 
 
 @app.get("/api/datasets/{source}/{dataset_id:path}")

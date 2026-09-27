@@ -151,6 +151,28 @@ curl "http://localhost:8000/api/datasets?source=DANDI&sort_by=papers&limit=5" | 
 curl "http://localhost:8000/api/datasets/DANDI/000016" | jq '.citations[] | select(.classification == "REUSE") | {citing_paper_doi, confidence, reuse_type, reused_modalities, quote: .evidence_quotes[0].quote}'
 ```
 
+### Dataset reuse metrics
+
+`GET /api/datasets/{source}/{id}/metrics` summarises how a dataset has been used, counting distinct citing papers across all of its primary papers. A citing paper labelled differently via different primary papers takes the first of `REUSE`, `PRIMARY`, `MENTION`, `NEITHER`.
+
+| Field | Meaning |
+|---|---|
+| `tracked` | `false` for archives without paper mapping (Kaggle, PhysioNet); the other fields are then absent |
+| `published` | the dataset's `created_at` date |
+| `reuse_count` | citing papers labelled `REUSE` |
+| `independent_reuse_count`, `same_lab_reuse_count` | a reuse is same lab when the classifier said `same_lab`, or an author's name (surname and first initial) matches an author of the dataset or of its primary papers; otherwise independent |
+| `mention_count` | citing papers labelled `MENTION` |
+| `per_year` | `{year, reuse, mentions}` from the publication year (or the first dated paper, if earlier) to the current year, zeros included; undated papers are counted in `undated` |
+| `last_reuse` | the most recent reuse paper (same shape as `reuse_papers` items) |
+| `reuse_papers` | `{doi, title, first_author, publication_date, same_lab, same_lab_basis}`, newest first; `same_lab_basis` lists `classifier` and/or `author_names` |
+| `coverage` | `citing_papers` found, `classified` (has a label), `no_full_text` (the classifier or the mapping found no text), `pending` (the rest, including errors) |
+
+Dataset ids may contain slashes (CRCNS DOIs, Kaggle): the route reads everything between the source and `/metrics` as the id.
+
+```bash
+curl "http://localhost:8000/api/datasets/openneuro/ds003509/metrics" | jq '{reuse_count, independent_reuse_count, mention_count, last: .last_reuse.publication_date, coverage}'
+```
+
 
 ### Get Dataset Statistics
 
