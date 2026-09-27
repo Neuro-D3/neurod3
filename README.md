@@ -444,7 +444,7 @@ Unit tests: `docker compose exec airflow-scheduler python -m pytest /opt/airflow
 
 1. **Preflight:** database, OpenRouter key and credit, OpenAlex budget, the full-text fetcher, the API.
 2. **Ingest** the datasets, and check they are in `unified_datasets`.
-3. **Map papers** (up to 10 citing papers per primary paper), and check each dataset has a primary paper and citing papers.
+3. **Map papers** (up to 10 citing papers per primary paper), and check each dataset has a primary paper and citing papers, and that mapping's `fill_author_ids` step looked up the datasets' papers for OpenAlex author ids.
 4. **Add the known pairs.** Each dataset has a known (citing paper, dataset) pair with a reviewed label: at least one REUSE per archive, and MENTION and NEITHER across the set. If mapping did not reach a pair, the test adds it (`citation_source = 'stack_test_fixture'`).
 5. **Classify** the known pairs plus one mapped pair per archive (real LLM calls, about 12 per run), and check them: a known REUSE pair that comes back as anything else, or a known non-REUSE pair that comes back REUSE, **fails** the run. MENTION vs NEITHER, or no full text to read, is a **warning**. Accuracy over many pairs is the benchmark's job.
 6. **API, site and CORS:** each dataset's API page shows its primary paper and a classified citation; its metrics (the dataset page's Dataset impact card) count each known pair under the label the API shows for it; sorting the archive by reuse comes back in order; the site loads; the API allows the browser origins.

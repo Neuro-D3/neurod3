@@ -424,3 +424,41 @@ class TestReuseSortProblem:
     def test_a_reused_dataset_should_come_first(self):
         assert "reused dataset first" in S.reuse_sort_problem([{"reuse_count": 0}], True)
         assert S.reuse_sort_problem([{"reuse_count": 0}], False) is None
+
+
+class TestAuthorIdSmoke:
+    """verify_map's check that mapping's fill_author_ids step looked up the test datasets' papers."""
+
+    def test_passes_when_papers_were_looked_up_and_some_have_ids(self):
+        assert S.author_ids_problem({"columns": True, "papers": 12, "checked": 12, "with_ids": 11}) == (None, None)
+
+    def test_fails_without_the_columns(self):
+        failure, _ = S.author_ids_problem({"columns": False})
+        assert "has never run" in failure
+
+    def test_fails_when_nothing_was_looked_up(self):
+        failure, _ = S.author_ids_problem({"columns": True, "papers": 12, "checked": 0, "with_ids": 0})
+        assert failure == "fill_author_ids looked up none of the test datasets' 12 papers"
+
+    def test_warns_when_openalex_knew_none(self):
+        assert S.author_ids_problem({"columns": True, "papers": 3, "checked": 3, "with_ids": 0}) == (
+            None, "OpenAlex had author ids for none of the test datasets' papers")
+
+    def test_counts_primary_and_citing_papers_of_the_test_datasets(self):
+        class Cur:
+            def __init__(self):
+                self.calls, self.rows = [], [(2,), (12, 12, 11)]
+
+            def execute(self, sql, params=None):
+                self.calls.append((" ".join(sql.split()), params))
+
+            def fetchone(self):
+                return self.rows.pop(0)
+
+        cur = Cur()
+        assert S.author_id_counts(cur, "dandi", ["000034", "001550"]) == {
+            "columns": True, "papers": 12, "checked": 12, "with_ids": 11}
+        sql, params = cur.calls[1]
+        assert "FROM dandi_paper_map WHERE dandi_id = ANY(%s)" in sql
+        assert "FROM dandi_paper_citations WHERE dandi_id = ANY(%s)" in sql
+        assert params == (["000034", "001550"], ["000034", "001550"])

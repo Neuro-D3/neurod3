@@ -542,6 +542,41 @@ def verify_ingest(*, key: str, **context) -> None:
             raise RuntimeError("; ".join(problems))
 
 
+def author_id_counts(cur, key: str, dataset_ids: List[str]) -> Dict[str, Any]:
+    """How many of the test datasets' papers (primary and citing) have been looked up, and how many have ids."""
+    cur.execute("""SELECT count(*) FROM information_schema.columns
+                   WHERE table_schema = 'public' AND table_name = 'papers'
+                     AND column_name IN ('author_ids', 'author_ids_checked_at')""")
+    if cur.fetchone()[0] < 2:
+        return {"columns": False}
+    id_col = f"{key}_id"
+    cur.execute(f"""
+        WITH test_papers AS (
+            SELECT paper_doi FROM {key}_paper_map WHERE {id_col} = ANY(%s)
+            UNION SELECT citing_paper_doi FROM {key}_paper_citations WHERE {id_col} = ANY(%s)
+        )
+        SELECT count(*), count(p.author_ids_checked_at),
+               count(*) FILTER (WHERE jsonb_array_length(p.author_ids) > 0)
+        FROM test_papers t JOIN papers p ON p.paper_doi = t.paper_doi""", (dataset_ids, dataset_ids))
+    papers, checked, with_ids = cur.fetchone()
+    return {"columns": True, "papers": papers, "checked": checked, "with_ids": with_ids}
+
+
+def author_ids_problem(counts: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    (failure, warning) for the author-id smoke check. Mapping's last step,
+    fill_author_ids, must have looked up the test datasets' papers; OpenAlex
+    knowing none of them is only a warning.
+    """
+    if not counts.get("columns"):
+        return "papers has no author_ids column: fill_author_ids has never run", None
+    if counts["papers"] and not counts["checked"]:
+        return f"fill_author_ids looked up none of the test datasets' {counts['papers']} papers", None
+    if counts["checked"] and not counts["with_ids"]:
+        return None, "OpenAlex had author ids for none of the test datasets' papers"
+    return None, None
+
+
 def verify_map(*, key: str, **context) -> None:
     cfg = ARCHIVES[key]
     since = _run_started(context)
@@ -576,12 +611,19 @@ def verify_map(*, key: str, **context) -> None:
                 problems.append(f"no citing papers found for {ds}'s primary paper(s)")
         if len(unresolved) == len(cfg["datasets"]):
             problems.append("mapping resolved no primary paper for any test dataset")
+        # Smoke test for mapping's fill_author_ids step (same-lab reuse in the metrics).
+        s.details["author_ids"] = author_id_counts(cur, key, _dataset_ids(key))
+        author_ids_failure, author_ids_warning = author_ids_problem(s.details["author_ids"])
+        if author_ids_failure:
+            problems.append(author_ids_failure)
         if problems:
             raise RuntimeError("; ".join(problems + unresolved))
         if unresolved:
             s.warn("; ".join(unresolved) + " (the known pair's primary paper is added before classification)")
         if stale:
             s.warn(f"primary paper mapping was not refreshed by this run for {stale}")
+        if author_ids_warning:
+            s.warn(author_ids_warning)
 
 
 def seed_known_pairs(*, key: str, **context) -> None:
