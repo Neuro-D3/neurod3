@@ -162,7 +162,7 @@ curl "http://localhost:8000/api/datasets/DANDI/000016" | jq '.citations[] | sele
 | `tracked` | `false` for archives without paper mapping (Kaggle, PhysioNet); the other fields are then absent |
 | `published`, `published_precision` | the dataset's `created_at` date; precision `year` when only the year is known (show the year alone), else null |
 | `reuse_count` | citing papers labelled `REUSE` |
-| `independent_reuse_count`, `same_lab_reuse_count` | a reuse is same lab when the classifier said `same_lab`; or it shares an OpenAlex author id with the dataset's primary papers (when both sides have ids, from the `paper_author_ids` DAG); or an author's name (surname and first initial) matches the archive's author list, or the primary papers' authors when ids are missing. Otherwise independent |
+| `independent_reuse_count`, `same_lab_reuse_count` | a reuse is same lab when the classifier said `same_lab`; or it shares an OpenAlex author id with the dataset's primary papers (when both sides have ids: the mapping DAGs' `fill_author_ids` task, or `paper_author_ids_backfill`); or an author's name (surname and first initial) matches the archive's author list, or the primary papers' authors when ids are missing. Otherwise independent |
 | `mention_count` | citing papers labelled `MENTION` |
 | `per_year` | `{year, reuse, mentions}` by each work's earliest version, from the publication year (or the first dated paper, if earlier) to the current year, zeros included; undated papers are counted in `undated` |
 | `last_reuse` | the reuse with the most recent `first_date` (same shape as `reuse_papers` items) |

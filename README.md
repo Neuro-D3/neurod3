@@ -346,7 +346,7 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 
 8. **`reuse_classification_benchmark_test`** - Classifier accuracy against find_reuse's 161 human-reviewed pairs. Manual trigger; see [Benchmark](#benchmark-sanity-test)
 
-9. **`paper_author_ids`** - Fills `papers.author_ids` / `author_orcids` from OpenAlex (50 papers per request), so the dataset metrics can tell a dataset's own lab from independent reuse by author id rather than name. Daily; the first run backfills every stored paper (`max_papers` per run, default 5000)
+9. **`paper_author_ids_backfill`** - Backfills `papers.author_ids` / `author_orcids` from OpenAlex (50 papers per request) for every stored paper that lacks them, so the dataset metrics can tell a dataset's own lab from independent reuse by author id rather than name. Manual trigger (`max_papers`, default 20000). New papers get ids without it: each paper-mapping DAG runs a `fill_author_ids` task for its archive once citing papers are stored (param `fill_author_ids`, default on)
 
 ### Running DAGs
 
