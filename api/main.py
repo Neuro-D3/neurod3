@@ -803,11 +803,16 @@ async def get_datasets(
                 cursor.execute("""
                     SELECT column_name FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = %s
-                      AND column_name IN ('authors', 'num_subjects')
+                      AND column_name IN ('authors', 'num_subjects', 'created_at_precision')
                 """, (table_name,))
                 ds_opt_cols = {r["column_name"] for r in cursor.fetchall()}
                 authors_expr = "authors," if "authors" in ds_opt_cols else "NULL::jsonb AS authors,"
                 num_subjects_expr = "num_subjects," if "num_subjects" in ds_opt_cols else "NULL::integer AS num_subjects,"
+                # "year" when only the publication year is known (CRCNS), so the page shows "2011".
+                precision_expr = (
+                    "d.created_at_precision," if "created_at_precision" in ds_opt_cols
+                    else "NULL::text AS created_at_precision,"
+                )
 
                 # reuse_count: citing papers the LLM classified as reusing the dataset's
                 # data (see REUSE_CLASSIFICATIONS). The per-source classification
@@ -828,6 +833,7 @@ async def get_datasets(
                         {authors_expr.replace('authors', 'd.authors') if 'authors' in ds_opt_cols else authors_expr}
                         {num_subjects_expr.replace('num_subjects', 'd.num_subjects') if 'num_subjects' in ds_opt_cols else num_subjects_expr}
                         d.created_at,
+                        {precision_expr}
                         d.updated_at,
                         ({reuse_subquery}) AS reuse_count
                     FROM {table_name} d
@@ -1414,12 +1420,14 @@ async def get_dataset_metrics(source: str, dataset_id: str):
             with conn.cursor(row_factory=dict_row) as cursor:
                 if not _paper_mapping_relation_exists(cursor, dataset_table):
                     raise HTTPException(status_code=404, detail="Dataset not found")
-                authors_col = sql.SQL(
-                    "authors" if "authors" in _table_columns(cursor, dataset_table) else "NULL::jsonb AS authors"
+                columns = _table_columns(cursor, dataset_table)
+                authors_col = sql.SQL("authors" if "authors" in columns else "NULL::jsonb AS authors")
+                precision_col = sql.SQL(
+                    "created_at_precision" if "created_at_precision" in columns else "NULL::text AS created_at_precision"
                 )
                 cursor.execute(
-                    sql.SQL("SELECT created_at, {authors} FROM {table} WHERE dataset_id = %s LIMIT 1;").format(
-                        authors=authors_col, table=sql.Identifier(dataset_table)
+                    sql.SQL("SELECT created_at, {precision}, {authors} FROM {table} WHERE dataset_id = %s LIMIT 1;").format(
+                        precision=precision_col, authors=authors_col, table=sql.Identifier(dataset_table)
                     ),
                     (dataset_id,),
                 )
@@ -1456,6 +1464,8 @@ async def get_dataset_metrics(source: str, dataset_id: str):
         **base,
         "tracked": True,
         "published": created_at.date().isoformat() if created_at else None,
+        # "year" when only the publication year is known (CRCNS); null means a real date.
+        "published_precision": dataset["created_at_precision"],
         **metrics,
     }
 
@@ -1490,7 +1500,8 @@ async def get_dataset_detail(source: str, dataset_id: str):
                 # Build column list dynamically so missing columns don't break the query
                 base_cols = ["source", "dataset_id", "title", "modality", "papers", "url",
                              "description", "created_at", "updated_at"]
-                optional_cols = ["full_description", "authors", "contributors", "license", "num_subjects"]
+                optional_cols = ["full_description", "authors", "contributors", "license", "num_subjects",
+                                 "created_at_precision"]
                 cursor.execute(
                     """SELECT column_name FROM information_schema.columns
                        WHERE table_schema = 'public' AND table_name = %s;""",

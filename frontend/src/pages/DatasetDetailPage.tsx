@@ -6,7 +6,7 @@ import type { DatasetDetailResponse, DatasetContributor, DatasetMetrics } from '
 import { PopulationIcon } from '../components/PopulationIcon';
 import { DatasetImpactCard } from '../components/DatasetImpactCard';
 import { DatasetPaperList } from '../components/DatasetPaperList';
-import { plural } from '../utils/reuseMetrics';
+import { formatPublishedDate, plural } from '../utils/reuseMetrics';
 
 const SOURCE_COLORS: Record<string, string> = {
   DANDI: 'bg-purple-100 text-purple-800',
@@ -168,7 +168,7 @@ export default function DatasetDetailPage() {
                 {/* Metadata bar */}
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-500">
                   {ds.created_at && (
-                    <span>Published {new Date(ds.created_at).toLocaleDateString()}</span>
+                    <span>Published {formatPublishedDate(ds.created_at, ds.created_at_precision)}</span>
                   )}
                   {ds.updated_at && (
                     <span>Updated {new Date(ds.updated_at).toLocaleDateString()}</span>

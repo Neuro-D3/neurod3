@@ -20,6 +20,17 @@ export function formatMonthYear(date: string | null | undefined): string | null 
   return month ? `${month} ${match[1]}` : match[1];
 }
 
+/**
+ * A dataset's publication date as a page shows it: the full date, or the year
+ * alone when only the year is known (precision "year", e.g. most of CRCNS).
+ */
+export function formatPublishedDate(date: string | null | undefined, precision?: string | null): string | null {
+  if (!date) return null;
+  if (precision === 'year') return date.slice(0, 4);
+  const parsed = new Date(date);
+  return Number.isNaN(parsed.getTime()) ? date : parsed.toLocaleDateString();
+}
+
 /** Surname from "First M. Last" or "Last, First"; invisible formatting characters are dropped. */
 export function surname(name: string | null | undefined): string | null {
   const clean = (name ?? '').replace(/\p{Cf}/gu, '').trim();

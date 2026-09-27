@@ -125,6 +125,8 @@ curl "http://localhost:8000/api/datasets?source=DANDI&modality=fMRI&search=corte
 
 ### Paper reuse classification fields
 
+Datasets in `GET /api/datasets` and `GET /api/datasets/{source}/{id}` carry `created_at_precision`: `year` when only the publication year is known, as for CRCNS datasets whose DOI was registered after their publication year (`created_at` is then January 1st of that year), else null.
+
 Each dataset in `GET /api/datasets` carries `reuse_count`: the number of distinct citing papers the LLM classified as having reused the dataset's data (`REUSE`), counting a preprint and its published version once. `sort_by=reuse` orders datasets by it (the main page's "Most reused").
 
 ```bash
@@ -158,7 +160,7 @@ curl "http://localhost:8000/api/datasets/DANDI/000016" | jq '.citations[] | sele
 | Field | Meaning |
 |---|---|
 | `tracked` | `false` for archives without paper mapping (Kaggle, PhysioNet); the other fields are then absent |
-| `published` | the dataset's `created_at` date |
+| `published`, `published_precision` | the dataset's `created_at` date; precision `year` when only the year is known (show the year alone), else null |
 | `reuse_count` | citing papers labelled `REUSE` |
 | `independent_reuse_count`, `same_lab_reuse_count` | a reuse is same lab when the classifier said `same_lab`, or an author's name (surname and first initial) matches an author of the dataset or of its primary papers; otherwise independent |
 | `mention_count` | citing papers labelled `MENTION` |

@@ -233,7 +233,8 @@ function ImpactContent({ metrics }: { metrics: TrackedDatasetMetrics }) {
   const undated = metrics.undated.reuse + metrics.undated.mentions;
   const segments = independenceSegments(metrics.independent_reuse_count, metrics.same_lab_reuse_count);
   const byline = last ? paperByline(last.first_author, last.author_count) : null;
-  const published = formatMonthYear(metrics.published);
+  const published =
+    metrics.published_precision === 'year' ? metrics.published?.slice(0, 4) : formatMonthYear(metrics.published);
 
   return (
     <>

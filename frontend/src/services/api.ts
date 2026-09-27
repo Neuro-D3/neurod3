@@ -36,6 +36,8 @@ export interface Dataset {
   authors?: string[] | null;
   num_subjects?: number | null;
   created_at?: string;
+  /** "year" when only the publication year is known (CRCNS): show the year alone. */
+  created_at_precision?: string | null;
   updated_at?: string;
 }
 
@@ -274,6 +276,8 @@ export interface TrackedDatasetMetrics {
   dataset_id: string;
   tracked: true;
   published?: string | null;
+  /** "year" when only the publication year is known (CRCNS). */
+  published_precision?: string | null;
   reuse_count: number;
   independent_reuse_count: number;
   same_lab_reuse_count: number;
@@ -303,6 +307,8 @@ export interface DatasetDetailResponse {
     papers?: number | null;
     url?: string | null;
     created_at?: string | null;
+    /** "year" when only the publication year is known (CRCNS): show the year alone. */
+    created_at_precision?: string | null;
     updated_at?: string | null;
   };
   primary_papers: DatasetDetailPaper[];

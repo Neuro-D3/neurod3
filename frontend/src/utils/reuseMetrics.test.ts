@@ -2,6 +2,7 @@ import {
   SEGMENT_MIN_PX,
   coverageSummary,
   formatMonthYear,
+  formatPublishedDate,
   independenceSegments,
   paperByline,
   plural,
@@ -21,6 +22,20 @@ describe('formatMonthYear', () => {
     expect(formatMonthYear('soon')).toBe('soon');
     expect(formatMonthYear(null)).toBeNull();
     expect(formatMonthYear('')).toBeNull();
+  });
+});
+
+describe('formatPublishedDate', () => {
+  it('shows the year alone when only the year is known', () => {
+    expect(formatPublishedDate('2011-01-01T00:00:00', 'year')).toBe('2011');
+  });
+  it('shows a full date otherwise', () => {
+    expect(formatPublishedDate('2021-05-05T10:28:31', 'day')).toBe(new Date('2021-05-05T10:28:31').toLocaleDateString());
+    expect(formatPublishedDate('2021-05-05T10:28:31', null)).toBe(new Date('2021-05-05T10:28:31').toLocaleDateString());
+  });
+  it('handles missing or unreadable dates', () => {
+    expect(formatPublishedDate(null)).toBeNull();
+    expect(formatPublishedDate('someday')).toBe('someday');
   });
 });
 
