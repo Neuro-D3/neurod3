@@ -30,9 +30,10 @@ def edge(doi, label=None, *, status=None, same_lab=None, date=None, text_status=
     }
 
 
-def metrics(edges, lab_names=(), published_year=2021, current_year=2026):
+def metrics(edges, dataset_authors=(), primary_papers=(), published_year=2021, current_year=2026):
     return M.build_reuse_metrics(
-        list(edges), lab_names=list(lab_names), published_year=published_year, current_year=current_year
+        list(edges), dataset_authors=list(dataset_authors), primary_papers=list(primary_papers),
+        published_year=published_year, current_year=current_year,
     )
 
 
@@ -78,14 +79,14 @@ class TestBuildReuseMetrics:
         assert m["coverage"]["classified"] == 2
 
     def test_classifier_same_lab(self):
-        m = metrics([edge("10.1/a", "REUSE", same_lab=True, authors=["Ann Other"])], lab_names=["Cavanagh, James F"])
+        m = metrics([edge("10.1/a", "REUSE", same_lab=True, authors=["Ann Other"])], dataset_authors=["Cavanagh, James F"])
         assert (m["independent_reuse_count"], m["same_lab_reuse_count"]) == (0, 1)
         assert m["reuse_papers"][0]["same_lab_basis"] == ["classifier"]
 
     def test_author_name_overlap_counts_as_same_lab_when_the_classifier_says_no(self):
         m = metrics(
             [edge("10.1/a", "REUSE", same_lab=False, authors=["Ann Other", "James F. Cavanagh"])],
-            lab_names=["Cavanagh, James F"],
+            dataset_authors=["Cavanagh, James F"],
         )
         assert m["same_lab_reuse_count"] == 1
         assert m["reuse_papers"][0]["same_lab_basis"] == ["author_names"]
@@ -93,7 +94,7 @@ class TestBuildReuseMetrics:
     def test_independent_when_neither_signal(self):
         m = metrics(
             [edge("10.1/a", "REUSE", same_lab=None, authors=["Ann Other"])],
-            lab_names=["Cavanagh, James F"],
+            dataset_authors=["Cavanagh, James F"],
         )
         assert (m["independent_reuse_count"], m["same_lab_reuse_count"]) == (1, 0)
         assert m["reuse_papers"][0] == {
@@ -157,6 +158,36 @@ class TestBuildReuseMetrics:
         assert metrics([], published_year=None)["per_year"] == []
 
 
+class TestSameLabByAuthorIds:
+    """OpenAlex author ids decide against the primary papers when both sides have them."""
+
+    PRIMARY = [{"authors": ["Li Wang", "James F. Cavanagh"], "author_ids": ["A100", "A200"]}]
+
+    def reuse(self, authors, author_ids=None):
+        return [edge("10.1/r", "REUSE", same_lab=False, authors=authors, **({"author_ids": author_ids} if author_ids else {}))]
+
+    def basis(self, rows, dataset_authors=()):
+        m = metrics(rows, dataset_authors=dataset_authors, primary_papers=self.PRIMARY)
+        return m["reuse_papers"][0]["same_lab_basis"], m["independent_reuse_count"]
+
+    def test_a_shared_id_is_same_lab_even_when_the_name_is_written_differently(self):
+        rows = [{**r, "author_ids": ["A999", "A200"]} for r in self.reuse(["J. F. Cavanaugh"])]
+        assert self.basis(rows) == (["author_ids"], 0)
+
+    def test_a_common_name_with_a_different_id_is_independent(self):
+        # "L. Wang" matches "Li Wang" by name, but OpenAlex says it is someone else.
+        rows = [{**r, "author_ids": ["A777"]} for r in self.reuse(["L. Wang"])]
+        assert self.basis(rows) == ([], 1)
+
+    def test_names_decide_when_the_citing_paper_has_no_ids(self):
+        assert self.basis(self.reuse(["L. Wang"])) == (["author_names"], 0)
+
+    def test_archive_authors_still_match_by_name(self):
+        # The archive's author list has no ids, so a name match there counts.
+        rows = [{**r, "author_ids": ["A777"]} for r in self.reuse(["Arun Singh"])]
+        assert self.basis(rows, dataset_authors=["Singh, Arun"]) == (["author_names"], 0)
+
+
 class TestVersionsCountOnce:
     """A preprint and its published version share a work key and are one paper."""
 
@@ -197,7 +228,7 @@ class TestVersionsCountOnce:
         assert m["reuse_papers"][0]["first_author"] == "Daniel J. McKeown"
 
     def test_same_lab_if_any_version_is(self):
-        m = metrics(self.keyed(self.versions(same_lab=True)), lab_names=["Someone Else"])
+        m = metrics(self.keyed(self.versions(same_lab=True)), dataset_authors=["Someone Else"])
         assert m["reuse_papers"][0]["same_lab_basis"] == ["classifier"]
 
     def test_without_a_shared_key_they_stay_two_papers(self):
@@ -259,11 +290,11 @@ class TestPreprintsAndVersions:
 class TestStagingExample:
     """OpenNeuro ds003509 (SimonConflict) as staging had it on 2026-09-26: the mockups' numbers."""
 
-    LAB = (
-        "James F Cavanagh", "Arun Singh", "Kumar Narayanan",  # dataset
-        "James F. Cavanagh", "Andrea A. Mueller", "Darin R. Brown", "Jacqueline R. Janowich",
-        "Jacqueline H. Story-Remer", "Ashley Wegele", "Sarah Pirio Richardson",  # Cortex 2017
-        "James F. Cavanagh", "Sean E. Masters", "Kevin Bath", "Michael J. Frank",  # Nat Commun 2014
+    DATASET_AUTHORS = ("James F Cavanagh", "Arun Singh", "Kumar Narayanan")
+    PRIMARY_PAPERS = (
+        {"authors": ["James F. Cavanagh", "Andrea A. Mueller", "Darin R. Brown", "Jacqueline R. Janowich",
+                     "Jacqueline H. Story-Remer", "Ashley Wegele", "Sarah Pirio Richardson"]},  # Cortex 2017
+        {"authors": ["James F. Cavanagh", "Sean E. Masters", "Kevin Bath", "Michael J. Frank"]},  # Nat Commun 2014
     )
     MENTION_DATES = (
         "2021-06-10", "2021-08-27", "2021-12-10", "2022-02-10", "2022-09-26", "2023-04-20",
@@ -285,7 +316,7 @@ class TestStagingExample:
         return rows
 
     def test_headline_numbers(self):
-        m = metrics(self.edges(), lab_names=self.LAB, published_year=2021, current_year=2026)
+        m = metrics(self.edges(), dataset_authors=self.DATASET_AUTHORS, primary_papers=self.PRIMARY_PAPERS, published_year=2021, current_year=2026)
         assert m["reuse_count"] == 3
         assert m["independent_reuse_count"] == 2
         assert m["same_lab_reuse_count"] == 1
@@ -295,14 +326,14 @@ class TestStagingExample:
         assert m["coverage"] == {"citing_papers": 20, "classified": 14, "no_full_text": 6, "pending": 0}
 
     def test_same_lab_reuse_is_backed_by_both_signals(self):
-        m = metrics(self.edges(), lab_names=self.LAB)
+        m = metrics(self.edges(), dataset_authors=self.DATASET_AUTHORS, primary_papers=self.PRIMARY_PAPERS)
         same_lab = [p for p in m["reuse_papers"] if p["same_lab"]]
         assert [(p["doi"], p["same_lab_basis"]) for p in same_lab] == [
             ("10.1111/psyp.14478", ["classifier", "author_names"])
         ]
 
     def test_per_year(self):
-        m = metrics(self.edges(), lab_names=self.LAB, published_year=2021, current_year=2026)
+        m = metrics(self.edges(), dataset_authors=self.DATASET_AUTHORS, primary_papers=self.PRIMARY_PAPERS, published_year=2021, current_year=2026)
         assert [(y["year"], y["reuse"], y["mentions"]) for y in m["per_year"]] == [
             (2021, 0, 3), (2022, 1, 2), (2023, 2, 2), (2024, 0, 1), (2025, 0, 3), (2026, 0, 0),
         ]

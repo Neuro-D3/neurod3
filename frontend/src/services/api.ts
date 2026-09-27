@@ -255,7 +255,7 @@ export interface ReusePaperMetric {
   versions?: WorkVersion[];
   /** Same lab when the classifier said so or an author matches the dataset's or its papers' authors. */
   same_lab: boolean;
-  same_lab_basis: Array<'classifier' | 'author_names'>;
+  same_lab_basis: Array<'classifier' | 'author_ids' | 'author_names'>;
 }
 
 export interface DatasetMetricsYear {

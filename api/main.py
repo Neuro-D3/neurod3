@@ -1220,10 +1220,15 @@ def _year_of(publication_year: Any, publication_date: Any) -> Optional[int]:
     return None
 
 
+def _author_id_set(values: Any) -> set:
+    return {v for v in values if isinstance(v, str) and v} if isinstance(values, list) else set()
+
+
 def build_reuse_metrics(
     edges: List[Dict[str, Any]],
     *,
-    lab_names: List[Any],
+    dataset_authors: List[Any],
+    primary_papers: List[Dict[str, Any]],
     published_year: Optional[int],
     current_year: int,
 ) -> Dict[str, Any]:
@@ -1233,15 +1238,20 @@ def build_reuse_metrics(
     `edges` has one row per (primary paper, citing paper): the edge's
     classification, status and same_lab, and the citing paper's work_key (see
     work_key_sql), title, publication date and year, text_status and (on REUSE
-    rows) authors. `lab_names` are the dataset's authors plus its primary
-    papers' authors.
+    rows) authors and OpenAlex author_ids. `dataset_authors` are the names the
+    archive lists; `primary_papers` are the dataset's papers' `authors` and
+    `author_ids`.
 
     Counts are of citing works: the versions of a paper (a preprint and its
     published version) count once, under the strongest label any version has,
-    dated by the earliest version and shown as the published one. A reuse
-    counts as same lab when the classifier said so or an author's name matches
-    `lab_names`; otherwise it is independent. Years run from the dataset's
-    publication (or the first dated paper, if earlier) to the current year.
+    dated by the earliest version and shown as the published one.
+
+    A reuse counts as same lab when the classifier said so; or it shares an
+    OpenAlex author id with the primary papers (when both sides have ids); or
+    an author's name matches the archive's author list (which has no ids), or
+    the primary papers' authors when ids are missing. Otherwise it is
+    independent. Years run from the dataset's publication (or the first dated
+    paper, if earlier) to the current year.
     """
     papers: Dict[str, Dict[str, Any]] = {}
     for row in edges:
@@ -1254,7 +1264,7 @@ def build_reuse_metrics(
             paper["statuses"].add(row["status"])
         if row.get("classification") == "REUSE" and row.get("same_lab") is not None:
             paper["same_lab"].add(bool(row["same_lab"]))
-        for key in ("work_key", "publication_date", "publication_year", "text_status", "title", "authors"):
+        for key in ("work_key", "publication_date", "publication_year", "text_status", "title", "authors", "author_ids"):
             if row.get(key) is not None:
                 paper.setdefault(key, row[key])
 
@@ -1270,7 +1280,9 @@ def build_reuse_metrics(
     def oldest_first(dois: List[str]) -> List[str]:
         return sorted(dois, key=lambda d: (date_of(d) is None, date_of(d) or "", d))
 
-    lab_keys = _author_keys(lab_names)
+    dataset_keys = _author_keys(dataset_authors)
+    primary_keys = set().union(*(_author_keys(p.get("authors")) for p in primary_papers))
+    primary_ids = set().union(*(_author_id_set(p.get("author_ids")) for p in primary_papers))
     coverage = {"citing_papers": len(works), "classified": 0, "no_full_text": 0, "pending": 0}
     by_year: Dict[int, Dict[str, int]] = {}
     undated = {"reuse": 0, "mentions": 0}
@@ -1304,10 +1316,15 @@ def build_reuse_metrics(
         authors = next(
             (papers[d]["authors"] for d in [shown, *dois] if isinstance(papers[d].get("authors"), list)), []
         )
+        citing_ids = set().union(*(_author_id_set(v.get("author_ids")) for v in versions))
+        citing_keys = set().union(*(_author_keys(v.get("authors")) for v in versions))
+        ids_known = bool(primary_ids and citing_ids)
         basis = []
         if any(True in v["same_lab"] for v in versions):
             basis.append("classifier")
-        if any(_author_keys(v.get("authors")) & lab_keys for v in versions):
+        if ids_known and citing_ids & primary_ids:
+            basis.append("author_ids")
+        if citing_keys & dataset_keys or (not ids_known and citing_keys & primary_keys):
             basis.append("author_names")
         reuse_papers.append({
             "doi": shown,
@@ -1365,9 +1382,9 @@ def _fetch_metric_edges(cursor, prefix: str, id_col: str, dataset_id: str) -> Li
         label_cols = sql.SQL("NULL::text AS classification, NULL::text AS status, NULL::boolean AS same_lab")
         label_join = sql.SQL("")
         is_reuse = sql.SQL("FALSE")
-    text_status = sql.SQL(
-        "p.text_status" if "text_status" in _table_columns(cursor, "papers") else "NULL::text"
-    )
+    paper_columns = _table_columns(cursor, "papers")
+    text_status = sql.SQL("p.text_status" if "text_status" in paper_columns else "NULL::text")
+    author_ids = sql.SQL("p.author_ids" if "author_ids" in paper_columns else "NULL::jsonb")
     query = sql.SQL(
         """
         SELECT
@@ -1378,7 +1395,8 @@ def _fetch_metric_edges(cursor, prefix: str, id_col: str, dataset_id: str) -> Li
             p.publication_date,
             p.publication_year,
             {text_status} AS text_status,
-            CASE WHEN {is_reuse} THEN p.authors END AS authors
+            CASE WHEN {is_reuse} THEN p.authors END AS authors,
+            CASE WHEN {is_reuse} THEN {author_ids} END AS author_ids
         FROM {citations} c
         {label_join}
         LEFT JOIN papers p ON p.paper_doi = c.citing_paper_doi
@@ -1388,6 +1406,7 @@ def _fetch_metric_edges(cursor, prefix: str, id_col: str, dataset_id: str) -> Li
         label_cols=label_cols,
         work_key=sql.SQL(work_key_sql("p.title", "c.citing_paper_doi")),
         text_status=text_status,
+        author_ids=author_ids,
         is_reuse=is_reuse,
         citations=sql.Identifier(citations),
         label_join=label_join,
@@ -1435,17 +1454,20 @@ async def get_dataset_metrics(source: str, dataset_id: str):
                 if not dataset:
                     raise HTTPException(status_code=404, detail="Dataset not found")
 
-                lab_names: List[Any] = list(dataset["authors"]) if isinstance(dataset["authors"], list) else []
+                dataset_authors: List[Any] = list(dataset["authors"]) if isinstance(dataset["authors"], list) else []
+                primary_papers: List[Dict[str, Any]] = []
                 if _paper_mapping_relation_exists(cursor, map_table) and _paper_mapping_relation_exists(cursor, "papers"):
+                    author_ids_col = sql.SQL(
+                        "p.author_ids" if "author_ids" in _table_columns(cursor, "papers") else "NULL::jsonb AS author_ids"
+                    )
                     cursor.execute(
                         sql.SQL(
-                            "SELECT p.authors FROM {map} m JOIN papers p ON p.paper_doi = m.paper_doi WHERE m.{id} = %s;"
-                        ).format(map=sql.Identifier(map_table), id=sql.Identifier(id_col)),
+                            "SELECT p.authors, {author_ids} FROM {map} m JOIN papers p ON p.paper_doi = m.paper_doi "
+                            "WHERE m.{id} = %s;"
+                        ).format(author_ids=author_ids_col, map=sql.Identifier(map_table), id=sql.Identifier(id_col)),
                         (dataset_id,),
                     )
-                    for row in cursor.fetchall():
-                        if isinstance(row["authors"], list):
-                            lab_names.extend(row["authors"])
+                    primary_papers = [dict(row) for row in cursor.fetchall()]
                 edges = _fetch_metric_edges(cursor, prefix, id_col, dataset_id)
     except HTTPException:
         raise
@@ -1456,7 +1478,8 @@ async def get_dataset_metrics(source: str, dataset_id: str):
     created_at = dataset["created_at"]
     metrics = build_reuse_metrics(
         edges,
-        lab_names=lab_names,
+        dataset_authors=dataset_authors,
+        primary_papers=primary_papers,
         published_year=created_at.year if created_at else None,
         current_year=datetime.now(timezone.utc).year,
     )
