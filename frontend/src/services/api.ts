@@ -221,6 +221,50 @@ export interface DatasetContributor {
   roles: string[];
 }
 
+/** A citing paper that reused the dataset, as the metrics endpoint counts it. */
+export interface ReusePaperMetric {
+  doi: string;
+  title?: string | null;
+  first_author?: string | null;
+  author_count: number;
+  publication_date?: string | null;
+  /** Same lab when the classifier said so or an author matches the dataset's or its papers' authors. */
+  same_lab: boolean;
+  same_lab_basis: Array<'classifier' | 'author_names'>;
+}
+
+export interface DatasetMetricsYear {
+  year: number;
+  reuse: number;
+  mentions: number;
+}
+
+export interface DatasetMetricsCoverage {
+  citing_papers: number;
+  classified: number;
+  no_full_text: number;
+  pending: number;
+}
+
+export interface TrackedDatasetMetrics {
+  source: string;
+  dataset_id: string;
+  tracked: true;
+  published?: string | null;
+  reuse_count: number;
+  independent_reuse_count: number;
+  same_lab_reuse_count: number;
+  mention_count: number;
+  last_reuse: ReusePaperMetric | null;
+  per_year: DatasetMetricsYear[];
+  undated: { reuse: number; mentions: number };
+  coverage: DatasetMetricsCoverage;
+  reuse_papers: ReusePaperMetric[];
+}
+
+/** GET /api/datasets/{source}/{id}/metrics; archives without paper mapping answer tracked: false. */
+export type DatasetMetrics = TrackedDatasetMetrics | { source: string; dataset_id: string; tracked: false };
+
 export interface DatasetDetailResponse {
   dataset: {
     source: string;
@@ -424,6 +468,19 @@ export async function fetchDatasetDetail(source: string, datasetId: string): Pro
     return response.json();
   } catch (error: any) {
     throw new Error(error?.message || 'Network error while fetching dataset detail');
+  }
+}
+
+export async function fetchDatasetMetrics(source: string, datasetId: string): Promise<DatasetMetrics> {
+  try {
+    const url = `${API_BASE_URL}/api/datasets/${encodeURIComponent(source.toLowerCase())}/${encodeURIComponent(datasetId)}/metrics`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch dataset metrics: ${response.statusText}`);
+    }
+    return response.json();
+  } catch (error: any) {
+    throw new Error(`Network error while fetching dataset metrics: ${error?.message || error}`);
   }
 }
 

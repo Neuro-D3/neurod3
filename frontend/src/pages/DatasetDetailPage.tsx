@@ -1,9 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
-import { fetchDatasetDetail } from '../services/api';
-import type { DatasetDetailResponse, DatasetDetailPaper, DatasetDetailCitation, DatasetContributor } from '../services/api';
+import { fetchDatasetDetail, fetchDatasetMetrics } from '../services/api';
+import type {
+  DatasetDetailResponse,
+  DatasetDetailPaper,
+  DatasetDetailCitation,
+  DatasetContributor,
+  DatasetMetrics,
+} from '../services/api';
 import { PopulationIcon } from '../components/PopulationIcon';
+import { ReuseImpactCard } from '../components/ReuseImpactCard';
+import { doiUrl } from '../utils/doi';
+import { plural } from '../utils/reuseMetrics';
 import {
   CONFIDENCE_TIERS,
   confidenceLabel,
@@ -37,10 +46,6 @@ function ModalityChip({ label }: { label: string }) {
       {isAcronym ? label : label.toLowerCase()}
     </span>
   );
-}
-
-function doiUrl(doi: string) {
-  return `https://doi.org/${encodeURIComponent(doi).replace(/%2F/gi, '/')}`;
 }
 
 const COUNTRY_NAMES: Record<string, string> = {
@@ -82,11 +87,14 @@ function ReusedModalityChip({ label }: { label: string }) {
   );
 }
 
-function ReusePaperCard({ c, bg }: { c: DatasetDetailCitation; bg: string }) {
+function ReusePaperCard({ c, bg, sameLab }: { c: DatasetDetailCitation; bg: string; sameLab?: boolean }) {
   const typeLabel = reuseTypeLabel(c.reuse_type, c.reuse_type_other);
   const modalities = reusedModalities(c.reused_modalities);
   const quote = primaryQuote(c.evidence_quotes);
   const hallucinated = (c.hallucinated_quote_count ?? 0) > 0;
+  // The metrics' same-lab call (classifier or shared author names) when loaded,
+  // so these pills agree with the Independent count; else the classifier's.
+  const lab = sameLab ?? (c.same_lab === true ? true : undefined);
   return (
     <div className={`rounded-lg border p-3 ${bg}`}>
       <a
@@ -107,18 +115,26 @@ function ReusePaperCard({ c, bg }: { c: DatasetDetailCitation; bg: string }) {
           <> &middot; {countryLabel(c.citing_senior_author_country)}</>
         )}
       </p>
-      {(typeLabel || modalities.length > 0 || c.same_lab != null || c.source_archive) && (
+      {(typeLabel || modalities.length > 0 || lab != null || c.source_archive) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           {typeLabel && <ReuseTypePill label={typeLabel} />}
           {modalities.map((m) => (
             <ReusedModalityChip key={m} label={m} />
           ))}
-          {c.same_lab === true && (
+          {lab === true && (
             <span
               className="inline-block rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-medium text-amber-700"
-              title="The reusing authors overlap with the dataset's contributors"
+              title="Shares an author with the dataset or its papers, or the classifier judged it the dataset's own lab"
             >
               Same lab
+            </span>
+          )}
+          {lab === false && (
+            <span
+              className="inline-block rounded-full bg-blue-50 border border-blue-200 px-2 py-0.5 text-[10px] font-medium text-blue-800"
+              title="No authors in common with the dataset or its papers"
+            >
+              Independent
             </span>
           )}
           {c.source_archive && (
@@ -264,6 +280,8 @@ export default function DatasetDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedPapers, setExpandedPapers] = useState<Set<string>>(new Set());
+  const [metrics, setMetrics] = useState<DatasetMetrics | null>(null);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!source || !datasetId) return;
@@ -280,6 +298,24 @@ export default function DatasetDetailPage() {
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [source, datasetId]);
+
+  // Metrics load on their own so the page doesn't wait for them.
+  useEffect(() => {
+    if (!source || !datasetId) return;
+    let cancelled = false;
+    setMetrics(null);
+    setMetricsError(null);
+
+    fetchDatasetMetrics(source, datasetId)
+      .then((res) => {
+        if (!cancelled) setMetrics(res);
+      })
+      .catch((err) => {
+        if (!cancelled) setMetricsError(err.message);
       });
 
     return () => { cancelled = true; };
@@ -303,6 +339,9 @@ export default function DatasetDetailPage() {
 
   const reusePapersByTier = (tier: string) =>
     reusePapers.filter((c) => confidenceTier(c.confidence) === tier);
+
+  const trackedMetrics = metrics?.tracked ? metrics : null;
+  const sameLabByDoi = new Map((trackedMetrics?.reuse_papers ?? []).map((p) => [p.doi, p.same_lab]));
 
   if (loading) {
     return (
@@ -340,6 +379,7 @@ export default function DatasetDetailPage() {
     .map((m) => m.trim())
     .filter(Boolean);
   const routeIdDiffersFromApi = Boolean(datasetId && datasetId !== ds.dataset_id);
+  const showReuseSummary = Boolean(trackedMetrics && trackedMetrics.reuse_count + trackedMetrics.mention_count > 0);
 
   return (
     <div className="min-h-screen bg-slate-100 py-10 px-4">
@@ -407,12 +447,21 @@ export default function DatasetDetailPage() {
                   )}
                 </div>
 
-                {/* Modality chips */}
-                {modalities.length > 0 && (
-                  <div className="mt-4 flex flex-wrap gap-1.5">
+                {/* Modality chips, then the reuse summary the sidebar card details */}
+                {(modalities.length > 0 || showReuseSummary) && (
+                  <div className="mt-4 flex flex-wrap items-center gap-1.5">
                     {modalities.map((m) => (
                       <ModalityChip key={m} label={m} />
                     ))}
+                    {trackedMetrics && showReuseSummary && (
+                      <span className={`text-sm text-slate-600 ${modalities.length > 0 ? 'ml-2' : ''}`}>
+                        <strong className="font-semibold text-blue-700">
+                          {plural(trackedMetrics.reuse_count, 'reuse', 'reuses')}
+                        </strong>
+                        {' · '}
+                        {plural(trackedMetrics.mention_count, 'mention', 'mentions')}
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -475,31 +524,9 @@ export default function DatasetDetailPage() {
 
           </div>
 
-          {/* ─── Right column: papers sidebar ─── */}
-          <div className="w-full lg:w-[460px] flex-shrink-0 lg:sticky lg:top-24 space-y-5">
-            <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl p-5">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4">
-                Associated Papers
-                <span className="ml-2 text-slate-300 font-normal">
-                  ({data.primary_papers.length + reusePapers.length})
-                </span>
-              </h2>
-              {data.primary_papers.length === 0 ? (
-                <p className="text-sm text-slate-400 italic">No papers have been mapped to this dataset yet.</p>
-              ) : (
-                <div className="space-y-3 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
-                  {data.primary_papers.map((paper) => (
-                    <PaperCard
-                      key={paper.paper_doi}
-                      paper={paper}
-                      citations={citationsByPrimary(paper.paper_doi)}
-                      expanded={expandedPapers.has(paper.paper_doi)}
-                      onToggle={() => togglePaper(paper.paper_doi)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
+          {/* ─── Right column: reuse impact, then the papers ─── */}
+          <div className="w-full lg:w-[460px] flex-shrink-0 space-y-5">
+            <ReuseImpactCard metrics={trackedMetrics} loading={!metrics && !metricsError} error={metricsError} />
 
             {/* AI-Identified Reuse Papers */}
             {reusePapers.length > 0 && (
@@ -523,7 +550,12 @@ export default function DatasetDetailPage() {
                         </h3>
                         <div className="space-y-2">
                           {papers.map((c, i) => (
-                            <ReusePaperCard key={`${c.citing_paper_doi}-${i}`} c={c} bg={conf.bg} />
+                            <ReusePaperCard
+                              key={`${c.citing_paper_doi}-${i}`}
+                              c={c}
+                              bg={conf.bg}
+                              sameLab={sameLabByDoi.get(c.citing_paper_doi)}
+                            />
                           ))}
                         </div>
                       </div>
@@ -532,6 +564,30 @@ export default function DatasetDetailPage() {
                 </div>
               </div>
             )}
+
+            <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl p-5">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4">
+                Associated Papers
+                <span className="ml-2 text-slate-300 font-normal">
+                  ({data.primary_papers.length + reusePapers.length})
+                </span>
+              </h2>
+              {data.primary_papers.length === 0 ? (
+                <p className="text-sm text-slate-400 italic">No papers have been mapped to this dataset yet.</p>
+              ) : (
+                <div className="space-y-3 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
+                  {data.primary_papers.map((paper) => (
+                    <PaperCard
+                      key={paper.paper_doi}
+                      paper={paper}
+                      citations={citationsByPrimary(paper.paper_doi)}
+                      expanded={expandedPapers.has(paper.paper_doi)}
+                      onToggle={() => togglePaper(paper.paper_doi)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
