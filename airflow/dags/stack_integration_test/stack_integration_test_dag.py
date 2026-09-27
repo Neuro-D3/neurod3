@@ -692,12 +692,63 @@ def verify_classify(*, key: str, **context) -> None:
             s.details["run_tokens"] = u.get("total_tokens")
 
 
+# A citing paper's label as the API shows it: the first of these across its
+# edges (the order the metrics endpoint counts by).
+_LABEL_ORDER = ("REUSE", "PRIMARY", "MENTION", "NEITHER")
+
+
+def _shown_label(citing_doi: str, citations: List[Dict[str, Any]]) -> Optional[str]:
+    labels = {(c.get("classification") or "").upper() for c in citations
+              if (c.get("citing_paper_doi") or "").lower() == citing_doi}
+    return next((label for label in _LABEL_ORDER if label in labels), None)
+
+
+def metrics_problems(ds: str, metrics: Dict[str, Any], pairs: List[Dict[str, Any]],
+                     citations: List[Dict[str, Any]]) -> List[str]:
+    """
+    What is wrong with a dataset's /metrics answer, given the citations its
+    detail answer shows: it must be tracked, count some citing paper, and count
+    each known pair under the label the detail shows for it (wiring, not
+    accuracy: verify_classify judges the label itself).
+    """
+    if not metrics.get("tracked"):
+        return [f"{ds}: metrics say the dataset is not tracked"]
+    problems = []
+    if not (metrics.get("coverage") or {}).get("citing_papers"):
+        problems.append(f"{ds}: metrics count no citing paper")
+    reuse_dois = set()
+    for paper in metrics.get("reuse_papers") or []:
+        reuse_dois.add((paper.get("doi") or "").lower())
+        reuse_dois.update((v.get("doi") or "").lower() for v in paper.get("versions") or [])
+    for pair in pairs:
+        doi = pair["citing_paper_doi"]
+        label = _shown_label(doi, citations)
+        if label == "REUSE" and doi not in reuse_dois:
+            problems.append(f"{ds}: known pair {doi} is labelled REUSE but the metrics don't count it as reuse")
+        if label != "REUSE" and doi in reuse_dois:
+            problems.append(f"{ds}: the metrics count known pair {doi} as reuse but it is labelled {label or 'nothing'}")
+        if label == "MENTION" and not metrics.get("mention_count"):
+            problems.append(f"{ds}: known pair {doi} is labelled MENTION but the metrics count no mention")
+    return problems
+
+
+def reuse_sort_problem(rows: List[Dict[str, Any]], expect_reuse: bool) -> Optional[str]:
+    """What is wrong with /api/datasets?sort_by=reuse&sort_order=desc, if anything."""
+    counts = [r.get("reuse_count") or 0 for r in rows]
+    if counts != sorted(counts, reverse=True):
+        return f"sort_by=reuse is out of order: {counts}"
+    if expect_reuse and (not counts or counts[0] < 1):
+        return "sort_by=reuse does not list a reused dataset first, though a known pair is labelled REUSE"
+    return None
+
+
 def check_api(*, key: str, **context) -> None:
     cfg = ARCHIVES[key]
     base = _api_url(context["params"])
     with step(context, "check_api", cfg["label"]) as s:
         problems: List[str] = []
         unlabelled: List[str] = []
+        reused_pair = False
         s.details["datasets"] = {}
         for ds in _dataset_ids(key):
             url = f"{base}/api/datasets/{cfg['label']}/{ds}"
@@ -724,6 +775,29 @@ def check_api(*, key: str, **context) -> None:
                 unlabelled.append(ds)
             elif not labelled:
                 problems.append(f"{ds}: API shows no labelled citation (does it read the new columns?)")
+
+            # The dataset page's Dataset impact card: /metrics must count what the detail shows.
+            pairs = [p for p in cfg["pairs"] if p["dataset_id"] == ds]
+            reused_pair = reused_pair or any(_shown_label(p["citing_paper_doi"], cites) == "REUSE" for p in pairs)
+            mr = requests.get(f"{url}/metrics", timeout=60)
+            info["metrics_http"] = mr.status_code
+            if mr.status_code != 200:
+                problems.append(f"{ds}: metrics HTTP {mr.status_code}")
+                continue
+            metrics = mr.json()
+            info["metrics"] = {k: metrics.get(k) for k in ("reuse_count", "mention_count", "coverage")}
+            problems += metrics_problems(ds, metrics, pairs, cites)
+
+        # The main page's "Most reused" sort, within this archive.
+        sr = requests.get(f"{base}/api/datasets", timeout=60, params={
+            "source": cfg["label"], "sort_by": "reuse", "sort_order": "desc", "limit": 10})
+        s.details["reuse_sort_http"] = sr.status_code
+        if sr.status_code != 200:
+            problems.append(f"sort_by=reuse: HTTP {sr.status_code}")
+        else:
+            problem = reuse_sort_problem(sr.json().get("datasets") or [], reused_pair)
+            if problem:
+                problems.append(problem)
         if problems:
             raise RuntimeError("; ".join(problems))
         if unlabelled:
