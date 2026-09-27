@@ -335,6 +335,21 @@ e2-standard-2.
     - Progress logging is done (`utils/batch_progress.py`).
     - Still to do: time per source for full-text fetches, and a dashboard for
       citing papers per minute, the OpenAlex budget and the text hit rate.
+20. **Find out why mapping doesn't re-resolve ds002675's primary paper.**
+    - Every stack integration test run, local and staging (first staging run
+      2026-09-26), warns: "OpenNeuro verify_map: primary paper mapping was
+      not refreshed by this run for ['ds002675']". All other stages and all
+      8 known pairs pass.
+    - ds002675's primary paper is a medRxiv preprint
+      (`10.1101/2020.01.10.20017004`). The existing mapping row is kept, so
+      the data looks fine, but the run doesn't touch it.
+    - Check whether the OpenNeuro mapping can't resolve that preprint (DOI
+      lookup, preprint vs. published version in OpenAlex, dataset metadata)
+      or resolves it and skips the write because nothing changed.
+    - If it's a real resolution gap, fix it (other preprint primaries are
+      probably affected too). If the data is fine, make "not refreshed, but
+      a primary already exists" a note in the report instead of a warning,
+      so the test isn't pink on every run.
 
 ## Projected cost
 
