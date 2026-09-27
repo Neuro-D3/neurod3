@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { DatasetMetricsYear, TrackedDatasetMetrics } from '../services/api';
+import { LABEL_FILL } from '../utils/classification';
 import { doiUrl } from '../utils/doi';
 import {
   coverageSummary,
@@ -51,11 +52,11 @@ function PerYearChart({ perYear }: { perYear: DatasetMetricsYear[] }) {
         <span className={LABEL_CLASS}>Per year</span>
         <span className="flex gap-3 text-xs text-slate-600">
           <span className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm bg-blue-700" aria-hidden="true" />
+            <span className={`h-2.5 w-2.5 rounded-sm ${LABEL_FILL.REUSE}`} aria-hidden="true" />
             Reuse
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm bg-orange-300" aria-hidden="true" />
+            <span className={`h-2.5 w-2.5 rounded-sm ${LABEL_FILL.MENTION}`} aria-hidden="true" />
             Mention
           </span>
         </span>
@@ -80,7 +81,7 @@ function PerYearChart({ perYear }: { perYear: DatasetMetricsYear[] }) {
                   <div className="flex w-7 max-w-full flex-col gap-[2px]">
                     {col.mentions > 0 && (
                       <div
-                        className="flex items-center justify-center rounded-t-[3px] bg-orange-300 text-[10px] font-semibold tabular-nums text-orange-900"
+                        className={`flex items-center justify-center rounded-t-[3px] ${LABEL_FILL.MENTION} text-[10px] font-semibold tabular-nums text-sky-900`}
                         style={{ height: col.mentionHeight }}
                       >
                         {col.showMentionCount ? col.mentions : null}
@@ -88,7 +89,7 @@ function PerYearChart({ perYear }: { perYear: DatasetMetricsYear[] }) {
                     )}
                     {col.reuse > 0 && (
                       <div
-                        className={`flex items-center justify-center bg-blue-700 text-[10px] font-semibold tabular-nums text-white ${
+                        className={`flex items-center justify-center ${LABEL_FILL.REUSE} text-[10px] font-semibold tabular-nums text-white ${
                           col.mentions > 0 ? '' : 'rounded-t-[3px]'
                         }`}
                         style={{ height: col.reuseHeight }}
@@ -114,14 +115,31 @@ function PerYearChart({ perYear }: { perYear: DatasetMetricsYear[] }) {
 
 const HOW_WE_COUNT_ID = 'dataset-how-we-count';
 
+/** Grace period (ms) before closing once the pointer leaves, so it can cross to the popover. */
+const HOW_WE_COUNT_CLOSE_MS = 150;
+
 /**
  * "How we count": opens on hover, click or tap (Enter from the keyboard), and
- * stays open until a click outside it, Escape, or focus moving elsewhere.
+ * closes when the pointer leaves it, on a click outside, Escape, or focus
+ * moving elsewhere.
  */
 function HowWeCount() {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
+  const closeTimer = useRef<number | null>(null);
+
+  const cancelClose = () => {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  };
+  const closeSoon = () => {
+    cancelClose();
+    closeTimer.current = window.setTimeout(() => setOpen(false), HOW_WE_COUNT_CLOSE_MS);
+  };
+  useEffect(() => () => {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+  }, []);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -146,7 +164,11 @@ function HowWeCount() {
     <div
       ref={wrap}
       className="relative"
-      onMouseEnter={() => setOpen(true)}
+      onMouseEnter={() => {
+        cancelClose();
+        setOpen(true);
+      }}
+      onMouseLeave={closeSoon}
       onBlur={(e) => {
         if (!wrap.current?.contains(e.relatedTarget as Node | null)) setOpen(false);
       }}
@@ -162,7 +184,7 @@ function HowWeCount() {
         How we count
       </button>
       {open && (
-        // Focusable so a click inside it keeps focus within the popover and it stays open.
+        // Focusable so a click inside it keeps focus within the popover.
         <div
           id={HOW_WE_COUNT_ID}
           role="region"
@@ -221,7 +243,7 @@ function ImpactContent({ metrics }: { metrics: TrackedDatasetMetrics }) {
       </div>
 
       <div className="grid grid-cols-2 gap-2.5">
-        <Stat label="Reuse" value={reuse} valueClassName={`text-[28px] ${reuse > 0 ? 'text-blue-700' : 'text-slate-600'}`}>
+        <Stat label="Reuse" value={reuse} valueClassName={`text-[28px] ${reuse > 0 ? 'text-emerald-700' : 'text-slate-600'}`}>
           <div className="text-xs text-slate-600">{reuse === 1 ? 'paper used the data' : 'papers used the data'}</div>
         </Stat>
         <Stat
@@ -250,7 +272,7 @@ function ImpactContent({ metrics }: { metrics: TrackedDatasetMetrics }) {
               segments.map((s, i) => (
                 <div
                   key={`${s.kind}-${i}`}
-                  className={`rounded-sm ${s.kind === 'independent' ? 'bg-blue-700' : 'bg-blue-700/30'}`}
+                  className={`rounded-sm ${s.kind === 'independent' ? 'bg-emerald-700' : 'bg-emerald-700/30'}`}
                   style={{ flexGrow: s.weight }}
                 />
               ))

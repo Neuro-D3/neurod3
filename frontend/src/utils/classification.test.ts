@@ -1,4 +1,5 @@
 import {
+  LABEL_FILL,
   classificationProgress,
   confidenceLabel,
   confidenceShort,
@@ -68,6 +69,15 @@ describe('statusBadgeClass', () => {
   it('falls back to neutral for unknown buckets', () => {
     expect(statusBadgeClass('something_new')).toContain('slate');
     expect(statusBadgeClass(null)).toContain('slate');
+  });
+});
+
+describe('LABEL_FILL', () => {
+  it('fills charts in the same hue as each label badge', () => {
+    (['REUSE', 'MENTION', 'PRIMARY'] as const).forEach((label) => {
+      const hue = LABEL_FILL[label].match(/bg-(\w+)-/)?.[1];
+      expect(statusBadgeClass(label)).toContain(`bg-${hue}-`);
+    });
   });
 });
 

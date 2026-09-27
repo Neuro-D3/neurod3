@@ -1,6 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import type { DatasetDetailCitation, DatasetDetailPaper, TrackedDatasetMetrics } from '../services/api';
-import { confidenceShort, modalityLabel, primaryQuote, reuseTypeLabel, reusedModalities } from '../utils/classification';
+import {
+  LABEL_FILL,
+  confidenceShort,
+  modalityLabel,
+  primaryQuote,
+  reuseTypeLabel,
+  reusedModalities,
+  statusBadgeClass,
+} from '../utils/classification';
 import {
   PAPER_LABELS,
   PAPER_LABEL_HELP,
@@ -12,17 +20,6 @@ import type { DatasetPaperItem, PaperLabel } from '../utils/datasetPapers';
 import { doiUrl } from '../utils/doi';
 import { formatMonthYear, plural } from '../utils/reuseMetrics';
 
-// Same colours as the Dataset impact card: reuse blue, mention orange.
-const LABEL_BADGE: Record<PaperLabel, string> = {
-  PRIMARY: 'bg-slate-100 text-slate-700 border-slate-300',
-  REUSE: 'bg-blue-700 text-white border-blue-700',
-  MENTION: 'bg-orange-100 text-orange-900 border-orange-300',
-};
-const LABEL_DOT: Record<PaperLabel, string> = {
-  PRIMARY: 'bg-slate-400',
-  REUSE: 'bg-blue-700',
-  MENTION: 'bg-orange-300',
-};
 
 const COUNTRY_NAMES: Record<string, string> = {
   US: 'United States', GB: 'United Kingdom', DE: 'Germany', FR: 'France',
@@ -95,9 +92,13 @@ function PaperRow({ paper, sameLab }: { paper: DatasetPaperItem; sameLab?: boole
   return (
     <article className="rounded-lg border border-slate-200 bg-white p-3">
       <div className="flex flex-wrap items-center gap-1.5">
-        <Pill className={LABEL_BADGE[paper.label]} title={PAPER_LABEL_HELP[paper.label]}>
+        {/* The paper-mapping dashboard's label badge, so a label looks the same on every page. */}
+        <span
+          className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${statusBadgeClass(paper.label)}`}
+          title={PAPER_LABEL_HELP[paper.label]}
+        >
           {PAPER_LABEL_TEXT[paper.label]}
-        </Pill>
+        </span>
         {typeLabel && <Pill className="border-violet-200 bg-violet-50 uppercase tracking-wide text-violet-700">{typeLabel}</Pill>}
         {lab === true && (
           <Pill
@@ -108,7 +109,7 @@ function PaperRow({ paper, sameLab }: { paper: DatasetPaperItem; sameLab?: boole
           </Pill>
         )}
         {lab === false && (
-          <Pill className="border-blue-200 bg-blue-50 text-blue-800" title="No authors in common with the dataset or its papers">
+          <Pill className="border-slate-300 bg-white text-slate-700" title="No authors in common with the dataset or its papers">
             Independent
           </Pill>
         )}
@@ -238,7 +239,7 @@ export function DatasetPaperList({
                       : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                   }`}
                 >
-                  {key !== 'ALL' && <span className={`h-2 w-2 rounded-full ${LABEL_DOT[key]}`} aria-hidden="true" />}
+                  {key !== 'ALL' && <span className={`h-2 w-2 rounded-full ${LABEL_FILL[key]}`} aria-hidden="true" />}
                   {key === 'ALL' ? 'All' : PAPER_LABEL_TEXT[key]}
                   <span className={`tabular-nums ${active ? 'text-slate-300' : 'text-slate-500'}`}>{count}</span>
                 </button>

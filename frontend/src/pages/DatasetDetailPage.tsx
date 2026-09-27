@@ -204,7 +204,7 @@ export default function DatasetDetailPage() {
                     ))}
                     {trackedMetrics && showReuseSummary && (
                       <span className={`text-sm text-slate-600 ${modalities.length > 0 ? 'ml-2' : ''}`}>
-                        <strong className="font-semibold text-blue-700">
+                        <strong className="font-semibold text-emerald-700">
                           {plural(trackedMetrics.reuse_count, 'reuse', 'reuses')}
                         </strong>
                         {' · '}
