@@ -316,7 +316,7 @@ export async function fetchDatasets(params?: {
   source?: string;
   modalities?: string[];
   search?: string;
-  sort_by?: 'published' | 'papers' | 'title' | 'id' | 'source' | 'modality';
+  sort_by?: 'published' | 'papers' | 'reuse' | 'title' | 'id' | 'source' | 'modality';
   sort_order?: 'asc' | 'desc';
   limit?: number;
   offset?: number;

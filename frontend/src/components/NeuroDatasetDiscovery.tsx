@@ -93,7 +93,7 @@ export default function NeuroDatasetDiscovery() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [noDatasetsFound, setNoDatasetsFound] = useState<boolean>(false);
-  const [sortBy, setSortBy] = useState<'published' | 'papers' | 'title' | 'id' | 'source' | 'modality'>(
+  const [sortBy, setSortBy] = useState<'published' | 'papers' | 'reuse' | 'title' | 'id' | 'source' | 'modality'>(
     'published',
   );
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
@@ -261,7 +261,7 @@ export default function NeuroDatasetDiscovery() {
     }
 
     const sortParam = params.get('sort')?.trim();
-    if (sortParam && ['published', 'papers', 'title', 'id', 'source', 'modality'].includes(sortParam)) {
+    if (sortParam && ['published', 'papers', 'reuse', 'title', 'id', 'source', 'modality'].includes(sortParam)) {
       setSortBy(sortParam as typeof sortBy);
     }
 
@@ -827,6 +827,7 @@ export default function NeuroDatasetDiscovery() {
                   <option value="published-asc">Oldest first</option>
                   <option value="papers-desc">Most papers</option>
                   <option value="papers-asc">Fewest papers</option>
+                  <option value="reuse-desc">Most reused</option>
                   <option value="title-asc">Title A–Z</option>
                   <option value="title-desc">Title Z–A</option>
                 </select>

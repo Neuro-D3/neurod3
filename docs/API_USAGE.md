@@ -125,7 +125,7 @@ curl "http://localhost:8000/api/datasets?source=DANDI&modality=fMRI&search=corte
 
 ### Paper reuse classification fields
 
-Each dataset in `GET /api/datasets` carries `reuse_count`: the number of distinct citing papers the LLM classified as having reused the dataset's data (`REUSE`).
+Each dataset in `GET /api/datasets` carries `reuse_count`: the number of distinct citing papers the LLM classified as having reused the dataset's data (`REUSE`), counting a preprint and its published version once. `sort_by=reuse` orders datasets by it (the main page's "Most reused").
 
 ```bash
 curl "http://localhost:8000/api/datasets?source=DANDI&sort_by=papers&limit=5" | jq '.[] | {id, reuse_count}'

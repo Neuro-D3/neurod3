@@ -745,7 +745,7 @@ async def get_datasets(
     source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, Kaggle, OpenNeuro, PhysioNet, SPARC)"),
     modality: Optional[str] = Query(None, description="Filter by modality (comma-separated for AND)"),
     search: Optional[str] = Query(None, description="Search in title and description"),
-    sort_by: str = Query("published", description="Sort column (published, papers, title, id, source, modality)"),
+    sort_by: str = Query("published", description="Sort column (published, papers, reuse, title, id, source, modality)"),
     sort_order: str = Query("desc", description="Sort order (asc, desc)"),
     limit: int = Query(25, ge=1, le=200, description="Max number of datasets to return"),
     offset: int = Query(0, ge=0, description="Number of datasets to skip"),
@@ -865,6 +865,8 @@ async def get_datasets(
                 sort_column_by_key = {
                     "published": "d.created_at",
                     "papers": f"(COALESCE(d.papers, 0) + ({reuse_subquery}))",
+                    # Citing works classified as reuse (a preprint and its published version once).
+                    "reuse": f"({reuse_subquery})",
                     "title": "d.title",
                     "id": "d.dataset_id",
                     "source": "d.source",
