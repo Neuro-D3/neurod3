@@ -190,7 +190,21 @@ export interface PaperMappingCitationsResponse {
   count: number;
 }
 
+/** One version of a paper that exists under several DOIs (a preprint and its published version, eLife versions). */
+export interface WorkVersion {
+  doi: string;
+  is_preprint: boolean;
+  publication_date?: string | null;
+}
+
 export interface DatasetDetailPaper {
+  /** The work this paper belongs to (normalized title); its versions share it. */
+  work_key?: string | null;
+  is_preprint?: boolean;
+  /** The DOI the work is shown as: the published version. */
+  work_doi?: string;
+  /** Every version when there are several, oldest first; empty otherwise. */
+  work_versions?: WorkVersion[];
   paper_doi: string;
   doi_source?: string | null;
   relation_type?: string | null;
@@ -208,6 +222,10 @@ export interface DatasetDetailCitation extends ClassificationFields {
   primary_paper_doi: string;
   primary_paper_title?: string | null;
   citing_paper_doi: string;
+  citing_work_key?: string | null;
+  citing_is_preprint?: boolean;
+  citing_work_doi?: string;
+  citing_work_versions?: WorkVersion[];
   citing_paper_title?: string | null;
   citing_authors?: string[] | null;
   citing_journal?: string | null;
@@ -227,7 +245,12 @@ export interface ReusePaperMetric {
   title?: string | null;
   first_author?: string | null;
   author_count: number;
+  /** The shown (published) version's date. */
   publication_date?: string | null;
+  /** The earliest version's date: what the metrics count by. */
+  first_date?: string | null;
+  /** Every version when the paper has several (e.g. a preprint), oldest first. */
+  versions?: WorkVersion[];
   /** Same lab when the classifier said so or an author matches the dataset's or its papers' authors. */
   same_lab: boolean;
   same_lab_basis: Array<'classifier' | 'author_names'>;

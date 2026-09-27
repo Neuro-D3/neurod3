@@ -267,24 +267,105 @@ _CLASSIFICATION_TABLES: List[Tuple[str, str, str]] = [
 ]
 
 
+# Citing papers are counted as *works*: a preprint and its published version,
+# and eLife's version DOIs (10.7554/eLife.84630 and ...84630.3), are one work.
+# A work is its normalized title (markup, entities, punctuation and case
+# removed). Titles shorter than WORK_KEY_MIN_CHARS after that are too generic to
+# merge on, so those papers stay their own work. Defined once, in SQL, so every
+# count and list agrees.
+WORK_KEY_MIN_CHARS = 16
+_WORK_KEY_TAG_RE = (
+    r"</?(i|b|em|strong|u|sup|sub|scp|sc|span|italic|bold|small|underline"
+    r"|inline-formula|tex-math|alternatives|mml:[a-z]+)\y[^<>]*>"
+)
+
+
+def work_key_sql(title_expr: str, doi_expr: str) -> str:
+    """SQL expression for the work a paper belongs to: 't:<title>' or, for short titles, 'd:<doi>'."""
+    norm = (
+        "lower(regexp_replace(regexp_replace(regexp_replace("
+        f"COALESCE({title_expr}, ''), '{_WORK_KEY_TAG_RE}', '', 'gi'), "
+        "'&#?[a-z0-9]+;', '', 'gi'), '[^a-zA-Z0-9]+', '', 'g'))"
+    )
+    return f"(CASE WHEN length({norm}) >= {WORK_KEY_MIN_CHARS} THEN 't:' || {norm} ELSE 'd:' || lower({doi_expr}) END)"
+
+
+# Preprint servers' DOIs: bioRxiv/medRxiv (10.1101 with a numeric suffix; other
+# 10.1101 DOIs are Cold Spring Harbor journals), bioRxiv from 2026 (10.64898),
+# arXiv, Research Square, SSRN, PsyArXiv, OSF Preprints, SocArXiv,
+# Preprints.org, Authorea, TechRxiv, ChemRxiv, engrXiv, ESS Open Archive.
+_PREPRINT_DOI = re.compile(
+    r"^10\.(?:1101/\d|64898/|48550/|21203/|2139/|31234/|31219/|31235/|20944/|22541/"
+    r"|36227/|26434/|31224/|1002/essoar\.)",
+    re.IGNORECASE,
+)
+
+
+def is_preprint_doi(doi: Any) -> bool:
+    return isinstance(doi, str) and bool(_PREPRINT_DOI.match(doi))
+
+
+def pick_published_version(dois: List[str]) -> str:
+    """
+    The version a work is shown as: a published DOI over a preprint's, and an
+    umbrella DOI (eLife's 10.7554/eLife.84630) over its numbered versions.
+    """
+    def rank(doi: str) -> Tuple[bool, bool, str]:
+        lowered = doi.lower()
+        umbrella = any(other.lower().startswith(lowered + ".") for other in dois if other != doi)
+        return (is_preprint_doi(doi), not umbrella, lowered)
+
+    return min(dois, key=rank)
+
+
+def _annotate_versions(
+    rows: List[Dict[str, Any]], *, doi_key: str, work_key: str, date_key: str, prefix: str = ""
+) -> List[Dict[str, Any]]:
+    """
+    Mark the versions of each work among `rows` so the site can list a work
+    once: whether each paper is a preprint (`{prefix}is_preprint`), the DOI the
+    work is shown as (`{prefix}work_doi`) and, when it has several versions,
+    all of them with their dates (`{prefix}work_versions`, oldest first).
+    """
+    versions_by_work: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        doi = row.get(doi_key)
+        if doi:
+            row[work_key] = row.get(work_key) or f"d:{doi.lower()}"
+            versions_by_work.setdefault(row[work_key], {})[doi] = row.get(date_key)
+    for row in rows:
+        doi = row.get(doi_key)
+        if not doi:
+            continue
+        versions = versions_by_work[row[work_key]]
+        row[f"{prefix}is_preprint"] = is_preprint_doi(doi)
+        row[f"{prefix}work_doi"] = pick_published_version(list(versions))
+        row[f"{prefix}work_versions"] = [
+            {"doi": d, "is_preprint": is_preprint_doi(d), "publication_date": versions[d]}
+            for d in sorted(versions, key=lambda d: (versions[d] is None, versions[d] or "", d))
+        ] if len(versions) > 1 else []
+    return rows
+
+
 def _reuse_count_subquery(cursor, dataset_alias: str = "d") -> str:
     """
-    SQL expression: distinct citing papers classified as reuse for one dataset.
+    SQL expression: citing works classified as reuse for one dataset.
 
     One correlated COUNT per source table that exists, summed; "0" when none
-    exist yet. Counts the labels in REUSE_CLASSIFICATIONS. Each count is tied
-    to its archive via `{dataset_alias}.source`, since dataset ids are only
-    unique within an archive.
+    exist yet. Counts the labels in REUSE_CLASSIFICATIONS, and a preprint and
+    its published version once (see work_key_sql). Each count is tied to its
+    archive via `{dataset_alias}.source`, since dataset ids are only unique
+    within an archive.
     """
     parts = []
     for table, id_col, source in _CLASSIFICATION_TABLES:
         if _paper_mapping_relation_exists(cursor, table):
             parts.append(
                 f"(CASE WHEN {dataset_alias}.source = '{source}' THEN "
-                "COALESCE((SELECT COUNT(DISTINCT citing_paper_doi)::int "
-                f"FROM {table} "
-                f"WHERE {id_col} = {dataset_alias}.dataset_id "
-                f"AND classification IN {REUSE_CLASSIFICATIONS_SQL}), 0) ELSE 0 END)"
+                f"COALESCE((SELECT COUNT(DISTINCT {work_key_sql('p.title', 'c.citing_paper_doi')})::int "
+                f"FROM {table} c LEFT JOIN papers p ON p.paper_doi = c.citing_paper_doi "
+                f"WHERE c.{id_col} = {dataset_alias}.dataset_id "
+                f"AND c.classification IN {REUSE_CLASSIFICATIONS_SQL}), 0) ELSE 0 END)"
             )
     return " + ".join(parts) if parts else "0"
 
@@ -1142,14 +1223,17 @@ def build_reuse_metrics(
     Reuse metrics for one dataset from its citation edges.
 
     `edges` has one row per (primary paper, citing paper): the edge's
-    classification, status and same_lab, and the citing paper's publication
-    date and year, text_status and (on REUSE rows) title and authors.
-    `lab_names` are the dataset's authors plus its primary papers' authors.
+    classification, status and same_lab, and the citing paper's work_key (see
+    work_key_sql), title, publication date and year, text_status and (on REUSE
+    rows) authors. `lab_names` are the dataset's authors plus its primary
+    papers' authors.
 
-    Counts are of distinct citing papers. A reuse counts as same lab when the
-    classifier said so or one of its authors' names matches `lab_names`;
-    otherwise it is independent. Years run from the dataset's publication
-    (or the first dated paper, if earlier) to the current year.
+    Counts are of citing works: the versions of a paper (a preprint and its
+    published version) count once, under the strongest label any version has,
+    dated by the earliest version and shown as the published one. A reuse
+    counts as same lab when the classifier said so or an author's name matches
+    `lab_names`; otherwise it is independent. Years run from the dataset's
+    publication (or the first dated paper, if earlier) to the current year.
     """
     papers: Dict[str, Dict[str, Any]] = {}
     for row in edges:
@@ -1162,21 +1246,35 @@ def build_reuse_metrics(
             paper["statuses"].add(row["status"])
         if row.get("classification") == "REUSE" and row.get("same_lab") is not None:
             paper["same_lab"].add(bool(row["same_lab"]))
-        for key in ("publication_date", "publication_year", "text_status", "title", "authors"):
+        for key in ("work_key", "publication_date", "publication_year", "text_status", "title", "authors"):
             if row.get(key) is not None:
                 paper.setdefault(key, row[key])
 
+    works: Dict[str, List[str]] = {}
+    for doi, paper in papers.items():
+        works.setdefault(paper.get("work_key") or f"d:{doi.lower()}", []).append(doi)
+
+    def date_of(doi: str) -> Optional[str]:
+        paper = papers[doi]
+        year = paper.get("publication_year")
+        return paper.get("publication_date") or (str(year) if year else None)
+
+    def oldest_first(dois: List[str]) -> List[str]:
+        return sorted(dois, key=lambda d: (date_of(d) is None, date_of(d) or "", d))
+
     lab_keys = _author_keys(lab_names)
-    coverage = {"citing_papers": len(papers), "classified": 0, "no_full_text": 0, "pending": 0}
+    coverage = {"citing_papers": len(works), "classified": 0, "no_full_text": 0, "pending": 0}
     by_year: Dict[int, Dict[str, int]] = {}
     undated = {"reuse": 0, "mentions": 0}
     reuse_papers: List[Dict[str, Any]] = []
     mention_count = 0
-    for doi, paper in papers.items():
-        label = next((l for l in LABEL_PRECEDENCE if l in paper["labels"]), None)
+    for dois in works.values():
+        versions = [papers[d] for d in dois]
+        labels = set().union(*(v["labels"] for v in versions))
+        label = next((l for l in LABEL_PRECEDENCE if l in labels), None)
         if label:
             coverage["classified"] += 1
-        elif "no_full_text" in paper["statuses"] or paper.get("text_status") in NO_TEXT_STATUSES:
+        elif all("no_full_text" in v["statuses"] or v.get("text_status") in NO_TEXT_STATUSES for v in versions):
             coverage["no_full_text"] += 1
         else:
             coverage["pending"] += 1
@@ -1184,7 +1282,8 @@ def build_reuse_metrics(
             continue
 
         bucket = "reuse" if label == "REUSE" else "mentions"
-        year = _year_of(paper.get("publication_year"), paper.get("publication_date"))
+        first = oldest_first(dois)[0]
+        year = _year_of(papers[first].get("publication_year"), papers[first].get("publication_date"))
         if year is None:
             undated[bucket] += 1
         else:
@@ -1193,22 +1292,31 @@ def build_reuse_metrics(
             mention_count += 1
             continue
 
+        shown = pick_published_version(dois)
+        authors = next(
+            (papers[d]["authors"] for d in [shown, *dois] if isinstance(papers[d].get("authors"), list)), []
+        )
         basis = []
-        if True in paper["same_lab"]:
+        if any(True in v["same_lab"] for v in versions):
             basis.append("classifier")
-        if _author_keys(paper.get("authors")) & lab_keys:
+        if any(_author_keys(v.get("authors")) & lab_keys for v in versions):
             basis.append("author_names")
         reuse_papers.append({
-            "doi": doi,
-            "title": paper.get("title"),
-            "first_author": _first_author(paper.get("authors")),
-            "author_count": len(paper["authors"]) if isinstance(paper.get("authors"), list) else 0,
-            "publication_date": paper.get("publication_date"),
+            "doi": shown,
+            "title": papers[shown].get("title") or next((v["title"] for v in versions if v.get("title")), None),
+            "first_author": _first_author(authors),
+            "author_count": len(authors),
+            "publication_date": papers[shown].get("publication_date"),
+            "first_date": date_of(first),
+            "versions": [
+                {"doi": d, "is_preprint": is_preprint_doi(d), "publication_date": date_of(d)}
+                for d in oldest_first(dois)
+            ] if len(dois) > 1 else [],
             "same_lab": bool(basis),
             "same_lab_basis": basis,
         })
 
-    reuse_papers.sort(key=lambda p: (p["publication_date"] or "", p["doi"]), reverse=True)
+    reuse_papers.sort(key=lambda p: (p["first_date"] or "", p["doi"]), reverse=True)
     same_lab_count = sum(1 for p in reuse_papers if p["same_lab"])
     known_years = [y for y in (published_year, min(by_year, default=None)) if y is not None]
     per_year = []
@@ -1257,10 +1365,11 @@ def _fetch_metric_edges(cursor, prefix: str, id_col: str, dataset_id: str) -> Li
         SELECT
             c.citing_paper_doi,
             {label_cols},
+            {work_key} AS work_key,
+            p.title,
             p.publication_date,
             p.publication_year,
             {text_status} AS text_status,
-            CASE WHEN {is_reuse} THEN p.title END AS title,
             CASE WHEN {is_reuse} THEN p.authors END AS authors
         FROM {citations} c
         {label_join}
@@ -1269,6 +1378,7 @@ def _fetch_metric_edges(cursor, prefix: str, id_col: str, dataset_id: str) -> Li
         """
     ).format(
         label_cols=label_cols,
+        work_key=sql.SQL(work_key_sql("p.title", "c.citing_paper_doi")),
         text_status=text_status,
         is_reuse=is_reuse,
         citations=sql.Identifier(citations),
@@ -1429,6 +1539,7 @@ async def get_dataset_detail(source: str, dataset_id: str):
                             {p_country}
                             p.publication_date,
                             p.publication_year,
+                            {work_key_sql('p.title', 'map.paper_doi')} AS work_key,
                             COUNT(DISTINCT ce.citing_paper_doi)::int AS citing_papers_count
                         FROM dataset_map map
                         LEFT JOIN papers p ON p.paper_doi = map.paper_doi
@@ -1446,7 +1557,10 @@ async def get_dataset_detail(source: str, dataset_id: str):
                         ORDER BY COALESCE(p.publication_date, '') DESC, map.paper_doi ASC;
                     """
                     cursor.execute(primary_papers_query, [source, dataset_id])
-                    primary_papers = _clean_paper_titles([dict(r) for r in cursor.fetchall()])
+                    primary_papers = _annotate_versions(
+                        _clean_paper_titles([dict(r) for r in cursor.fetchall()]),
+                        doi_key="paper_doi", work_key="work_key", date_key="publication_date",
+                    )
 
                     c_journal = "p_citing.journal AS citing_journal," if "journal" in paper_opt_cols else "NULL AS citing_journal,"
                     c_country = "p_citing.senior_author_country AS citing_senior_author_country," if "senior_author_country" in paper_opt_cols else "NULL AS citing_senior_author_country,"
@@ -1458,6 +1572,7 @@ async def get_dataset_detail(source: str, dataset_id: str):
                             p_primary.title AS primary_paper_title,
                             ce.citing_paper_doi,
                             p_citing.title AS citing_paper_title,
+                            {work_key_sql('p_citing.title', 'ce.citing_paper_doi')} AS citing_work_key,
                             p_citing.authors AS citing_authors,
                             {c_journal}
                             {c_country}
@@ -1496,7 +1611,11 @@ async def get_dataset_detail(source: str, dataset_id: str):
                         LIMIT 250;
                     """
                     cursor.execute(citations_query, [source, dataset_id])
-                    citations = _clean_paper_titles([dict(r) for r in cursor.fetchall()])
+                    citations = _annotate_versions(
+                        _clean_paper_titles([dict(r) for r in cursor.fetchall()]),
+                        doi_key="citing_paper_doi", work_key="citing_work_key",
+                        date_key="citing_publication_date", prefix="citing_",
+                    )
 
                 except HTTPException:
                     pass

@@ -153,7 +153,7 @@ curl "http://localhost:8000/api/datasets/DANDI/000016" | jq '.citations[] | sele
 
 ### Dataset reuse metrics
 
-`GET /api/datasets/{source}/{id}/metrics` summarises how a dataset has been used, counting distinct citing papers across all of its primary papers. A citing paper labelled differently via different primary papers takes the first of `REUSE`, `PRIMARY`, `MENTION`, `NEITHER`.
+`GET /api/datasets/{source}/{id}/metrics` summarises how a dataset has been used, counting citing *works* across all of its primary papers. A work is one paper under all its DOIs: a preprint and its published version, or eLife's version DOIs, share a normalized title (markup, entities, punctuation and case removed; titles under 16 characters after that keep their own DOI). A work labelled differently via different versions or primary papers takes the first of `REUSE`, `PRIMARY`, `MENTION`, `NEITHER`, is dated by its earliest version, and is shown as its published version (a non-preprint DOI, or eLife's umbrella DOI). `reuse_count` in `GET /api/datasets` counts works the same way.
 
 | Field | Meaning |
 |---|---|
@@ -162,10 +162,12 @@ curl "http://localhost:8000/api/datasets/DANDI/000016" | jq '.citations[] | sele
 | `reuse_count` | citing papers labelled `REUSE` |
 | `independent_reuse_count`, `same_lab_reuse_count` | a reuse is same lab when the classifier said `same_lab`, or an author's name (surname and first initial) matches an author of the dataset or of its primary papers; otherwise independent |
 | `mention_count` | citing papers labelled `MENTION` |
-| `per_year` | `{year, reuse, mentions}` from the publication year (or the first dated paper, if earlier) to the current year, zeros included; undated papers are counted in `undated` |
-| `last_reuse` | the most recent reuse paper (same shape as `reuse_papers` items) |
-| `reuse_papers` | `{doi, title, first_author, author_count, publication_date, same_lab, same_lab_basis}`, newest first; `same_lab_basis` lists `classifier` and/or `author_names` |
-| `coverage` | `citing_papers` found, `classified` (has a label), `no_full_text` (the classifier or the mapping found no text), `pending` (the rest, including errors) |
+| `per_year` | `{year, reuse, mentions}` by each work's earliest version, from the publication year (or the first dated paper, if earlier) to the current year, zeros included; undated papers are counted in `undated` |
+| `last_reuse` | the reuse with the most recent `first_date` (same shape as `reuse_papers` items) |
+| `reuse_papers` | `{doi, title, first_author, author_count, publication_date, first_date, versions, same_lab, same_lab_basis}`, newest `first_date` first. `doi`, `title` and `publication_date` are the shown (published) version's; `first_date` is the earliest version's; `versions` lists every `{doi, is_preprint, publication_date}` when there are several; `same_lab_basis` lists `classifier` and/or `author_names` |
+| `coverage` | `citing_papers` (works) found, `classified` (has a label), `no_full_text` (the classifier or the mapping found no text for any version), `pending` (the rest, including errors) |
+
+`GET /api/datasets/{source}/{id}` marks versions the same way so a list can show each work once: every citing row carries `citing_work_key`, `citing_is_preprint`, `citing_work_doi` (the version to show) and `citing_work_versions` (all versions among the returned rows when there are several); primary papers carry `work_key`, `is_preprint`, `work_doi` and `work_versions`.
 
 Dataset ids may contain slashes (CRCNS DOIs, Kaggle): the route reads everything between the source and `/metrics` as the id.
 

@@ -1,4 +1,4 @@
-import type { DatasetDetailCitation, DatasetDetailPaper } from '../services/api';
+import type { DatasetDetailCitation, DatasetDetailPaper, WorkVersion } from '../services/api';
 
 /** The labels the dataset page lists papers under, in display order. */
 export type PaperLabel = 'PRIMARY' | 'REUSE' | 'MENTION';
@@ -23,6 +23,7 @@ export const PAPER_LABEL_HELP: Record<PaperLabel, string> = {
 const CITING_PRECEDENCE = ['REUSE', 'PRIMARY', 'MENTION', 'NEITHER'];
 
 export interface DatasetPaperItem {
+  /** The DOI the paper is shown as: its published version when it has several. */
   doi: string;
   label: PaperLabel;
   title: string | null;
@@ -36,54 +37,80 @@ export interface DatasetPaperItem {
   openalexId?: string | null;
   /** Classified citing papers: the row whose label the paper takes (evidence, reuse type). */
   citation?: DatasetDetailCitation;
+  /** Every version when the paper exists under several DOIs (e.g. a preprint), oldest first. */
+  versions: WorkVersion[];
+  /** The shown version is a preprint: no published version is known. */
+  isPreprint: boolean;
 }
 
 function rank(c: DatasetDetailCitation): number {
   return CITING_PRECEDENCE.indexOf((c.classification || '').toUpperCase());
 }
 
+function workOf(key: string | null | undefined, doi: string): string {
+  return key || `d:${doi.toLowerCase()}`;
+}
+
+function groupBy<T>(rows: T[], keyOf: (row: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  rows.forEach((row) => {
+    const key = keyOf(row);
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  });
+  return groups;
+}
+
 /**
  * One entry per paper: the dataset's mapped primary papers, then the citing
- * papers labelled Reuse, Primary or Mention. Neither and unclassified citing
- * papers are left out. Sorted by label, then newest first.
+ * papers labelled Reuse, Primary or Mention. The versions of a paper (a
+ * preprint and its published version share a work key from the API) are one
+ * entry, shown as the published version and labelled by the strongest label
+ * any version has. Neither and unclassified citing papers are left out.
+ * Sorted by label, then newest first.
  */
 export function buildPaperList(
   primaryPapers: DatasetDetailPaper[],
   citations: DatasetDetailCitation[],
 ): DatasetPaperItem[] {
   const items = new Map<string, DatasetPaperItem>();
-  primaryPapers.forEach((p) => {
-    items.set(p.paper_doi, {
-      doi: p.paper_doi,
+  groupBy(primaryPapers, (p) => workOf(p.work_key, p.paper_doi)).forEach((rows, key) => {
+    const shown = rows.find((p) => p.paper_doi === p.work_doi) ?? rows[0];
+    items.set(key, {
+      doi: shown.paper_doi,
       label: 'PRIMARY',
-      title: p.paper_title ?? null,
-      authors: p.authors ?? [],
-      journal: p.journal ?? null,
-      date: p.publication_date ?? (p.publication_year ? String(p.publication_year) : null),
-      country: p.senior_author_country ?? null,
-      citingCount: p.citing_papers_count,
-      openalexId: p.openalex_id ?? null,
+      title: shown.paper_title ?? null,
+      authors: shown.authors ?? [],
+      journal: shown.journal ?? null,
+      date: shown.publication_date ?? (shown.publication_year ? String(shown.publication_year) : null),
+      country: shown.senior_author_country ?? null,
+      citingCount: rows.reduce((sum, p) => sum + p.citing_papers_count, 0),
+      openalexId: shown.openalex_id ?? null,
+      versions: shown.work_versions ?? [],
+      isPreprint: shown.is_preprint ?? false,
     });
   });
+  const primaryDois = new Set(primaryPapers.map((p) => p.paper_doi));
 
-  const best = new Map<string, DatasetDetailCitation>();
-  citations.forEach((c) => {
-    if (rank(c) < 0) return;
-    const current = best.get(c.citing_paper_doi);
-    if (!current || rank(c) < rank(current)) best.set(c.citing_paper_doi, c);
-  });
-  best.forEach((c, doi) => {
-    const label = (c.classification || '').toUpperCase() as PaperLabel;
-    if (items.has(doi) || !PAPER_LABELS.includes(label)) return;
-    items.set(doi, {
-      doi,
+  groupBy(citations, (c) => workOf(c.citing_work_key, c.citing_paper_doi)).forEach((rows, key) => {
+    if (items.has(key) || rows.some((c) => primaryDois.has(c.citing_paper_doi))) return;
+    const labelled = rows.filter((c) => rank(c) >= 0);
+    if (!labelled.length) return;
+    const best = labelled.reduce((a, b) => (rank(b) < rank(a) ? b : a));
+    const label = (best.classification || '').toUpperCase() as PaperLabel;
+    if (!PAPER_LABELS.includes(label)) return;
+    const shown = rows.find((c) => c.citing_paper_doi === c.citing_work_doi) ?? best;
+    items.set(key, {
+      doi: shown.citing_paper_doi,
       label,
-      title: c.citing_paper_title ?? null,
-      authors: c.citing_authors ?? [],
-      journal: c.citing_journal ?? null,
-      date: c.citing_publication_date ?? (c.citing_publication_year ? String(c.citing_publication_year) : null),
-      country: c.citing_senior_author_country ?? null,
-      citation: c,
+      title: shown.citing_paper_title ?? best.citing_paper_title ?? null,
+      authors: shown.citing_authors ?? best.citing_authors ?? [],
+      journal: shown.citing_journal ?? null,
+      date:
+        shown.citing_publication_date ?? (shown.citing_publication_year ? String(shown.citing_publication_year) : null),
+      country: shown.citing_senior_author_country ?? null,
+      citation: best,
+      versions: shown.citing_work_versions ?? [],
+      isPreprint: shown.citing_is_preprint ?? false,
     });
   });
 

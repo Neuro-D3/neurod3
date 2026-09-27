@@ -287,8 +287,8 @@ function ImpactContent({ metrics }: { metrics: TrackedDatasetMetrics }) {
         </Stat>
         <Stat
           label="Last reused"
-          value={last ? formatMonthYear(last.publication_date) ?? 'Date unknown' : 'Not yet'}
-          valueClassName={last?.publication_date ? 'text-[26px] text-slate-900' : 'text-[22px] text-slate-600'}
+          value={last ? formatMonthYear(last.first_date ?? last.publication_date) ?? 'Date unknown' : 'Not yet'}
+          valueClassName={last?.first_date ?? last?.publication_date ? 'text-[26px] text-slate-900' : 'text-[22px] text-slate-600'}
         >
           <div className="truncate text-xs text-slate-600">
             {last ? (

@@ -88,6 +88,8 @@ function PaperRow({ paper, sameLab }: { paper: DatasetPaperItem; sameLab?: boole
   const hasEvidence = Boolean(c && (primaryQuote(c.evidence_quotes) || c.reasoning));
   const country = countryLabel(paper.country);
   const date = formatMonthYear(paper.date);
+  // A published paper that was posted as a preprint first: link the preprint.
+  const preprint = paper.isPreprint ? undefined : paper.versions.find((v) => v.is_preprint);
 
   return (
     <article className="rounded-lg border border-slate-200 bg-white p-3">
@@ -99,6 +101,11 @@ function PaperRow({ paper, sameLab }: { paper: DatasetPaperItem; sameLab?: boole
         >
           {PAPER_LABEL_TEXT[paper.label]}
         </span>
+        {paper.isPreprint && (
+          <Pill className="border-slate-300 bg-white text-slate-600" title="Not published in a journal yet, as far as we know">
+            Preprint
+          </Pill>
+        )}
         {typeLabel && <Pill className="border-violet-200 bg-violet-50 uppercase tracking-wide text-violet-700">{typeLabel}</Pill>}
         {lab === true && (
           <Pill
@@ -129,6 +136,18 @@ function PaperRow({ paper, sameLab }: { paper: DatasetPaperItem; sameLab?: boole
         {paper.journal && <> &middot; <em>{paper.journal}</em></>}
         {country && <> &middot; {country}</>}
       </p>
+      {preprint && (
+        <p className="mt-0.5 text-[11px] text-slate-500">
+          <a
+            href={doiUrl(preprint.doi)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-700 hover:text-blue-900 hover:underline"
+          >
+            Preprint posted {formatMonthYear(preprint.publication_date) ?? 'earlier'} ↗
+          </a>
+        </p>
+      )}
 
       {(modalities.length > 0 || (isReuse && c?.source_archive)) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">

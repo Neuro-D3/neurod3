@@ -76,6 +76,46 @@ describe('buildPaperList', () => {
     expect([r.label, r.authors, r.journal]).toEqual(['REUSE', ['Sajjad Farashi'], 'BMC Neurol']);
   });
 
+  it('lists a preprint and its published version once, as the published one', () => {
+    const versions = [
+      { doi: '10.1101/2023.05.08.539865', is_preprint: true, publication_date: '2023-05-10' },
+      { doi: '10.1111/psyp.14478', is_preprint: false, publication_date: '2023-11-08' },
+    ];
+    const shared = { citing_work_key: 't:medication', citing_work_doi: '10.1111/psyp.14478', citing_work_versions: versions };
+    const items = buildPaperList([], [
+      citing('10.1101/2023.05.08.539865', 'REUSE', '2023-05-10', { ...shared, citing_is_preprint: true, reuse_type: 'NOVEL_ANALYSIS' }),
+      citing('10.1111/psyp.14478', null, '2023-11-08', { ...shared, citing_is_preprint: false, citing_journal: 'Psychophysiology' }),
+    ]);
+    expect(items).toHaveLength(1);
+    const [paper] = items;
+    // Shown as the published version, labelled and explained by the version that was classified.
+    expect([paper.doi, paper.label, paper.journal, paper.date, paper.isPreprint]).toEqual(
+      ['10.1111/psyp.14478', 'REUSE', 'Psychophysiology', '2023-11-08', false]);
+    expect(paper.citation?.reuse_type).toBe('NOVEL_ANALYSIS');
+    expect(paper.versions.map((v) => v.doi)).toEqual(['10.1101/2023.05.08.539865', '10.1111/psyp.14478']);
+  });
+
+  it('marks a paper only known as a preprint', () => {
+    const [paper] = buildPaperList([], [citing('10.1101/430858', 'MENTION', '2018', { citing_is_preprint: true })]);
+    expect([paper.label, paper.isPreprint, paper.versions]).toEqual(['MENTION', true, []]);
+  });
+
+  it('groups primary papers by work too, adding up their citing papers', () => {
+    const items = buildPaperList([
+      primary('10.1101/2020.01.01.111111', '2020-01', { work_key: 't:data', work_doi: '10.1038/data', citing_papers_count: 3, is_preprint: true }),
+      primary('10.1038/data', '2020-06', { work_key: 't:data', work_doi: '10.1038/data', citing_papers_count: 7 }),
+    ], []);
+    expect(items.map((i) => [i.doi, i.citingCount])).toEqual([['10.1038/data', 10]]);
+  });
+
+  it('leaves out a citing paper that is a version of a primary paper', () => {
+    const items = buildPaperList(
+      [primary('10.1038/data', '2020-06', { work_key: 't:data' })],
+      [citing('10.1101/2020.01.01.111111', 'MENTION', '2020-01', { citing_work_key: 't:data' })],
+    );
+    expect(items.map((i) => i.label)).toEqual(['PRIMARY']);
+  });
+
   it('counts by label', () => {
     const items = buildPaperList([primary('10.1/p1', '2017')], [citing('10.1/r', 'REUSE', null), citing('10.1/m', 'MENTION', null)]);
     expect(countByLabel(items)).toEqual({ PRIMARY: 1, REUSE: 1, MENTION: 1 });

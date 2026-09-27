@@ -97,7 +97,10 @@ class TestReuseCountSubquery:
     def test_counts_reuse_for_every_present_source(self):
         cur = FakeCursor(tables={t for t, _, _ in M._CLASSIFICATION_TABLES})
         sql = M._reuse_count_subquery(cur)
-        assert sql.count("COUNT(DISTINCT citing_paper_doi)") == 4
+        # Distinct works, so a preprint and its published version count once.
+        work = M.work_key_sql("p.title", "c.citing_paper_doi")
+        assert sql.count(f"COUNT(DISTINCT {work})") == 4
+        assert sql.count("LEFT JOIN papers p ON p.paper_doi = c.citing_paper_doi") == 4
         assert "IN ('REUSE')" in sql
         for _table, id_col, source in M._CLASSIFICATION_TABLES:
             assert f"{id_col} = d.dataset_id" in sql

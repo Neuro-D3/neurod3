@@ -98,7 +98,8 @@ class TestBuildReuseMetrics:
         assert (m["independent_reuse_count"], m["same_lab_reuse_count"]) == (1, 0)
         assert m["reuse_papers"][0] == {
             "doi": "10.1/a", "title": None, "first_author": "Ann Other", "author_count": 1,
-            "publication_date": None, "same_lab": False, "same_lab_basis": [],
+            "publication_date": None, "first_date": None, "versions": [],
+            "same_lab": False, "same_lab_basis": [],
         }
 
     def test_per_year_runs_from_publication_to_the_current_year(self):
@@ -154,6 +155,105 @@ class TestBuildReuseMetrics:
 
     def test_no_publication_date_and_no_data_gives_no_years(self):
         assert metrics([], published_year=None)["per_year"] == []
+
+
+class TestVersionsCountOnce:
+    """A preprint and its published version share a work key and are one paper."""
+
+    PREPRINT = "10.1101/2023.05.08.539865"
+    PUBLISHED = "10.1111/psyp.14478"
+
+    def versions(self, preprint_label=None, published_label="REUSE", **published):
+        return [
+            edge(self.PREPRINT, preprint_label, date="2023-05-10", text_status="metadata_only",
+                 authors=["Daniel J. McKeown"] if preprint_label == "REUSE" else None),
+            edge(self.PUBLISHED, published_label, date="2023-11-08",
+                 authors=["Daniel J. McKeown", "James F. Cavanagh"], **published),
+        ]
+
+    def keyed(self, rows, key="t:medicationinvariantrestingaperiodic"):
+        return [{**r, "work_key": key} for r in rows]
+
+    def test_counted_once_under_the_strongest_label(self):
+        m = metrics(self.keyed(self.versions()))
+        assert (m["reuse_count"], m["mention_count"]) == (1, 0)
+        assert m["coverage"] == {"citing_papers": 1, "classified": 1, "no_full_text": 0, "pending": 0}
+
+    def test_dated_by_the_earliest_version_and_shown_as_the_published_one(self):
+        m = metrics(self.keyed(self.versions()), current_year=2024)
+        paper = m["reuse_papers"][0]
+        assert (paper["doi"], paper["publication_date"], paper["first_date"]) == (self.PUBLISHED, "2023-11-08", "2023-05-10")
+        assert paper["versions"] == [
+            {"doi": self.PREPRINT, "is_preprint": True, "publication_date": "2023-05-10"},
+            {"doi": self.PUBLISHED, "is_preprint": False, "publication_date": "2023-11-08"},
+        ]
+        assert m["last_reuse"]["first_date"] == "2023-05-10"
+        assert [(y["year"], y["reuse"]) for y in m["per_year"] if y["reuse"]] == [(2023, 1)]
+
+    def test_label_from_either_version(self):
+        m = metrics(self.keyed(self.versions(preprint_label="REUSE", published_label=None)))
+        assert m["reuse_count"] == 1
+        assert m["reuse_papers"][0]["doi"] == self.PUBLISHED
+        assert m["reuse_papers"][0]["first_author"] == "Daniel J. McKeown"
+
+    def test_same_lab_if_any_version_is(self):
+        m = metrics(self.keyed(self.versions(same_lab=True)), lab_names=["Someone Else"])
+        assert m["reuse_papers"][0]["same_lab_basis"] == ["classifier"]
+
+    def test_without_a_shared_key_they_stay_two_papers(self):
+        m = metrics(self.versions(preprint_label="MENTION"))
+        assert (m["reuse_count"], m["mention_count"], m["coverage"]["citing_papers"]) == (1, 1, 2)
+
+    def test_the_work_is_no_full_text_only_if_every_version_is(self):
+        rows = self.keyed([
+            edge(self.PREPRINT, status="no_full_text"),
+            edge(self.PUBLISHED, text_status="full_text"),
+        ])
+        assert metrics(rows)["coverage"] == {"citing_papers": 1, "classified": 0, "no_full_text": 0, "pending": 1}
+
+
+class TestPreprintsAndVersions:
+    @pytest.mark.parametrize("doi", [
+        "10.1101/2023.05.08.539865", "10.1101/430858", "10.64898/2026.02.20.707132",
+        "10.48550/arXiv.2301.00001", "10.21203/rs.3.rs-123/v1", "10.2139/ssrn.4012345", "10.31234/osf.io/abcd",
+    ])
+    def test_preprint_servers(self, doi):
+        assert M.is_preprint_doi(doi)
+
+    @pytest.mark.parametrize("doi", [
+        "10.1101/gr.275648.121",  # Genome Research: Cold Spring Harbor, same prefix as bioRxiv
+        "10.1111/psyp.14478", "10.7554/eLife.84630", None,
+    ])
+    def test_journals_are_not_preprints(self, doi):
+        assert not M.is_preprint_doi(doi)
+
+    def test_published_version_over_the_preprint(self):
+        assert M.pick_published_version(["10.1101/2023.05.08.539865", "10.1111/psyp.14478"]) == "10.1111/psyp.14478"
+
+    def test_elife_umbrella_over_numbered_versions(self):
+        dois = ["10.7554/eLife.95127.3", "10.7554/eLife.95127", "10.7554/eLife.95127.1"]
+        assert M.pick_published_version(dois) == "10.7554/eLife.95127"
+
+    def test_annotate_versions_marks_each_row(self):
+        rows = [
+            {"citing_paper_doi": "10.1101/2023.05.08.539865", "citing_work_key": "t:x", "citing_publication_date": "2023-05-10"},
+            {"citing_paper_doi": "10.1111/psyp.14478", "citing_work_key": "t:x", "citing_publication_date": "2023-11-08"},
+            {"citing_paper_doi": "10.1/solo", "citing_work_key": None, "citing_publication_date": None},
+        ]
+        M._annotate_versions(rows, doi_key="citing_paper_doi", work_key="citing_work_key",
+                             date_key="citing_publication_date", prefix="citing_")
+        assert [r["citing_work_doi"] for r in rows] == ["10.1111/psyp.14478", "10.1111/psyp.14478", "10.1/solo"]
+        assert [r["citing_is_preprint"] for r in rows] == [True, False, False]
+        assert rows[0]["citing_work_versions"] == rows[1]["citing_work_versions"] == [
+            {"doi": "10.1101/2023.05.08.539865", "is_preprint": True, "publication_date": "2023-05-10"},
+            {"doi": "10.1111/psyp.14478", "is_preprint": False, "publication_date": "2023-11-08"},
+        ]
+        assert rows[2]["citing_work_versions"] == [] and rows[2]["citing_work_key"] == "d:10.1/solo"
+
+    def test_work_key_sql_uses_the_title_and_falls_back_to_the_doi(self):
+        expr = M.work_key_sql("p.title", "c.citing_paper_doi")
+        assert "COALESCE(p.title, '')" in expr and "lower(c.citing_paper_doi)" in expr
+        assert f">= {M.WORK_KEY_MIN_CHARS}" in expr
 
 
 class TestStagingExample:
