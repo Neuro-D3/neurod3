@@ -112,80 +112,99 @@ function PerYearChart({ perYear }: { perYear: DatasetMetricsYear[] }) {
   );
 }
 
-function HowWeCount({ onClose, closeRef }: { onClose: () => void; closeRef: React.RefObject<HTMLButtonElement> }) {
+const HOW_WE_COUNT_ID = 'dataset-how-we-count';
+
+/**
+ * "How we count": opens on hover, click or tap (Enter from the keyboard), and
+ * stays open until a click outside it, Escape, or focus moving elsewhere.
+ */
+function HowWeCount() {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.target instanceof Node && wrap.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      button.current?.focus();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
   return (
     <div
-      id="reuse-how-we-count"
-      role="region"
-      aria-labelledby="reuse-how-we-count-title"
-      className="absolute inset-0 flex flex-col gap-3 overflow-y-auto rounded-2xl bg-white p-[22px]"
+      ref={wrap}
+      className="relative"
+      onMouseEnter={() => setOpen(true)}
+      onBlur={(e) => {
+        if (!wrap.current?.contains(e.relatedTarget as Node | null)) setOpen(false);
+      }}
     >
-      <div className="flex items-center justify-between">
-        <h3 id="reuse-how-we-count-title" className="text-sm font-semibold text-slate-900">
-          How we count
-        </h3>
-        <button
-          ref={closeRef}
-          type="button"
-          onClick={onClose}
-          className="rounded-md px-2 py-1 text-[13px] font-medium text-blue-700 hover:bg-blue-50 hover:text-blue-900"
+      <button
+        ref={button}
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-expanded={open}
+        aria-controls={HOW_WE_COUNT_ID}
+        className="text-[13px] text-blue-700 hover:text-blue-900 hover:underline"
+      >
+        How we count
+      </button>
+      {open && (
+        // Focusable so a click inside it keeps focus within the popover and it stays open.
+        <div
+          id={HOW_WE_COUNT_ID}
+          role="region"
+          aria-label="How we count"
+          tabIndex={-1}
+          className="absolute right-0 top-full z-20 mt-2 w-[min(320px,calc(100vw-4rem))] rounded-xl border border-slate-200 bg-white p-4 text-left shadow-lg outline-none"
         >
-          Done
-        </button>
-      </div>
-      <dl className="flex flex-col gap-2.5 text-[13px] leading-snug text-slate-600">
-        <div>
-          <dt className="font-semibold text-slate-900">Reuse</dt>
-          <dd>The citing paper's full text shows it used this dataset's data.</dd>
+          <dl className="flex flex-col gap-2 text-xs leading-snug text-slate-600">
+            <div>
+              <dt className="font-semibold text-slate-900">Reuse</dt>
+              <dd>The citing paper's full text shows it used this dataset's data.</dd>
+            </div>
+            <div>
+              <dt className="font-semibold text-slate-900">Independent</dt>
+              <dd>
+                None of its authors are authors of the dataset or its papers, and the classifier didn't judge it the
+                dataset's own lab.
+              </dd>
+            </div>
+            <div>
+              <dt className="font-semibold text-slate-900">Mention</dt>
+              <dd>Cites the dataset or its paper without using the data.</dd>
+            </div>
+            <div>
+              <dt className="font-semibold text-slate-900">Per year</dt>
+              <dd>By the citing paper's publication year, from the dataset's release to now.</dd>
+            </div>
+            <div>
+              <dt className="font-semibold text-slate-900">Coverage</dt>
+              <dd>
+                Papers are labelled from their full text. Citing papers without full text, or not reached yet, aren't
+                counted until they are.
+              </dd>
+            </div>
+          </dl>
         </div>
-        <div>
-          <dt className="font-semibold text-slate-900">Independent</dt>
-          <dd>
-            None of its authors are authors of the dataset or its papers, and the classifier didn't judge it the
-            dataset's own lab.
-          </dd>
-        </div>
-        <div>
-          <dt className="font-semibold text-slate-900">Mention</dt>
-          <dd>Cites the dataset or its paper without using the data.</dd>
-        </div>
-        <div>
-          <dt className="font-semibold text-slate-900">Per year</dt>
-          <dd>By the citing paper's publication year, from the dataset's release to now.</dd>
-        </div>
-        <div>
-          <dt className="font-semibold text-slate-900">Coverage</dt>
-          <dd>
-            Papers are labelled from their full text. Citing papers without full text, or not reached yet, aren't
-            counted until they are.
-          </dd>
-        </div>
-      </dl>
+      )}
     </div>
   );
 }
 
 function ImpactContent({ metrics }: { metrics: TrackedDatasetMetrics }) {
-  const [showHow, setShowHow] = useState(false);
-  const howButton = useRef<HTMLButtonElement>(null);
-  const doneButton = useRef<HTMLButtonElement>(null);
-  const wasOpen = useRef(false);
-
-  // Focus moves into the panel when it opens and back to its button when it closes.
-  useEffect(() => {
-    if (showHow) {
-      doneButton.current?.focus();
-      wasOpen.current = true;
-      const onKey = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') setShowHow(false);
-      };
-      window.addEventListener('keydown', onKey);
-      return () => window.removeEventListener('keydown', onKey);
-    }
-    if (wasOpen.current) howButton.current?.focus();
-    return undefined;
-  }, [showHow]);
-
   const reuse = metrics.reuse_count;
   const last = metrics.last_reuse;
   const coverage = coverageSummary(metrics.coverage);
@@ -197,17 +216,8 @@ function ImpactContent({ metrics }: { metrics: TrackedDatasetMetrics }) {
   return (
     <>
       <div className="flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Reuse impact</h2>
-        <button
-          ref={howButton}
-          type="button"
-          onClick={() => setShowHow(true)}
-          aria-expanded={showHow}
-          aria-controls="reuse-how-we-count"
-          className="text-[13px] text-blue-700 hover:text-blue-900 hover:underline"
-        >
-          How we count
-        </button>
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Dataset impact</h2>
+        <HowWeCount />
       </div>
 
       <div className="grid grid-cols-2 gap-2.5">
@@ -284,18 +294,16 @@ function ImpactContent({ metrics }: { metrics: TrackedDatasetMetrics }) {
       </div>
 
       <p className={`text-xs ${coverage.incomplete ? 'text-amber-700' : 'text-slate-500'}`}>{coverage.text}</p>
-
-      {showHow && <HowWeCount onClose={() => setShowHow(false)} closeRef={doneButton} />}
     </>
   );
 }
 
 /**
- * The dataset page's square "Reuse impact" card: reuse, independent reuse,
+ * The dataset page's square "Dataset impact" card: reuse, independent reuse,
  * mentions, last reuse, a per-year split bar chart and how many citing papers
  * the numbers rest on.
  */
-export function ReuseImpactCard({
+export function DatasetImpactCard({
   metrics,
   loading = false,
   error = null,
@@ -306,23 +314,23 @@ export function ReuseImpactCard({
 }) {
   if (metrics) {
     return (
-      <section aria-label="Reuse impact" className={CARD_CLASS}>
+      <section aria-label="Dataset impact" className={CARD_CLASS}>
         <ImpactContent metrics={metrics} />
       </section>
     );
   }
   if (error) {
     return (
-      <section aria-label="Reuse impact" className="rounded-2xl border border-slate-200 bg-white p-[22px] shadow-xl">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Reuse impact</h2>
-        <p className="mt-2 text-sm text-slate-600">Reuse metrics couldn't be loaded.</p>
+      <section aria-label="Dataset impact" className="rounded-2xl border border-slate-200 bg-white p-[22px] shadow-xl">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Dataset impact</h2>
+        <p className="mt-2 text-sm text-slate-600">Impact metrics couldn't be loaded.</p>
         <p className="mt-1 text-xs text-slate-500">{error}</p>
       </section>
     );
   }
   if (!loading) return null;
   return (
-    <section aria-label="Reuse impact" aria-busy="true" className={CARD_CLASS}>
+    <section aria-label="Dataset impact" aria-busy="true" className={CARD_CLASS}>
       <div className="h-3 w-28 animate-pulse rounded bg-slate-200" />
       <div className="grid grid-cols-2 gap-2.5">
         {[0, 1, 2, 3].map((i) => (
