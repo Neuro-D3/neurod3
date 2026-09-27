@@ -16,6 +16,7 @@ import requests
 
 from utils.find_reuse_core import (
     Telemetry,
+    drop_cut_off_papers,
     extract_dois_from_text,
     normalize_doi,
     resolve_crossref_metadata,
@@ -263,7 +264,7 @@ def resolve_papers_for_crcns_dataset(
         out.append(paper)
 
     return CrcnsPaperResolutionResult(
-        papers=out,
+        papers=drop_cut_off_papers(out),
         telemetry=telemetry.to_dict(),
         reason=None,
         error=None,

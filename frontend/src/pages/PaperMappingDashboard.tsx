@@ -73,6 +73,7 @@ export default function PaperMappingDashboard() {
   // out on close; `selectedDataset` stays set until the slide-out finishes.
   const [panelClosing, setPanelClosing] = useState(false);
   const closeTimer = useRef<number | null>(null);
+  const panelRef = useRef<HTMLElement>(null);
   const [datasetDetail, setDatasetDetail] = useState<PaperMappingDatasetDetail | null>(null);
   const [citationsPreview, setCitationsPreview] = useState<PaperMappingCitation[]>([]);
   const [citationsTotal, setCitationsTotal] = useState(0);
@@ -193,6 +194,21 @@ export default function PaperMappingDashboard() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, [selectedDataset, panelClosing, closePanel]);
+
+  // A click outside the drill-down slides it out. A click on another dataset
+  // row is left to the row, which switches the panel to that dataset.
+  useEffect(() => {
+    if (!selectedDataset || panelClosing) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      if (panelRef.current?.contains(target) || target.closest('[data-opens-panel]')) return;
+      closePanel();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [selectedDataset, panelClosing, closePanel]);
 
   const classificationBreakdown = useMemo(() => {
@@ -325,6 +341,7 @@ export default function PaperMappingDashboard() {
                     return (
                       <tr
                         key={`${dataset.source}:${dataset.dataset_id}`}
+                        data-opens-panel
                         className={`cursor-pointer transition hover:bg-slate-50 ${isSelected ? 'bg-slate-50' : ''}`}
                         onClick={() => openPanel(dataset)}
                       >
@@ -449,6 +466,7 @@ export default function PaperMappingDashboard() {
 
         {selectedDataset ? (
         <aside
+          ref={panelRef}
           role="dialog"
           aria-modal="false"
           aria-label={`Dataset drill-down: ${selectedDataset.source} ${selectedDataset.dataset_id}`}

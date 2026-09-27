@@ -1,19 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
-import { fetchDatasetDetail } from '../services/api';
-import type { DatasetDetailResponse, DatasetDetailPaper, DatasetDetailCitation, DatasetContributor } from '../services/api';
+import { fetchDatasetDetail, fetchDatasetMetrics } from '../services/api';
+import type { DatasetDetailResponse, DatasetContributor, DatasetMetrics } from '../services/api';
 import { PopulationIcon } from '../components/PopulationIcon';
-import {
-  CONFIDENCE_TIERS,
-  confidenceLabel,
-  confidenceTier,
-  isReuseClassification,
-  modalityLabel,
-  primaryQuote,
-  reuseTypeLabel,
-  reusedModalities,
-} from '../utils/classification';
+import { DatasetImpactCard } from '../components/DatasetImpactCard';
+import { DatasetPaperList } from '../components/DatasetPaperList';
+import { formatPublishedDate, plural } from '../utils/reuseMetrics';
 
 const SOURCE_COLORS: Record<string, string> = {
   DANDI: 'bg-purple-100 text-purple-800',
@@ -39,213 +32,6 @@ function ModalityChip({ label }: { label: string }) {
   );
 }
 
-function doiUrl(doi: string) {
-  return `https://doi.org/${encodeURIComponent(doi).replace(/%2F/gi, '/')}`;
-}
-
-const COUNTRY_NAMES: Record<string, string> = {
-  US: 'United States', GB: 'United Kingdom', DE: 'Germany', FR: 'France',
-  CA: 'Canada', AU: 'Australia', JP: 'Japan', CN: 'China', NL: 'Netherlands',
-  CH: 'Switzerland', SE: 'Sweden', IT: 'Italy', ES: 'Spain', KR: 'South Korea',
-  BR: 'Brazil', IN: 'India', IL: 'Israel', AT: 'Austria', BE: 'Belgium',
-  DK: 'Denmark', NO: 'Norway', FI: 'Finland', SG: 'Singapore', NZ: 'New Zealand',
-  IE: 'Ireland', PT: 'Portugal', PL: 'Poland', CZ: 'Czech Republic', HU: 'Hungary',
-  TW: 'Taiwan', HK: 'Hong Kong', MX: 'Mexico', AR: 'Argentina', CL: 'Chile',
-  ZA: 'South Africa', RU: 'Russia', TR: 'Turkey', GR: 'Greece', RO: 'Romania',
-};
-function countryLabel(code: string | null | undefined): string | null {
-  if (!code) return null;
-  return COUNTRY_NAMES[code.toUpperCase()] || code.toUpperCase();
-}
-
-function formatAuthors(authors: string[] | null | undefined, max = 5): string {
-  if (!authors?.length) return 'Unknown authors';
-  if (authors.length <= max) return authors.join(', ');
-  return `${authors.slice(0, max).join(', ')} et al.`;
-}
-
-const TIER_LABEL_VALUE: Record<string, number> = { high: 9, medium: 5, low: 2 };
-
-function ReuseTypePill({ label }: { label: string }) {
-  return (
-    <span className="inline-block rounded-full bg-violet-50 border border-violet-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-700">
-      {label}
-    </span>
-  );
-}
-
-function ReusedModalityChip({ label }: { label: string }) {
-  return (
-    <span className="inline-block rounded-full bg-blue-50/80 border border-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700">
-      {modalityLabel(label)}
-    </span>
-  );
-}
-
-function ReusePaperCard({ c, bg }: { c: DatasetDetailCitation; bg: string }) {
-  const typeLabel = reuseTypeLabel(c.reuse_type, c.reuse_type_other);
-  const modalities = reusedModalities(c.reused_modalities);
-  const quote = primaryQuote(c.evidence_quotes);
-  const hallucinated = (c.hallucinated_quote_count ?? 0) > 0;
-  return (
-    <div className={`rounded-lg border p-3 ${bg}`}>
-      <a
-        href={doiUrl(c.citing_paper_doi)}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-xs font-semibold text-blue-700 hover:text-blue-600 hover:underline leading-snug line-clamp-2"
-      >
-        {c.citing_paper_title || c.citing_paper_doi}
-      </a>
-      <p className="mt-0.5 text-[11px] text-slate-500">
-        {formatAuthors(c.citing_authors, 3)}
-        {c.citing_journal && <> &middot; <em>{c.citing_journal}</em></>}
-        {c.citing_publication_date && (
-          <> &middot; {new Date(c.citing_publication_date).toLocaleDateString()}</>
-        )}
-        {countryLabel(c.citing_senior_author_country) && (
-          <> &middot; {countryLabel(c.citing_senior_author_country)}</>
-        )}
-      </p>
-      {(typeLabel || modalities.length > 0 || c.same_lab != null || c.source_archive) && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {typeLabel && <ReuseTypePill label={typeLabel} />}
-          {modalities.map((m) => (
-            <ReusedModalityChip key={m} label={m} />
-          ))}
-          {c.same_lab === true && (
-            <span
-              className="inline-block rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-medium text-amber-700"
-              title="The reusing authors overlap with the dataset's contributors"
-            >
-              Same lab
-            </span>
-          )}
-          {c.source_archive && (
-            <span className="text-[10px] text-slate-400" title="Where the paper says it obtained the data">
-              via {c.source_archive}
-            </span>
-          )}
-        </div>
-      )}
-      {quote && (
-        <blockquote
-          className="mt-2 border-l-2 border-slate-300 pl-2 text-[11px] text-slate-600 leading-relaxed"
-          title={quote.match_type ? `Quote verified against the paper text (${quote.match_type})` : undefined}
-        >
-          “{quote.quote}”
-        </blockquote>
-      )}
-      {c.reasoning && (
-        <p className="mt-1 text-[11px] text-slate-500 italic leading-relaxed">{c.reasoning}</p>
-      )}
-      {hallucinated && (
-        <p className="mt-1 text-[10px] text-rose-600">
-          {c.hallucinated_quote_count} quote{c.hallucinated_quote_count === 1 ? '' : 's'} could not be matched word for word
-        </p>
-      )}
-      {typeof c.confidence === 'number' && (
-        <p className="mt-1 text-[10px] text-slate-400">Confidence {c.confidence}/10</p>
-      )}
-    </div>
-  );
-}
-
-function PaperCard({
-  paper,
-  citations,
-  expanded,
-  onToggle,
-}: {
-  paper: DatasetDetailPaper;
-  citations: DatasetDetailCitation[];
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <div className="rounded-lg border border-slate-200/60 bg-white/60 backdrop-blur shadow-sm hover:shadow-md transition-shadow">
-      <div className="px-3 py-2">
-        <a
-          href={doiUrl(paper.paper_doi)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs font-semibold text-blue-700 hover:text-blue-600 hover:underline leading-snug line-clamp-2"
-        >
-          {paper.paper_title || paper.paper_doi}
-        </a>
-        <p className="mt-0.5 text-[11px] text-slate-500 line-clamp-1">{formatAuthors(paper.authors)}</p>
-        {paper.journal && (
-          <p className="mt-0.5 text-[11px] italic text-slate-400 line-clamp-1">{paper.journal}</p>
-        )}
-        <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-          {paper.publication_date && (
-            <span>{new Date(paper.publication_date).toLocaleDateString()}</span>
-          )}
-          {paper.publication_year && !paper.publication_date && (
-            <span>{paper.publication_year}</span>
-          )}
-          {countryLabel(paper.senior_author_country) && (
-            <span>{countryLabel(paper.senior_author_country)}</span>
-          )}
-          {paper.doi_source && (
-            <span className="rounded bg-slate-100/70 px-1 py-px text-[10px] font-medium text-slate-500 border border-slate-200/60">
-              {paper.doi_source}
-            </span>
-          )}
-          {paper.openalex_id && (
-            <a
-              href={paper.openalex_id.startsWith('http') ? paper.openalex_id : `https://openalex.org/${paper.openalex_id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:underline"
-            >
-              OpenAlex
-            </a>
-          )}
-          {paper.citing_papers_count > 0 && (
-            <button
-              type="button"
-              onClick={onToggle}
-              className="ml-auto rounded-full bg-emerald-50/80 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors border border-emerald-100"
-            >
-              {paper.citing_papers_count} citing{expanded ? ' ▴' : ' ▾'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {expanded && citations.length > 0 && (
-        <div className="border-t border-slate-100/80 bg-slate-50/40 px-4 py-3">
-          <div className="space-y-2">
-            {citations.map((c, i) => (
-              <div key={`${c.citing_paper_doi}-${i}`} className="text-xs">
-                <a
-                  href={doiUrl(c.citing_paper_doi)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="font-medium text-blue-600 hover:underline leading-snug"
-                >
-                  {c.citing_paper_title || c.citing_paper_doi}
-                </a>
-                <p className="mt-0.5 text-slate-500">
-                  {formatAuthors(c.citing_authors, 3)}
-                  {c.citing_journal && <> &middot; <em>{c.citing_journal}</em></>}
-                  {c.citing_publication_date && (
-                    <> &middot; {new Date(c.citing_publication_date).toLocaleDateString()}</>
-                  )}
-                  {countryLabel(c.citing_senior_author_country) && (
-                    <> &middot; {countryLabel(c.citing_senior_author_country)}</>
-                  )}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function decodedDatasetIdParam(raw: string | undefined): string {
   if (!raw) return '';
   try {
@@ -263,7 +49,8 @@ export default function DatasetDetailPage() {
   const [data, setData] = useState<DatasetDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [expandedPapers, setExpandedPapers] = useState<Set<string>>(new Set());
+  const [metrics, setMetrics] = useState<DatasetMetrics | null>(null);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!source || !datasetId) return;
@@ -285,24 +72,25 @@ export default function DatasetDetailPage() {
     return () => { cancelled = true; };
   }, [source, datasetId]);
 
-  const togglePaper = (doi: string) => {
-    setExpandedPapers((prev) => {
-      const next = new Set(prev);
-      if (next.has(doi)) next.delete(doi);
-      else next.add(doi);
-      return next;
-    });
-  };
+  // Metrics load on their own so the page doesn't wait for them.
+  useEffect(() => {
+    if (!source || !datasetId) return;
+    let cancelled = false;
+    setMetrics(null);
+    setMetricsError(null);
 
-  const citationsByPrimary = (doi: string): DatasetDetailCitation[] =>
-    data?.citations.filter((c) => c.primary_paper_doi === doi) ?? [];
+    fetchDatasetMetrics(source, datasetId)
+      .then((res) => {
+        if (!cancelled) setMetrics(res);
+      })
+      .catch((err) => {
+        if (!cancelled) setMetricsError(err.message);
+      });
 
-  // REUSE from the whole-paper classifier. MENTION / NEITHER / PRIMARY are
-  // deliberately not shown here: only papers that actually used the data.
-  const reusePapers = (data?.citations ?? []).filter((c) => isReuseClassification(c.classification));
+    return () => { cancelled = true; };
+  }, [source, datasetId]);
 
-  const reusePapersByTier = (tier: string) =>
-    reusePapers.filter((c) => confidenceTier(c.confidence) === tier);
+  const trackedMetrics = metrics?.tracked ? metrics : null;
 
   if (loading) {
     return (
@@ -340,6 +128,7 @@ export default function DatasetDetailPage() {
     .map((m) => m.trim())
     .filter(Boolean);
   const routeIdDiffersFromApi = Boolean(datasetId && datasetId !== ds.dataset_id);
+  const showReuseSummary = Boolean(trackedMetrics && trackedMetrics.reuse_count + trackedMetrics.mention_count > 0);
 
   return (
     <div className="min-h-screen bg-slate-100 py-10 px-4">
@@ -379,7 +168,7 @@ export default function DatasetDetailPage() {
                 {/* Metadata bar */}
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-500">
                   {ds.created_at && (
-                    <span>Published {new Date(ds.created_at).toLocaleDateString()}</span>
+                    <span>Published {formatPublishedDate(ds.created_at, ds.created_at_precision)}</span>
                   )}
                   {ds.updated_at && (
                     <span>Updated {new Date(ds.updated_at).toLocaleDateString()}</span>
@@ -407,12 +196,21 @@ export default function DatasetDetailPage() {
                   )}
                 </div>
 
-                {/* Modality chips */}
-                {modalities.length > 0 && (
-                  <div className="mt-4 flex flex-wrap gap-1.5">
+                {/* Modality chips, then the reuse summary the sidebar card details */}
+                {(modalities.length > 0 || showReuseSummary) && (
+                  <div className="mt-4 flex flex-wrap items-center gap-1.5">
                     {modalities.map((m) => (
                       <ModalityChip key={m} label={m} />
                     ))}
+                    {trackedMetrics && showReuseSummary && (
+                      <span className={`text-sm text-slate-600 ${modalities.length > 0 ? 'ml-2' : ''}`}>
+                        <strong className="font-semibold text-emerald-700">
+                          {plural(trackedMetrics.reuse_count, 'reuse', 'reuses')}
+                        </strong>
+                        {' · '}
+                        {plural(trackedMetrics.mention_count, 'mention', 'mentions')}
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -475,63 +273,10 @@ export default function DatasetDetailPage() {
 
           </div>
 
-          {/* ─── Right column: papers sidebar ─── */}
-          <div className="w-full lg:w-[460px] flex-shrink-0 lg:sticky lg:top-24 space-y-5">
-            <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl p-5">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4">
-                Associated Papers
-                <span className="ml-2 text-slate-300 font-normal">
-                  ({data.primary_papers.length + reusePapers.length})
-                </span>
-              </h2>
-              {data.primary_papers.length === 0 ? (
-                <p className="text-sm text-slate-400 italic">No papers have been mapped to this dataset yet.</p>
-              ) : (
-                <div className="space-y-3 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
-                  {data.primary_papers.map((paper) => (
-                    <PaperCard
-                      key={paper.paper_doi}
-                      paper={paper}
-                      citations={citationsByPrimary(paper.paper_doi)}
-                      expanded={expandedPapers.has(paper.paper_doi)}
-                      onToggle={() => togglePaper(paper.paper_doi)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* AI-Identified Reuse Papers */}
-            {reusePapers.length > 0 && (
-              <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl p-5">
-                <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
-                  AI-Identified Reuse Papers
-                  <span className="ml-2 text-slate-300 font-normal">({reusePapers.length})</span>
-                </h2>
-                <p className="text-[11px] text-slate-400 mb-4">
-                  Papers whose full text shows they reused this dataset's data. Each verdict quotes the passage it was judged from.
-                </p>
-                <div className="space-y-4 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
-                  {CONFIDENCE_TIERS.map((tier) => {
-                    const papers = reusePapersByTier(tier);
-                    if (papers.length === 0) return null;
-                    const conf = confidenceLabel(TIER_LABEL_VALUE[tier]);
-                    return (
-                      <div key={tier}>
-                        <h3 className={`text-xs font-semibold mb-2 ${conf.color}`}>
-                          {conf.text} ({papers.length})
-                        </h3>
-                        <div className="space-y-2">
-                          {papers.map((c, i) => (
-                            <ReusePaperCard key={`${c.citing_paper_doi}-${i}`} c={c} bg={conf.bg} />
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+          {/* ─── Right column: dataset impact, then every paper with its label ─── */}
+          <div className="w-full lg:w-[460px] flex-shrink-0 space-y-5">
+            <DatasetImpactCard metrics={trackedMetrics} loading={!metrics && !metricsError} error={metricsError} />
+            <DatasetPaperList primaryPapers={data.primary_papers} citations={data.citations} metrics={trackedMetrics} />
           </div>
         </div>
       </div>

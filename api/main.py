@@ -12,7 +12,11 @@ import os
 import sys
 from pathlib import Path
 from contextlib import contextmanager
+from datetime import datetime, timezone
+import html
 import logging
+import re
+import unicodedata
 
 # Add dags directory to path so we can import shared utilities
 dags_path = Path(__file__).parent.parent / "dags"
@@ -119,6 +123,34 @@ CITATION_DISPLAY_ORDER_SQL = """
         ELSE 5
     END
 """
+
+
+# Inline markup publishers leave in paper titles (JATS, HTML, MathML); the same
+# list as airflow/dags/utils/titles.py, which cleans titles as they are stored.
+# Titles stored before that are cleaned here, as they are served.
+_TITLE_MARKUP_TAG = re.compile(
+    r"</?(?:i|b|em|strong|u|sup|sub|scp|sc|span|italic|bold|small|underline"
+    r"|inline-formula|tex-math|alternatives|mml:[a-z]+)\b[^<>]*>",
+    re.IGNORECASE,
+)
+_PAPER_TITLE_KEYS: Tuple[str, ...] = ("paper_title", "primary_paper_title", "citing_paper_title", "title")
+
+
+def _clean_title(title: Any) -> Any:
+    """A paper title without markup: entities decoded, known inline tags dropped (text kept)."""
+    if not isinstance(title, str):
+        return title
+    text = re.sub(r"\s+", " ", _TITLE_MARKUP_TAG.sub("", html.unescape(title))).strip()
+    return text or None
+
+
+def _clean_paper_titles(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Clean the paper-title fields of API rows in place (dataset titles are left alone)."""
+    for row in rows:
+        for key in _PAPER_TITLE_KEYS:
+            if key in row:
+                row[key] = _clean_title(row[key])
+    return rows
 
 
 def _paper_mapping_relation_exists(cursor, relation_name: str, relation_type: str = "table") -> bool:
@@ -235,24 +267,105 @@ _CLASSIFICATION_TABLES: List[Tuple[str, str, str]] = [
 ]
 
 
+# Citing papers are counted as *works*: a preprint and its published version,
+# and eLife's version DOIs (10.7554/eLife.84630 and ...84630.3), are one work.
+# A work is its normalized title (markup, entities, punctuation and case
+# removed). Titles shorter than WORK_KEY_MIN_CHARS after that are too generic to
+# merge on, so those papers stay their own work. Defined once, in SQL, so every
+# count and list agrees.
+WORK_KEY_MIN_CHARS = 16
+_WORK_KEY_TAG_RE = (
+    r"</?(i|b|em|strong|u|sup|sub|scp|sc|span|italic|bold|small|underline"
+    r"|inline-formula|tex-math|alternatives|mml:[a-z]+)\y[^<>]*>"
+)
+
+
+def work_key_sql(title_expr: str, doi_expr: str) -> str:
+    """SQL expression for the work a paper belongs to: 't:<title>' or, for short titles, 'd:<doi>'."""
+    norm = (
+        "lower(regexp_replace(regexp_replace(regexp_replace("
+        f"COALESCE({title_expr}, ''), '{_WORK_KEY_TAG_RE}', '', 'gi'), "
+        "'&#?[a-z0-9]+;', '', 'gi'), '[^a-zA-Z0-9]+', '', 'g'))"
+    )
+    return f"(CASE WHEN length({norm}) >= {WORK_KEY_MIN_CHARS} THEN 't:' || {norm} ELSE 'd:' || lower({doi_expr}) END)"
+
+
+# Preprint servers' DOIs: bioRxiv/medRxiv (10.1101 with a numeric suffix; other
+# 10.1101 DOIs are Cold Spring Harbor journals), bioRxiv from 2026 (10.64898),
+# arXiv, Research Square, SSRN, PsyArXiv, OSF Preprints, SocArXiv,
+# Preprints.org, Authorea, TechRxiv, ChemRxiv, engrXiv, ESS Open Archive.
+_PREPRINT_DOI = re.compile(
+    r"^10\.(?:1101/\d|64898/|48550/|21203/|2139/|31234/|31219/|31235/|20944/|22541/"
+    r"|36227/|26434/|31224/|1002/essoar\.)",
+    re.IGNORECASE,
+)
+
+
+def is_preprint_doi(doi: Any) -> bool:
+    return isinstance(doi, str) and bool(_PREPRINT_DOI.match(doi))
+
+
+def pick_published_version(dois: List[str]) -> str:
+    """
+    The version a work is shown as: a published DOI over a preprint's, and an
+    umbrella DOI (eLife's 10.7554/eLife.84630) over its numbered versions.
+    """
+    def rank(doi: str) -> Tuple[bool, bool, str]:
+        lowered = doi.lower()
+        umbrella = any(other.lower().startswith(lowered + ".") for other in dois if other != doi)
+        return (is_preprint_doi(doi), not umbrella, lowered)
+
+    return min(dois, key=rank)
+
+
+def _annotate_versions(
+    rows: List[Dict[str, Any]], *, doi_key: str, work_key: str, date_key: str, prefix: str = ""
+) -> List[Dict[str, Any]]:
+    """
+    Mark the versions of each work among `rows` so the site can list a work
+    once: whether each paper is a preprint (`{prefix}is_preprint`), the DOI the
+    work is shown as (`{prefix}work_doi`) and, when it has several versions,
+    all of them with their dates (`{prefix}work_versions`, oldest first).
+    """
+    versions_by_work: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        doi = row.get(doi_key)
+        if doi:
+            row[work_key] = row.get(work_key) or f"d:{doi.lower()}"
+            versions_by_work.setdefault(row[work_key], {})[doi] = row.get(date_key)
+    for row in rows:
+        doi = row.get(doi_key)
+        if not doi:
+            continue
+        versions = versions_by_work[row[work_key]]
+        row[f"{prefix}is_preprint"] = is_preprint_doi(doi)
+        row[f"{prefix}work_doi"] = pick_published_version(list(versions))
+        row[f"{prefix}work_versions"] = [
+            {"doi": d, "is_preprint": is_preprint_doi(d), "publication_date": versions[d]}
+            for d in sorted(versions, key=lambda d: (versions[d] is None, versions[d] or "", d))
+        ] if len(versions) > 1 else []
+    return rows
+
+
 def _reuse_count_subquery(cursor, dataset_alias: str = "d") -> str:
     """
-    SQL expression: distinct citing papers classified as reuse for one dataset.
+    SQL expression: citing works classified as reuse for one dataset.
 
     One correlated COUNT per source table that exists, summed; "0" when none
-    exist yet. Counts the labels in REUSE_CLASSIFICATIONS. Each count is tied
-    to its archive via `{dataset_alias}.source`, since dataset ids are only
-    unique within an archive.
+    exist yet. Counts the labels in REUSE_CLASSIFICATIONS, and a preprint and
+    its published version once (see work_key_sql). Each count is tied to its
+    archive via `{dataset_alias}.source`, since dataset ids are only unique
+    within an archive.
     """
     parts = []
     for table, id_col, source in _CLASSIFICATION_TABLES:
         if _paper_mapping_relation_exists(cursor, table):
             parts.append(
                 f"(CASE WHEN {dataset_alias}.source = '{source}' THEN "
-                "COALESCE((SELECT COUNT(DISTINCT citing_paper_doi)::int "
-                f"FROM {table} "
-                f"WHERE {id_col} = {dataset_alias}.dataset_id "
-                f"AND classification IN {REUSE_CLASSIFICATIONS_SQL}), 0) ELSE 0 END)"
+                f"COALESCE((SELECT COUNT(DISTINCT {work_key_sql('p.title', 'c.citing_paper_doi')})::int "
+                f"FROM {table} c LEFT JOIN papers p ON p.paper_doi = c.citing_paper_doi "
+                f"WHERE c.{id_col} = {dataset_alias}.dataset_id "
+                f"AND c.classification IN {REUSE_CLASSIFICATIONS_SQL}), 0) ELSE 0 END)"
             )
     return " + ".join(parts) if parts else "0"
 
@@ -632,7 +745,7 @@ async def get_datasets(
     source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, Kaggle, OpenNeuro, PhysioNet, SPARC)"),
     modality: Optional[str] = Query(None, description="Filter by modality (comma-separated for AND)"),
     search: Optional[str] = Query(None, description="Search in title and description"),
-    sort_by: str = Query("published", description="Sort column (published, papers, title, id, source, modality)"),
+    sort_by: str = Query("published", description="Sort column (published, papers, reuse, title, id, source, modality)"),
     sort_order: str = Query("desc", description="Sort order (asc, desc)"),
     limit: int = Query(25, ge=1, le=200, description="Max number of datasets to return"),
     offset: int = Query(0, ge=0, description="Number of datasets to skip"),
@@ -690,11 +803,16 @@ async def get_datasets(
                 cursor.execute("""
                     SELECT column_name FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = %s
-                      AND column_name IN ('authors', 'num_subjects')
+                      AND column_name IN ('authors', 'num_subjects', 'created_at_precision')
                 """, (table_name,))
                 ds_opt_cols = {r["column_name"] for r in cursor.fetchall()}
                 authors_expr = "authors," if "authors" in ds_opt_cols else "NULL::jsonb AS authors,"
                 num_subjects_expr = "num_subjects," if "num_subjects" in ds_opt_cols else "NULL::integer AS num_subjects,"
+                # "year" when only the publication year is known (CRCNS), so the page shows "2011".
+                precision_expr = (
+                    "d.created_at_precision," if "created_at_precision" in ds_opt_cols
+                    else "NULL::text AS created_at_precision,"
+                )
 
                 # reuse_count: citing papers the LLM classified as reusing the dataset's
                 # data (see REUSE_CLASSIFICATIONS). The per-source classification
@@ -715,6 +833,7 @@ async def get_datasets(
                         {authors_expr.replace('authors', 'd.authors') if 'authors' in ds_opt_cols else authors_expr}
                         {num_subjects_expr.replace('num_subjects', 'd.num_subjects') if 'num_subjects' in ds_opt_cols else num_subjects_expr}
                         d.created_at,
+                        {precision_expr}
                         d.updated_at,
                         ({reuse_subquery}) AS reuse_count
                     FROM {table_name} d
@@ -752,6 +871,8 @@ async def get_datasets(
                 sort_column_by_key = {
                     "published": "d.created_at",
                     "papers": f"(COALESCE(d.papers, 0) + ({reuse_subquery}))",
+                    # Citing works classified as reuse (a preprint and its published version once).
+                    "reuse": f"({reuse_subquery})",
                     "title": "d.title",
                     "id": "d.dataset_id",
                     "source": "d.source",
@@ -1024,6 +1145,354 @@ async def get_dataset_stats(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+# --- Dataset reuse metrics ---------------------------------------------------
+
+# Paper-mapping tables per archive: the table-name prefix ({prefix}_dataset,
+# {prefix}_paper_map, {prefix}_paper_citations,
+# {prefix}_paper_citation_classifications) and their dataset id column.
+_ARCHIVE_PAPER_TABLES: Dict[str, Tuple[str, str]] = {
+    "DANDI": ("dandi", "dandi_id"),
+    "OpenNeuro": ("openneuro", "openneuro_id"),
+    "CRCNS": ("crcns", "crcns_id"),
+    "SPARC": ("sparc", "sparc_id"),
+}
+
+# A citing paper is labelled once per primary paper it cites. Its label for the
+# dataset is the first of these it has (the order the citation lists use).
+LABEL_PRECEDENCE: Tuple[str, ...] = ("REUSE", "PRIMARY", "MENTION", "NEITHER")
+
+# papers.text_status values meaning the mapping found no full text to classify.
+NO_TEXT_STATUSES: Tuple[str, ...] = ("metadata_only", "unavailable")
+
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
+
+
+def _author_key(name: Any) -> Optional[Tuple[str, str]]:
+    """
+    Loose identity for an author name: (last word of the surname, first initial).
+
+    Reads both "Last, First M." (archive metadata) and "First M. Last"
+    (OpenAlex). Accents, apostrophes, hyphens and stray invisible characters
+    are dropped, so "Pirio-Richardson, Sarah" and "Sarah Pirio Richardson"
+    match. None when the name lacks a surname or a first name.
+    """
+    if isinstance(name, dict):
+        name = name.get("name")
+    if not isinstance(name, str):
+        return None
+    text = unicodedata.normalize("NFKD", name)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    text = re.sub(r"['’]", "", text)
+    if "," in text:
+        last, _, first = text.partition(",")
+        last_words = re.sub(r"[^a-z]+", " ", last).split()
+        first_words = re.sub(r"[^a-z]+", " ", first).split()
+    else:
+        words = re.sub(r"[^a-z]+", " ", text).split()
+        while len(words) > 2 and words[-1] in _NAME_SUFFIXES:
+            words.pop()
+        last_words, first_words = words[-1:], words[:-1]
+    if not last_words or not first_words:
+        return None
+    return last_words[-1], first_words[0][0]
+
+
+def _author_keys(names: Any) -> set:
+    if not isinstance(names, list):
+        return set()
+    return {key for key in (_author_key(n) for n in names) if key}
+
+
+def _first_author(authors: Any) -> Optional[str]:
+    if not isinstance(authors, list) or not authors:
+        return None
+    first = authors[0]
+    if isinstance(first, dict):
+        first = first.get("name")
+    return first if isinstance(first, str) else None
+
+
+def _year_of(publication_year: Any, publication_date: Any) -> Optional[int]:
+    if isinstance(publication_year, int):
+        return publication_year
+    if isinstance(publication_date, str) and re.match(r"\d{4}", publication_date):
+        return int(publication_date[:4])
+    return None
+
+
+def _author_id_set(values: Any) -> set:
+    return {v for v in values if isinstance(v, str) and v} if isinstance(values, list) else set()
+
+
+def build_reuse_metrics(
+    edges: List[Dict[str, Any]],
+    *,
+    dataset_authors: List[Any],
+    primary_papers: List[Dict[str, Any]],
+    published_year: Optional[int],
+    current_year: int,
+) -> Dict[str, Any]:
+    """
+    Reuse metrics for one dataset from its citation edges.
+
+    `edges` has one row per (primary paper, citing paper): the edge's
+    classification, status and same_lab, and the citing paper's work_key (see
+    work_key_sql), title, publication date and year, text_status and (on REUSE
+    rows) authors and OpenAlex author_ids. `dataset_authors` are the names the
+    archive lists; `primary_papers` are the dataset's papers' `authors` and
+    `author_ids`.
+
+    Counts are of citing works: the versions of a paper (a preprint and its
+    published version) count once, under the strongest label any version has,
+    dated by the earliest version and shown as the published one.
+
+    A reuse counts as same lab when the classifier said so; or it shares an
+    OpenAlex author id with the primary papers (when both sides have ids); or
+    an author's name matches the archive's author list (which has no ids), or
+    the primary papers' authors when ids are missing. Otherwise it is
+    independent. Years run from the dataset's publication (or the first dated
+    paper, if earlier) to the current year.
+    """
+    papers: Dict[str, Dict[str, Any]] = {}
+    for row in edges:
+        paper = papers.setdefault(
+            row["citing_paper_doi"], {"labels": set(), "statuses": set(), "same_lab": set()}
+        )
+        if row.get("classification"):
+            paper["labels"].add(row["classification"])
+        if row.get("status"):
+            paper["statuses"].add(row["status"])
+        if row.get("classification") == "REUSE" and row.get("same_lab") is not None:
+            paper["same_lab"].add(bool(row["same_lab"]))
+        for key in ("work_key", "publication_date", "publication_year", "text_status", "title", "authors", "author_ids"):
+            if row.get(key) is not None:
+                paper.setdefault(key, row[key])
+
+    works: Dict[str, List[str]] = {}
+    for doi, paper in papers.items():
+        works.setdefault(paper.get("work_key") or f"d:{doi.lower()}", []).append(doi)
+
+    def date_of(doi: str) -> Optional[str]:
+        paper = papers[doi]
+        year = paper.get("publication_year")
+        return paper.get("publication_date") or (str(year) if year else None)
+
+    def oldest_first(dois: List[str]) -> List[str]:
+        return sorted(dois, key=lambda d: (date_of(d) is None, date_of(d) or "", d))
+
+    dataset_keys = _author_keys(dataset_authors)
+    primary_keys = set().union(*(_author_keys(p.get("authors")) for p in primary_papers))
+    primary_ids = set().union(*(_author_id_set(p.get("author_ids")) for p in primary_papers))
+    coverage = {"citing_papers": len(works), "classified": 0, "no_full_text": 0, "pending": 0}
+    by_year: Dict[int, Dict[str, int]] = {}
+    undated = {"reuse": 0, "mentions": 0}
+    reuse_papers: List[Dict[str, Any]] = []
+    mention_count = 0
+    for dois in works.values():
+        versions = [papers[d] for d in dois]
+        labels = set().union(*(v["labels"] for v in versions))
+        label = next((l for l in LABEL_PRECEDENCE if l in labels), None)
+        if label:
+            coverage["classified"] += 1
+        elif all("no_full_text" in v["statuses"] or v.get("text_status") in NO_TEXT_STATUSES for v in versions):
+            coverage["no_full_text"] += 1
+        else:
+            coverage["pending"] += 1
+        if label not in ("REUSE", "MENTION"):
+            continue
+
+        bucket = "reuse" if label == "REUSE" else "mentions"
+        first = oldest_first(dois)[0]
+        year = _year_of(papers[first].get("publication_year"), papers[first].get("publication_date"))
+        if year is None:
+            undated[bucket] += 1
+        else:
+            by_year.setdefault(year, {"reuse": 0, "mentions": 0})[bucket] += 1
+        if label == "MENTION":
+            mention_count += 1
+            continue
+
+        shown = pick_published_version(dois)
+        authors = next(
+            (papers[d]["authors"] for d in [shown, *dois] if isinstance(papers[d].get("authors"), list)), []
+        )
+        citing_ids = set().union(*(_author_id_set(v.get("author_ids")) for v in versions))
+        citing_keys = set().union(*(_author_keys(v.get("authors")) for v in versions))
+        ids_known = bool(primary_ids and citing_ids)
+        basis = []
+        if any(True in v["same_lab"] for v in versions):
+            basis.append("classifier")
+        if ids_known and citing_ids & primary_ids:
+            basis.append("author_ids")
+        if citing_keys & dataset_keys or (not ids_known and citing_keys & primary_keys):
+            basis.append("author_names")
+        reuse_papers.append({
+            "doi": shown,
+            "title": papers[shown].get("title") or next((v["title"] for v in versions if v.get("title")), None),
+            "first_author": _first_author(authors),
+            "author_count": len(authors),
+            "publication_date": papers[shown].get("publication_date"),
+            "first_date": date_of(first),
+            "versions": [
+                {"doi": d, "is_preprint": is_preprint_doi(d), "publication_date": date_of(d)}
+                for d in oldest_first(dois)
+            ] if len(dois) > 1 else [],
+            "same_lab": bool(basis),
+            "same_lab_basis": basis,
+        })
+
+    reuse_papers.sort(key=lambda p: (p["first_date"] or "", p["doi"]), reverse=True)
+    same_lab_count = sum(1 for p in reuse_papers if p["same_lab"])
+    known_years = [y for y in (published_year, min(by_year, default=None)) if y is not None]
+    per_year = []
+    if known_years:
+        start, end = min(known_years), max([current_year, *by_year])
+        per_year = [
+            {"year": y, **by_year.get(y, {"reuse": 0, "mentions": 0})} for y in range(start, end + 1)
+        ]
+    return {
+        "reuse_count": len(reuse_papers),
+        "independent_reuse_count": len(reuse_papers) - same_lab_count,
+        "same_lab_reuse_count": same_lab_count,
+        "mention_count": mention_count,
+        "last_reuse": reuse_papers[0] if reuse_papers else None,
+        "per_year": per_year,
+        "undated": undated,
+        "coverage": coverage,
+        "reuse_papers": reuse_papers,
+    }
+
+
+def _fetch_metric_edges(cursor, prefix: str, id_col: str, dataset_id: str) -> List[Dict[str, Any]]:
+    """The dataset's citation edges in the shape build_reuse_metrics reads."""
+    citations = f"{prefix}_paper_citations"
+    classifications = f"{prefix}_paper_citation_classifications"
+    if not (_paper_mapping_relation_exists(cursor, citations) and _paper_mapping_relation_exists(cursor, "papers")):
+        return []
+    has_labels = _paper_mapping_relation_exists(cursor, classifications)
+    if has_labels:
+        label_cols = sql.SQL("cc.classification, cc.status, cc.same_lab")
+        label_join = sql.SQL(
+            "LEFT JOIN {cls} cc ON cc.{id} = c.{id} "
+            "AND cc.primary_paper_doi = c.primary_paper_doi "
+            "AND cc.citing_paper_doi = c.citing_paper_doi"
+        ).format(cls=sql.Identifier(classifications), id=sql.Identifier(id_col))
+        is_reuse = sql.SQL("cc.classification = 'REUSE'")
+    else:
+        label_cols = sql.SQL("NULL::text AS classification, NULL::text AS status, NULL::boolean AS same_lab")
+        label_join = sql.SQL("")
+        is_reuse = sql.SQL("FALSE")
+    paper_columns = _table_columns(cursor, "papers")
+    text_status = sql.SQL("p.text_status" if "text_status" in paper_columns else "NULL::text")
+    author_ids = sql.SQL("p.author_ids" if "author_ids" in paper_columns else "NULL::jsonb")
+    query = sql.SQL(
+        """
+        SELECT
+            c.citing_paper_doi,
+            {label_cols},
+            {work_key} AS work_key,
+            p.title,
+            p.publication_date,
+            p.publication_year,
+            {text_status} AS text_status,
+            CASE WHEN {is_reuse} THEN p.authors END AS authors,
+            CASE WHEN {is_reuse} THEN {author_ids} END AS author_ids
+        FROM {citations} c
+        {label_join}
+        LEFT JOIN papers p ON p.paper_doi = c.citing_paper_doi
+        WHERE c.{id} = %s;
+        """
+    ).format(
+        label_cols=label_cols,
+        work_key=sql.SQL(work_key_sql("p.title", "c.citing_paper_doi")),
+        text_status=text_status,
+        author_ids=author_ids,
+        is_reuse=is_reuse,
+        citations=sql.Identifier(citations),
+        label_join=label_join,
+        id=sql.Identifier(id_col),
+    )
+    cursor.execute(query, (dataset_id,))
+    return _clean_paper_titles([dict(r) for r in cursor.fetchall()])
+
+
+# Registered before the detail route: its `{dataset_id:path}` would otherwise
+# read "<id>/metrics" as the dataset id.
+@app.get("/api/datasets/{source}/{dataset_id:path}/metrics")
+async def get_dataset_metrics(source: str, dataset_id: str):
+    """
+    Reuse metrics for one dataset: reuse, independent reuse, mentions, counts
+    per year, the latest reuse and how many citing papers were classified
+    (see build_reuse_metrics). Archives without paper mapping answer
+    {"tracked": false}.
+    """
+    canonical_source = {s.lower(): s for s in ALLOWED_SOURCES}.get(source.lower())
+    if canonical_source is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    base = {"source": canonical_source, "dataset_id": dataset_id}
+    if canonical_source not in _ARCHIVE_PAPER_TABLES:
+        return {**base, "tracked": False}
+    prefix, id_col = _ARCHIVE_PAPER_TABLES[canonical_source]
+    dataset_table, map_table = f"{prefix}_dataset", f"{prefix}_paper_map"
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cursor:
+                if not _paper_mapping_relation_exists(cursor, dataset_table):
+                    raise HTTPException(status_code=404, detail="Dataset not found")
+                columns = _table_columns(cursor, dataset_table)
+                authors_col = sql.SQL("authors" if "authors" in columns else "NULL::jsonb AS authors")
+                precision_col = sql.SQL(
+                    "created_at_precision" if "created_at_precision" in columns else "NULL::text AS created_at_precision"
+                )
+                cursor.execute(
+                    sql.SQL("SELECT created_at, {precision}, {authors} FROM {table} WHERE dataset_id = %s LIMIT 1;").format(
+                        precision=precision_col, authors=authors_col, table=sql.Identifier(dataset_table)
+                    ),
+                    (dataset_id,),
+                )
+                dataset = cursor.fetchone()
+                if not dataset:
+                    raise HTTPException(status_code=404, detail="Dataset not found")
+
+                dataset_authors: List[Any] = list(dataset["authors"]) if isinstance(dataset["authors"], list) else []
+                primary_papers: List[Dict[str, Any]] = []
+                if _paper_mapping_relation_exists(cursor, map_table) and _paper_mapping_relation_exists(cursor, "papers"):
+                    author_ids_col = sql.SQL(
+                        "p.author_ids" if "author_ids" in _table_columns(cursor, "papers") else "NULL::jsonb AS author_ids"
+                    )
+                    cursor.execute(
+                        sql.SQL(
+                            "SELECT p.authors, {author_ids} FROM {map} m JOIN papers p ON p.paper_doi = m.paper_doi "
+                            "WHERE m.{id} = %s;"
+                        ).format(author_ids=author_ids_col, map=sql.Identifier(map_table), id=sql.Identifier(id_col)),
+                        (dataset_id,),
+                    )
+                    primary_papers = [dict(row) for row in cursor.fetchall()]
+                edges = _fetch_metric_edges(cursor, prefix, id_col, dataset_id)
+    except HTTPException:
+        raise
+    except psycopg.Error as e:
+        logger.exception("Database query error in /api/datasets/%s/%s/metrics", canonical_source, dataset_id)
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+
+    created_at = dataset["created_at"]
+    metrics = build_reuse_metrics(
+        edges,
+        dataset_authors=dataset_authors,
+        primary_papers=primary_papers,
+        published_year=created_at.year if created_at else None,
+        current_year=datetime.now(timezone.utc).year,
+    )
+    return {
+        **base,
+        "tracked": True,
+        "published": created_at.date().isoformat() if created_at else None,
+        # "year" when only the publication year is known (CRCNS); null means a real date.
+        "published_precision": dataset["created_at_precision"],
+        **metrics,
+    }
+
+
 @app.get("/api/datasets/{source}/{dataset_id:path}")
 async def get_dataset_detail(source: str, dataset_id: str):
     """
@@ -1054,7 +1523,8 @@ async def get_dataset_detail(source: str, dataset_id: str):
                 # Build column list dynamically so missing columns don't break the query
                 base_cols = ["source", "dataset_id", "title", "modality", "papers", "url",
                              "description", "created_at", "updated_at"]
-                optional_cols = ["full_description", "authors", "contributors", "license", "num_subjects"]
+                optional_cols = ["full_description", "authors", "contributors", "license", "num_subjects",
+                                 "created_at_precision"]
                 cursor.execute(
                     """SELECT column_name FROM information_schema.columns
                        WHERE table_schema = 'public' AND table_name = %s;""",
@@ -1105,6 +1575,7 @@ async def get_dataset_detail(source: str, dataset_id: str):
                             {p_country}
                             p.publication_date,
                             p.publication_year,
+                            {work_key_sql('p.title', 'map.paper_doi')} AS work_key,
                             COUNT(DISTINCT ce.citing_paper_doi)::int AS citing_papers_count
                         FROM dataset_map map
                         LEFT JOIN papers p ON p.paper_doi = map.paper_doi
@@ -1122,9 +1593,37 @@ async def get_dataset_detail(source: str, dataset_id: str):
                         ORDER BY COALESCE(p.publication_date, '') DESC, map.paper_doi ASC;
                     """
                     cursor.execute(primary_papers_query, [source, dataset_id])
-                    primary_papers = [dict(r) for r in cursor.fetchall()]
+                    primary_papers = _annotate_versions(
+                        _clean_paper_titles([dict(r) for r in cursor.fetchall()]),
+                        doi_key="paper_doi", work_key="work_key", date_key="publication_date",
+                    )
 
-                    c_journal = "p_citing.journal AS citing_journal," if "journal" in paper_opt_cols else "NULL AS citing_journal,"
+                    # What the site shows per primary paper: the works citing any
+                    # version of it, so a paper citing both a preprint and its
+                    # published version counts once. Counted over every edge,
+                    # not just the citations returned below.
+                    citing_works_query = f"""
+                        {_paper_mapping_ctes(cursor)}
+                        SELECT
+                            {work_key_sql('p.title', 'map.paper_doi')} AS work_key,
+                            COUNT(DISTINCT {work_key_sql('p_citing.title', 'ce.citing_paper_doi')})::int
+                                AS citing_works_count
+                        FROM dataset_map map
+                        LEFT JOIN papers p ON p.paper_doi = map.paper_doi
+                        JOIN citation_edges ce
+                          ON ce.source = map.source
+                         AND ce.dataset_id = map.dataset_id
+                         AND ce.primary_paper_doi = map.paper_doi
+                        LEFT JOIN papers p_citing ON p_citing.paper_doi = ce.citing_paper_doi
+                        WHERE map.source = %s AND map.dataset_id = %s
+                        GROUP BY 1;
+                    """
+                    cursor.execute(citing_works_query, [source, dataset_id])
+                    citing_works = {r["work_key"]: r["citing_works_count"] for r in cursor.fetchall()}
+                    for paper in primary_papers:
+                        paper["citing_works_count"] = citing_works.get(paper.get("work_key"), 0)
+
+                    c_journal ="p_citing.journal AS citing_journal," if "journal" in paper_opt_cols else "NULL AS citing_journal,"
                     c_country = "p_citing.senior_author_country AS citing_senior_author_country," if "senior_author_country" in paper_opt_cols else "NULL AS citing_senior_author_country,"
 
                     citations_query = f"""
@@ -1134,6 +1633,7 @@ async def get_dataset_detail(source: str, dataset_id: str):
                             p_primary.title AS primary_paper_title,
                             ce.citing_paper_doi,
                             p_citing.title AS citing_paper_title,
+                            {work_key_sql('p_citing.title', 'ce.citing_paper_doi')} AS citing_work_key,
                             p_citing.authors AS citing_authors,
                             {c_journal}
                             {c_country}
@@ -1172,7 +1672,11 @@ async def get_dataset_detail(source: str, dataset_id: str):
                         LIMIT 250;
                     """
                     cursor.execute(citations_query, [source, dataset_id])
-                    citations = [dict(r) for r in cursor.fetchall()]
+                    citations = _annotate_versions(
+                        _clean_paper_titles([dict(r) for r in cursor.fetchall()]),
+                        doi_key="citing_paper_doi", work_key="citing_work_key",
+                        date_key="citing_publication_date", prefix="citing_",
+                    )
 
                 except HTTPException:
                     pass
@@ -1575,7 +2079,7 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                     ORDER BY COALESCE(p.publication_date, '') DESC, map.paper_doi ASC;
                 """
                 cursor.execute(primary_papers_query, [source, dataset_id, source, dataset_id, source, dataset_id])
-                primary_papers = [dict(row) for row in cursor.fetchall()]
+                primary_papers = _clean_paper_titles([dict(row) for row in cursor.fetchall()])
 
                 c_text_status = (
                     "p_citing.text_status AS citing_text_status,"
@@ -1634,7 +2138,7 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                     LIMIT 250;
                 """
                 cursor.execute(citations_query, [source, dataset_id])
-                citations = [dict(row) for row in cursor.fetchall()]
+                citations = _clean_paper_titles([dict(row) for row in cursor.fetchall()])
 
                 return {
                     "dataset": dict(dataset),
@@ -1732,7 +2236,7 @@ async def get_paper_mapping_citations(
                     LIMIT %s OFFSET %s;
                 """
                 cursor.execute(query, params + [limit, offset])
-                return {"citations": [dict(row) for row in cursor.fetchall()], "count": total}
+                return {"citations": _clean_paper_titles([dict(row) for row in cursor.fetchall()]), "count": total}
     except HTTPException:
         raise
     except psycopg.Error as e:

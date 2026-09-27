@@ -6,7 +6,7 @@ with DataCite under DOI prefix 10.6080. We page through DataCite for the
 listing, then resolve each DOI through doi.org to recover the friendly CRCNS
 code (e.g. pvc-1, hc-3) and the canonical landing-page URL.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
 import json
 import logging
@@ -135,16 +135,34 @@ def _first_description(attrs: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _created_date(attrs: Dict[str, Any]) -> Optional[datetime]:
+def _published_date(attrs: Dict[str, Any]) -> Tuple[Optional[datetime], Optional[str]]:
+    """
+    When the dataset was published, and how precisely that is known: "day" or
+    "year" (stored in created_at_precision, so the site can show "2011" rather
+    than a made-up January 1st).
+
+    A "Created" date in the DataCite record wins. CRCNS records have none and
+    give only a publication year, so the DOI's registration time stands in for
+    the day when it falls in that year (122 of the 147 CRCNS DOIs in 2026-09).
+    A DOI registered in another year was minted after the fact: only the year
+    is known, stored as January 1st.
+    """
     for d in attrs.get("dates") or []:
         if isinstance(d, dict) and d.get("dateType") == "Created":
             parsed = _parse_iso8601(d.get("date"))
             if parsed:
-                return parsed
+                return parsed, "day" if len(str(d.get("date"))) >= 10 else "year"
     year = attrs.get("publicationYear")
-    if isinstance(year, int) and year > 0:
-        return datetime(year, 1, 1)
-    return None
+    if isinstance(year, str) and year.isdigit():
+        year = int(year)
+    if not isinstance(year, int) or year <= 0:
+        return None, None
+    registered = _parse_iso8601(attrs.get("registered"))
+    if registered and registered.year == year:
+        if registered.tzinfo is not None:
+            registered = registered.astimezone(timezone.utc).replace(tzinfo=None)
+        return registered, "day"
+    return datetime(year, 1, 1), "year"
 
 
 def _derive_modality(title: Optional[str], description: Optional[str]) -> Optional[str]:
@@ -181,7 +199,7 @@ def parse_datacite_record(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     creators_raw = attrs.get("creators") or []
     creators = [c.get("name") for c in creators_raw if isinstance(c, dict) and c.get("name")]
 
-    created_at = _created_date(attrs)
+    created_at, created_at_precision = _published_date(attrs)
     publication_year = attrs.get("publicationYear")
 
     # At this stage we don't yet have the friendly code; use the DOI so that
@@ -201,6 +219,7 @@ def parse_datacite_record(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "license": None,
         "num_subjects": None,
         "created_at": created_at,
+        "created_at_precision": created_at_precision,
         "updated_at": None,
         "version": str(publication_year) if publication_year else None,
     }
@@ -225,6 +244,7 @@ def create_crcns_table(**context):
         license TEXT,
         num_subjects INTEGER,
         created_at TIMESTAMP,
+        created_at_precision TEXT,
         updated_at TIMESTAMP,
         version VARCHAR(64)
     );
@@ -249,6 +269,7 @@ def create_crcns_table(**context):
                     ALTER TABLE crcns_dataset ADD COLUMN IF NOT EXISTS contributors JSONB;
                     ALTER TABLE crcns_dataset ADD COLUMN IF NOT EXISTS license TEXT;
                     ALTER TABLE crcns_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;
+                    ALTER TABLE crcns_dataset ADD COLUMN IF NOT EXISTS created_at_precision TEXT;
                 """)
                 conn.commit()
         logger.info("Successfully created crcns_dataset table (or it already exists)")
@@ -438,13 +459,13 @@ def insert_crcns_datasets(**context):
     INSERT INTO crcns_dataset (
         dataset_id, doi, title, modality, citations, papers, url,
         description, full_description, authors, contributors, license,
-        num_subjects, created_at, updated_at, version
+        num_subjects, created_at, created_at_precision, updated_at, version
     )
     VALUES (
         %(dataset_id)s, %(doi)s, %(title)s, %(modality)s, %(citations)s,
         %(papers)s, %(url)s, %(description)s, %(full_description)s,
         %(authors)s, %(contributors)s, %(license)s, %(num_subjects)s,
-        %(created_at)s, %(updated_at)s, %(version)s
+        %(created_at)s, %(created_at_precision)s, %(updated_at)s, %(version)s
     )
     ON CONFLICT (dataset_id) DO UPDATE SET
         doi = COALESCE(EXCLUDED.doi, crcns_dataset.doi),
@@ -460,6 +481,7 @@ def insert_crcns_datasets(**context):
         license = COALESCE(EXCLUDED.license, crcns_dataset.license),
         num_subjects = COALESCE(EXCLUDED.num_subjects, crcns_dataset.num_subjects),
         created_at = EXCLUDED.created_at,
+        created_at_precision = EXCLUDED.created_at_precision,
         updated_at = EXCLUDED.updated_at,
         version = EXCLUDED.version
     RETURNING (xmax = 0) AS inserted;
@@ -477,6 +499,8 @@ def insert_crcns_datasets(**context):
                         _rekey_doi_rows(cursor, doi, code)
                 for dataset in datasets:
                     row = dict(dataset)
+                    # Records fetched by a run from before the column existed lack it.
+                    row.setdefault("created_at_precision", None)
                     authors_val = row.get("authors")
                     row["authors"] = json.dumps(authors_val) if authors_val is not None else None
                     contributors_val = row.get("contributors")

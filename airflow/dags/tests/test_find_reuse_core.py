@@ -177,13 +177,25 @@ class TestNormalizeDoi:
         ("doi:10.1101/2024.04.23.590673v2", "10.1101/2024.04.23.590673"),
         ("10.64898/2026.06.05.730421v1", "10.64898/2026.06.05.730421"),
         ("10.64898/2026.06.05.730421v1.full", "10.64898/2026.06.05.730421"),
+        # Markdown emphasis around a DOI in a README (OpenNeuro ds008022).
+        ("10.1038/s41593-025-02037-7**", "10.1038/s41593-025-02037-7"),
+        ("10.1038/s41593-025-02037-7_", "10.1038/s41593-025-02037-7"),
+        ("10.1016/j.neuron.2019.09.045`", "10.1016/j.neuron.2019.09.045"),
     ])
     def test_cleans_html_badges_versions_and_punctuation(self, raw, expected):
         assert F.normalize_doi(raw) == expected
 
-    @pytest.mark.parametrize("raw", ["10.1093/", "10.1093", "10.1101/2024", "10.64898/2026", "", None, "not a doi"])
+    @pytest.mark.parametrize("raw", [
+        "10.1093/", "10.1093", "10.1101/2024", "10.64898/2026", "", None, "not a doi",
+        # bioRxiv DOIs cut after the date part (OpenNeuro ds003758).
+        "10.1101/2021.02.12", "10.1101/2021.02", "10.64898/2026.06.05",
+    ])
     def test_fragments_are_rejected(self, raw):
         assert F.normalize_doi(raw) is None
+
+    def test_full_biorxiv_dois_survive_the_date_guard(self):
+        assert F.normalize_doi("10.1101/2021.02.12.430858") == "10.1101/2021.02.12.430858"
+        assert F.normalize_doi("10.1101/430858") == "10.1101/430858"
 
     def test_legitimate_dois_are_untouched(self):
         for doi in ("10.7554/eLife.06619.001", "10.1016/j.neuron.2019.09.045", "10.5281/zenodo.3854034"):
@@ -192,6 +204,41 @@ class TestNormalizeDoi:
     def test_extraction_stops_at_html_tags(self):
         text = 'See <a href="https://doi.org/10.1038/nature14178">10.1038/nature14178</a> and 10.3389/fnsys.2018.00065<br>'
         assert F.extract_dois_from_text(text) == ["10.1038/nature14178", "10.3389/fnsys.2018.00065"]
+
+
+class TestDropCutOffPapers:
+    """A DOI cut in half by a truncated description must not become a primary paper."""
+
+    def test_unresolved_fragment_of_another_doi_is_dropped(self):
+        # OpenNeuro ds003509: the 256-character description ends mid-DOI.
+        text = "EEG published here: 10.1016/j.neur"
+        readme = "EEG published here: 10.1016/j.neuropsychologia.2018.05.020."
+        dois = F.extract_dois_from_text(text) + F.extract_dois_from_text(readme)
+        papers = [
+            {"doi": "10.1016/j.neur", "title": None, "openalex_id": None},
+            {"doi": "10.1016/j.neuropsychologia.2018.05.020", "title": "Frontal theta", "openalex_id": "W1"},
+        ]
+        assert dois == ["10.1016/j.neur", "10.1016/j.neuropsychologia.2018.05.020"]
+        assert [p["doi"] for p in F.drop_cut_off_papers(papers)] == ["10.1016/j.neuropsychologia.2018.05.020"]
+
+    def test_a_resolved_doi_is_kept_even_if_a_longer_string_starts_with_it(self):
+        papers = [
+            {"doi": "10.1038/s41593-025-02037-7", "title": "Stable cortical body maps", "openalex_id": None},
+            {"doi": "10.1038/s41593-025-02037-7.pdf", "title": None, "openalex_id": None},
+        ]
+        assert [p["doi"] for p in F.drop_cut_off_papers(papers)] == [
+            "10.1038/s41593-025-02037-7", "10.1038/s41593-025-02037-7.pdf"]
+
+    def test_unresolved_dois_without_a_longer_match_are_kept(self):
+        papers = [{"doi": "10.1093/cercor/bhab001", "title": None, "openalex_id": None}]
+        assert F.drop_cut_off_papers(papers) == papers
+
+    def test_prefix_match_ignores_case(self):
+        papers = [
+            {"doi": "10.7554/ELIFE", "title": None, "openalex_id": None},
+            {"doi": "10.7554/eLife.18834", "title": None, "openalex_id": "W2"},
+        ]
+        assert [p["doi"] for p in F.drop_cut_off_papers(papers)] == ["10.7554/eLife.18834"]
 
 
 class TestStripNul:

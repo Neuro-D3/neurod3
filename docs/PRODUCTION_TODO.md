@@ -335,6 +335,52 @@ e2-standard-2.
     - Progress logging is done (`utils/batch_progress.py`).
     - Still to do: time per source for full-text fetches, and a dashboard for
       citing papers per minute, the OpenAlex budget and the text hit rate.
+20. **Find out why mapping doesn't re-resolve ds002675's primary paper.**
+    - Every stack integration test run, local and staging (first staging run
+      2026-09-26), warns: "OpenNeuro verify_map: primary paper mapping was
+      not refreshed by this run for ['ds002675']". All other stages and all
+      8 known pairs pass.
+    - ds002675's primary paper is a medRxiv preprint
+      (`10.1101/2020.01.10.20017004`). The existing mapping row is kept, so
+      the data looks fine, but the run doesn't touch it.
+    - Check whether the OpenNeuro mapping can't resolve that preprint (DOI
+      lookup, preprint vs. published version in OpenAlex, dataset metadata)
+      or resolves it and skips the write because nothing changed.
+    - If it's a real resolution gap, fix it (other preprint primaries are
+      probably affected too). If the data is fine, make "not refreshed, but
+      a primary already exists" a note in the report instead of a warning,
+      so the test isn't pink on every run.
+21. **Catch false-positive reuse labels before they reach the Dataset impact card.**
+    - **Why:** dataset pages now show reuse counts to dataset authors, so a
+      wrong REUSE is visible and inflates the headline number. Two known
+      cases, both a sibling dataset from the same lab:
+      - DANDI 000362 ← "Deep-prior ODEs augment fluorescence imaging with
+        chemical sensors" (`10.1038/s41467-024-53232-2`). find_reuse's human
+        reviewer: it reuses Dandiset 000168, not 000362 (answer key
+        NOT_REUSE). It was taken out of the stack test for this reason.
+      - OpenNeuro ds003509 (SimonConflict) ← Farashi et al. 2023
+        (`10.1186/s12883-023-03468-0`). The paper used the "Parkinson's
+        Rests" data from predict.cs.unm.edu, the Cavanagh lab's site, while
+        ds003509 is that lab's Simon-task dataset. Classifier: REUSE,
+        `source_archive` "Lab website".
+    - **Checks to build:**
+      - **Identifier in the text:** does the full text name this dataset
+        (accession such as `ds003509` or `DANDI:000362`, its DOI or URL)? A
+        REUSE with none gets a "needs review" flag.
+      - **Source vs. archive:** flag REUSE labels whose `source_archive`
+        isn't the dataset's archive ("Lab website", "GigaScience Database" on
+        an OpenNeuro dataset). Some are legitimate mirrors, so flag rather
+        than relabel.
+      - **Sibling datasets:** when the dataset's authors have other datasets,
+        check which one the text identifies (000168 vs 000362); relabel or
+        flag.
+      - **Benchmark:** add both pairs, and any the checks confirm, as hard
+        cases.
+      - **Review queue:** list flagged labels with their evidence quote on
+        the paper-mapping dashboard; a reviewer confirms or overrides, and an
+        override survives reclassification (see item 9, label versioning).
+      - **Metrics:** decide whether flagged, unreviewed reuses count (for
+        example count them, and show "N unverified" on the card).
 
 ## Projected cost
 

@@ -59,6 +59,16 @@ export function statusBadgeClass(status?: string | null): string {
   return 'bg-slate-500/10 text-slate-700 ring-slate-400/30';
 }
 
+/**
+ * Solid fills in the same hues as statusBadgeClass, for charts and dots: reuse
+ * is dark enough to carry white text, mentions light enough for dark text.
+ */
+export const LABEL_FILL: Record<'REUSE' | 'MENTION' | 'PRIMARY', string> = {
+  REUSE: 'bg-emerald-700',
+  MENTION: 'bg-sky-300',
+  PRIMARY: 'bg-blue-500',
+};
+
 /** Human-readable text for a classification or status bucket. */
 export function statusLabel(status?: string | null): string {
   const s = (status || '').trim();

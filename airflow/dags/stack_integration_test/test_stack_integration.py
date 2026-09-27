@@ -324,14 +324,25 @@ class TestCheckApi:
         def json(self):
             return self._body
 
+    METRICS = {"tracked": True, "coverage": {"citing_papers": 1}, "reuse_count": 0, "mention_count": 1,
+               "reuse_papers": []}
+
     @pytest.fixture
     def run(self, monkeypatch):
         monkeypatch.setattr(S, "_record", lambda *a, **k: None)
-        monkeypatch.setitem(S.ARCHIVES, "dandi", {"label": "DANDI", "datasets": [{"dataset_id": "1"}], "pairs": []})
 
-        def go(citations):
+        def go(citations, pairs=(), metrics=None, metrics_status=200, sorted_rows=({"reuse_count": 0},)):
+            monkeypatch.setitem(S.ARCHIVES, "dandi", {
+                "label": "DANDI", "datasets": [{"dataset_id": "1"}], "pairs": list(pairs)})
             body = {"dataset": {"id": "1"}, "primary_papers": [{"doi": "10.1/p"}], "citations": citations}
-            monkeypatch.setattr(S.requests, "get", lambda *a, **k: self.Resp(body))
+
+            def get(url, *a, **k):
+                if url.endswith("/metrics"):
+                    return self.Resp(metrics or self.METRICS, metrics_status)
+                if url.endswith("/api/datasets"):
+                    return self.Resp({"datasets": list(sorted_rows), "count": len(sorted_rows)})
+                return self.Resp(body)
+            monkeypatch.setattr(S.requests, "get", get)
             S.check_api(key="dandi", run_id="r", params={"api_url": "http://api"})
         return go
 
@@ -346,3 +357,108 @@ class TestCheckApi:
     def test_errors_and_unattempted_rows_fail(self, run, status):
         with pytest.raises(S.AirflowFailException, match="no labelled citation"):
             run([{"classification": None, "classification_status": status}])
+
+    def test_metrics_endpoint_must_answer(self, run):
+        with pytest.raises(S.AirflowFailException, match="metrics HTTP 404"):
+            run([{"classification": "MENTION", "classification_status": "MENTION"}], metrics_status=404)
+
+    def test_metrics_must_count_the_known_reuse_pair(self, run):
+        pair = {"dataset_id": "1", "citing_paper_doi": "10.1/reuse", "expected": "REUSE"}
+        cites = [{"citing_paper_doi": "10.1/REUSE", "classification": "REUSE", "classification_status": "REUSE"}]
+        with pytest.raises(S.AirflowFailException, match="don't count it as reuse"):
+            run(cites, pairs=[pair], sorted_rows=[{"reuse_count": 1}])
+        counted = {**self.METRICS, "reuse_count": 1, "reuse_papers": [{"doi": "10.1/reuse", "versions": []}]}
+        run(cites, pairs=[pair], metrics=counted, sorted_rows=[{"reuse_count": 1}])
+
+    def test_reuse_sort_must_be_in_order(self, run):
+        with pytest.raises(S.AirflowFailException, match="out of order"):
+            run([{"classification": "MENTION", "classification_status": "MENTION"}],
+                sorted_rows=[{"reuse_count": 0}, {"reuse_count": 2}])
+
+
+class TestMetricsProblems:
+    PAIR = {"dataset_id": "ds1", "citing_paper_doi": "10.1/a", "expected": "REUSE"}
+
+    def metrics(self, **overrides):
+        return {"tracked": True, "coverage": {"citing_papers": 3}, "reuse_count": 1, "mention_count": 1,
+                "reuse_papers": [{"doi": "10.1/a", "versions": []}], **overrides}
+
+    def test_consistent_answer(self):
+        cites = [{"citing_paper_doi": "10.1/a", "classification": "REUSE"}]
+        assert S.metrics_problems("ds1", self.metrics(), [self.PAIR], cites) == []
+
+    def test_reuse_found_through_another_version(self):
+        cites = [{"citing_paper_doi": "10.1/a", "classification": "REUSE"}]
+        metrics = self.metrics(reuse_papers=[{"doi": "10.1/published", "versions": [{"doi": "10.1/A"}, {"doi": "10.1/published"}]}])
+        assert S.metrics_problems("ds1", metrics, [self.PAIR], cites) == []
+
+    def test_untracked_or_empty(self):
+        assert S.metrics_problems("ds1", {"tracked": False}, [], []) == ["ds1: metrics say the dataset is not tracked"]
+        assert S.metrics_problems("ds1", self.metrics(coverage={"citing_papers": 0}), [], []) == [
+            "ds1: metrics count no citing paper"]
+
+    def test_a_mention_counted_as_reuse(self):
+        cites = [{"citing_paper_doi": "10.1/a", "classification": "MENTION"}]
+        assert S.metrics_problems("ds1", self.metrics(), [self.PAIR], cites) == [
+            "ds1: the metrics count known pair 10.1/a as reuse but it is labelled MENTION"]
+
+    def test_a_mention_not_counted(self):
+        cites = [{"citing_paper_doi": "10.1/a", "classification": "MENTION"}]
+        metrics = self.metrics(reuse_papers=[], mention_count=0)
+        assert S.metrics_problems("ds1", metrics, [self.PAIR], cites) == [
+            "ds1: known pair 10.1/a is labelled MENTION but the metrics count no mention"]
+
+    def test_the_strongest_label_across_edges_counts(self):
+        cites = [{"citing_paper_doi": "10.1/a", "classification": "MENTION"},
+                 {"citing_paper_doi": "10.1/a", "classification": "REUSE"}]
+        assert S.metrics_problems("ds1", self.metrics(), [self.PAIR], cites) == []
+
+
+class TestReuseSortProblem:
+    def test_in_order(self):
+        assert S.reuse_sort_problem([{"reuse_count": 3}, {"reuse_count": 1}, {"reuse_count": None}], True) is None
+
+    def test_out_of_order(self):
+        assert "out of order" in S.reuse_sort_problem([{"reuse_count": 1}, {"reuse_count": 2}], False)
+
+    def test_a_reused_dataset_should_come_first(self):
+        assert "reused dataset first" in S.reuse_sort_problem([{"reuse_count": 0}], True)
+        assert S.reuse_sort_problem([{"reuse_count": 0}], False) is None
+
+
+class TestAuthorIdSmoke:
+    """verify_map's check that mapping's fill_author_ids step looked up the test datasets' papers."""
+
+    def test_passes_when_papers_were_looked_up_and_some_have_ids(self):
+        assert S.author_ids_problem({"columns": True, "papers": 12, "checked": 12, "with_ids": 11}) == (None, None)
+
+    def test_fails_without_the_columns(self):
+        failure, _ = S.author_ids_problem({"columns": False})
+        assert "has never run" in failure
+
+    def test_fails_when_nothing_was_looked_up(self):
+        failure, _ = S.author_ids_problem({"columns": True, "papers": 12, "checked": 0, "with_ids": 0})
+        assert failure == "fill_author_ids looked up none of the test datasets' 12 papers"
+
+    def test_warns_when_openalex_knew_none(self):
+        assert S.author_ids_problem({"columns": True, "papers": 3, "checked": 3, "with_ids": 0}) == (
+            None, "OpenAlex had author ids for none of the test datasets' papers")
+
+    def test_counts_primary_and_citing_papers_of_the_test_datasets(self):
+        class Cur:
+            def __init__(self):
+                self.calls, self.rows = [], [(2,), (12, 12, 11)]
+
+            def execute(self, sql, params=None):
+                self.calls.append((" ".join(sql.split()), params))
+
+            def fetchone(self):
+                return self.rows.pop(0)
+
+        cur = Cur()
+        assert S.author_id_counts(cur, "dandi", ["000034", "001550"]) == {
+            "columns": True, "papers": 12, "checked": 12, "with_ids": 11}
+        sql, params = cur.calls[1]
+        assert "FROM dandi_paper_map WHERE dandi_id = ANY(%s)" in sql
+        assert "FROM dandi_paper_citations WHERE dandi_id = ANY(%s)" in sql
+        assert params == (["000034", "001550"], ["000034", "001550"])

@@ -125,7 +125,9 @@ curl "http://localhost:8000/api/datasets?source=DANDI&modality=fMRI&search=corte
 
 ### Paper reuse classification fields
 
-Each dataset in `GET /api/datasets` carries `reuse_count`: the number of distinct citing papers the LLM classified as having reused the dataset's data (`REUSE`).
+Datasets in `GET /api/datasets` and `GET /api/datasets/{source}/{id}` carry `created_at_precision`: `year` when only the publication year is known, as for CRCNS datasets whose DOI was registered after their publication year (`created_at` is then January 1st of that year), else null.
+
+Each dataset in `GET /api/datasets` carries `reuse_count`: the number of distinct citing papers the LLM classified as having reused the dataset's data (`REUSE`), counting a preprint and its published version once. `sort_by=reuse` orders datasets by it (the main page's "Most reused").
 
 ```bash
 curl "http://localhost:8000/api/datasets?source=DANDI&sort_by=papers&limit=5" | jq '.[] | {id, reuse_count}'
@@ -149,6 +151,30 @@ curl "http://localhost:8000/api/datasets?source=DANDI&sort_by=papers&limit=5" | 
 
 ```bash
 curl "http://localhost:8000/api/datasets/DANDI/000016" | jq '.citations[] | select(.classification == "REUSE") | {citing_paper_doi, confidence, reuse_type, reused_modalities, quote: .evidence_quotes[0].quote}'
+```
+
+### Dataset reuse metrics
+
+`GET /api/datasets/{source}/{id}/metrics` summarises how a dataset has been used, counting citing *works* across all of its primary papers. A work is one paper under all its DOIs: a preprint and its published version, or eLife's version DOIs, share a normalized title (markup, entities, punctuation and case removed; titles under 16 characters after that keep their own DOI). A work labelled differently via different versions or primary papers takes the first of `REUSE`, `PRIMARY`, `MENTION`, `NEITHER`, is dated by its earliest version, and is shown as its published version (a non-preprint DOI, or eLife's umbrella DOI). `reuse_count` in `GET /api/datasets` counts works the same way.
+
+| Field | Meaning |
+|---|---|
+| `tracked` | `false` for archives without paper mapping (Kaggle, PhysioNet); the other fields are then absent |
+| `published`, `published_precision` | the dataset's `created_at` date; precision `year` when only the year is known (show the year alone), else null |
+| `reuse_count` | citing papers labelled `REUSE` |
+| `independent_reuse_count`, `same_lab_reuse_count` | a reuse is same lab when the classifier said `same_lab`; or it shares an OpenAlex author id with the dataset's primary papers (when both sides have ids: the mapping DAGs' `fill_author_ids` task, or `paper_author_ids_backfill`); or an author's name (surname and first initial) matches the archive's author list, or the primary papers' authors when ids are missing. Otherwise independent |
+| `mention_count` | citing papers labelled `MENTION` |
+| `per_year` | `{year, reuse, mentions}` by each work's earliest version, from the publication year (or the first dated paper, if earlier) to the current year, zeros included; undated papers are counted in `undated` |
+| `last_reuse` | the reuse with the most recent `first_date` (same shape as `reuse_papers` items) |
+| `reuse_papers` | `{doi, title, first_author, author_count, publication_date, first_date, versions, same_lab, same_lab_basis}`, newest `first_date` first. `doi`, `title` and `publication_date` are the shown (published) version's; `first_date` is the earliest version's; `versions` lists every `{doi, is_preprint, publication_date}` when there are several; `same_lab_basis` lists `classifier`, `author_ids` and/or `author_names` |
+| `coverage` | `citing_papers` (works) found, `classified` (has a label), `no_full_text` (the classifier or the mapping found no text for any version), `pending` (the rest, including errors) |
+
+`GET /api/datasets/{source}/{id}` marks versions the same way so a list can show each work once: every citing row carries `citing_work_key`, `citing_is_preprint`, `citing_work_doi` (the version to show) and `citing_work_versions` (all versions among the returned rows when there are several); primary papers carry `work_key`, `is_preprint`, `work_doi` and `work_versions`, plus `citing_works_count`: the works citing any version of that paper, each counted once, over all its citations (`citing_papers_count` stays the citing DOIs of that one DOI).
+
+Dataset ids may contain slashes (CRCNS DOIs, Kaggle): the route reads everything between the source and `/metrics` as the id.
+
+```bash
+curl "http://localhost:8000/api/datasets/openneuro/ds003509/metrics" | jq '{reuse_count, independent_reuse_count, mention_count, last: .last_reuse.publication_date, coverage}'
 ```
 
 

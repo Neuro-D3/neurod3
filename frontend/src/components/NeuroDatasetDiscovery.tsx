@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { datasetDetailPath, fetchDatasets, fetchDatasetStats } from '../services/api';
 import type { Dataset } from '../services/api';
 import { PopulationIcon } from './PopulationIcon';
+import { formatPublishedDate } from '../utils/reuseMetrics';
 
 // Git SHA baked into the image at build time (CI --build-arg GIT_SHA -> Dockerfile
 // ENV REACT_APP_GIT_SHA, inlined by CRA). Defaults to "dev" locally.
@@ -93,7 +94,7 @@ export default function NeuroDatasetDiscovery() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [noDatasetsFound, setNoDatasetsFound] = useState<boolean>(false);
-  const [sortBy, setSortBy] = useState<'published' | 'papers' | 'title' | 'id' | 'source' | 'modality'>(
+  const [sortBy, setSortBy] = useState<'published' | 'papers' | 'reuse' | 'title' | 'id' | 'source' | 'modality'>(
     'published',
   );
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
@@ -261,7 +262,7 @@ export default function NeuroDatasetDiscovery() {
     }
 
     const sortParam = params.get('sort')?.trim();
-    if (sortParam && ['published', 'papers', 'title', 'id', 'source', 'modality'].includes(sortParam)) {
+    if (sortParam && ['published', 'papers', 'reuse', 'title', 'id', 'source', 'modality'].includes(sortParam)) {
       setSortBy(sortParam as typeof sortBy);
     }
 
@@ -827,6 +828,7 @@ export default function NeuroDatasetDiscovery() {
                   <option value="published-asc">Oldest first</option>
                   <option value="papers-desc">Most papers</option>
                   <option value="papers-asc">Fewest papers</option>
+                  <option value="reuse-desc">Most reused</option>
                   <option value="title-asc">Title A–Z</option>
                   <option value="title-desc">Title Z–A</option>
                 </select>
@@ -971,7 +973,7 @@ export default function NeuroDatasetDiscovery() {
                           <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>·</span>
 
                           <span className={`tabular-nums ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                            Published {ds.created_at ? new Date(ds.created_at).toLocaleDateString() : '—'}
+                            Published {formatPublishedDate(ds.created_at, ds.created_at_precision) ?? '—'}
                           </span>
 
                           {ds.authors && ds.authors.length > 0 && (

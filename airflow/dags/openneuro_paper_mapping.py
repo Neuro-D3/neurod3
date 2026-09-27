@@ -52,6 +52,8 @@ from utils.paper_citations import (
 from utils.paper_fulltext import fetch_fulltext_oa
 from utils.openalex_budget import check_openalex_budget, fetch_openalex_budget, format_budget
 from utils.batch_progress import BatchProgress
+from utils.titles import clean_title
+from utils.paper_author_ids import fill_missing_author_ids
 from utils.openneuro_paper_resolution import resolve_papers_for_openneuro_dataset, OpenNeuroPaperResolutionResult
 
 logger = logging.getLogger(__name__)
@@ -602,7 +604,7 @@ def _persist_openneuro_records(
                         (
                             doi_norm,
                             rec.get("openalex_id"),
-                            rec.get("paper_title"),
+                            clean_title(rec.get("paper_title")),
                             json.dumps(rec.get("authors")) if rec.get("authors") is not None else None,
                             rec.get("publication_date"),
                             rec.get("publication_year"),
@@ -825,7 +827,7 @@ def _ensure_citing_paper_record(
         (
             doi,
             paper.get("openalex_id"),
-            paper.get("title"),
+            clean_title(paper.get("title")),
             json.dumps(paper.get("authors")) if paper.get("authors") is not None else None,
             paper.get("publication_date"),
             paper.get("publication_year"),
@@ -1246,9 +1248,19 @@ def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_i
     meta_by_id: Dict[str, Dict[str, Any]] = {}
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
+            # DOIs come from the full description: `description` is cut at 256
+            # characters, which can cut a DOI in half (ds003509: `10.1016/j.neur`).
             cursor.execute(
                 """
-                SELECT dataset_id, title, description, updated_at
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'openneuro_dataset'
+                  AND column_name = 'full_description';
+                """
+            )
+            text_col = "COALESCE(full_description, description)" if cursor.fetchone() else "description"
+            cursor.execute(
+                f"""
+                SELECT dataset_id, title, {text_col} AS description, updated_at
                 FROM openneuro_dataset
                 WHERE dataset_id = ANY(%s);
                 """,
@@ -1339,6 +1351,23 @@ def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_i
         "telemetry": telemetry,
         **persist_metrics,
     }
+
+
+def fill_author_ids(**context) -> Dict[str, Any]:
+    """
+    OpenAlex author ids for this archive's papers that lack them, so the dataset
+    metrics can tell the dataset's own lab from independent reuse by id (see
+    utils/paper_author_ids.py). Runs once the citing papers are stored; a spent
+    OpenAlex budget stops it early without failing the run.
+    """
+    params = context.get("params") or {}
+    if not params.get("fill_author_ids", True):
+        logger.info("fill_author_ids is off: new papers get no author ids until paper_author_ids_backfill runs")
+        return {"skipped": True}
+    return fill_missing_author_ids(
+        archives=["openneuro"],
+        min_interval_seconds=float(params.get("min_api_interval_seconds") or 0.2),
+    )
 
 
 def summarize_run(**context) -> None:
@@ -1539,6 +1568,8 @@ dag = DAG(
         # Map only these datasets, mapped or not (list or comma-separated ids).
         # Empty = the normal selection. Used by stack_integration_test.
         "dataset_ids": [],
+        # Look up OpenAlex author ids for this run's new papers (same-lab reuse in the metrics).
+        "fill_author_ids": True,
         "prioritize_doi_signals": True,
         "backfill_missing_paper_titles": False,
         "min_api_interval_seconds": 0.2,
@@ -1608,6 +1639,13 @@ extract_and_persist_citation_contexts_batch_task = (
     ).expand(op_kwargs=XComArg(build_batches_task))
 )
 
+fill_author_ids_task = PythonOperator(
+    task_id="fill_author_ids",
+    python_callable=fill_author_ids,
+    pool="paper_mapping_api_pool",
+    dag=dag,
+)
+
 summarize_task = PythonOperator(
     task_id="summarize_run",
     python_callable=summarize_run,
@@ -1616,4 +1654,4 @@ summarize_task = PythonOperator(
 
 create_tables_task >> fetch_ids_task >> build_batches_task >> resolve_and_persist_batch_task
 resolve_and_persist_batch_task >> fetch_and_persist_citations_batch_task >> extract_and_persist_citation_contexts_batch_task >> summarize_task
-
+fetch_and_persist_citations_batch_task >> fill_author_ids_task >> summarize_task
