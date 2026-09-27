@@ -75,8 +75,9 @@ def normalize_doi(doi: str) -> Optional[str]:
         if cut in d:
             d = d.split(cut, 1)[0]
     d = _DOI_JUNK_SUFFIX.sub("", d)
-    # Trim trailing punctuation
-    d = d.rstrip(" .;,)]>")
+    # Trim trailing punctuation, and markdown emphasis or code marks
+    # (`**10.1038/s41593-025-02037-7**`).
+    d = d.rstrip(" .;,)]>*_`")
     d = d.lstrip("([")
     if not d.lower().startswith("10."):
         return None
@@ -92,8 +93,9 @@ def normalize_doi(doi: str) -> Optional[str]:
         # - `....abstract` -> `...`
         d = re.sub(r"(?:v\d+)(?:\.(?:abstract|full|pdf))?$", "", d, flags=re.IGNORECASE)
         d = re.sub(r"\.(?:abstract|full|pdf)$", "", d, flags=re.IGNORECASE)
-        # Guard against obviously incomplete year-only extractions.
-        if re.fullmatch(r"10\.(?:1101|64898)/\d{4}", d, flags=re.IGNORECASE):
+        # Guard against incomplete extractions that stop at the date part
+        # (`10.1101/2021`, `10.1101/2021.02.12`): the id after the date is missing.
+        if re.fullmatch(r"10\.(?:1101|64898)/\d{4}(?:\.\d{2}){0,2}", d, flags=re.IGNORECASE):
             return None
 
     # A DOI needs a suffix; `10.1093/` alone is a fragment, not a paper.
@@ -112,6 +114,27 @@ def extract_dois_from_text(text: Optional[str]) -> list[str]:
         if d and d not in out:
             out.append(d)
     return out
+
+
+def drop_cut_off_papers(papers: list[dict]) -> list[dict]:
+    """
+    Drop resolved papers whose DOI is a cut-off copy of another candidate's.
+
+    Text cut mid-DOI (a truncated description) yields a fragment such as
+    `10.1016/j.neur` next to the full `10.1016/j.neuropsychologia.2018.05.020`.
+    A paper is dropped only when its DOI is a strict prefix of another
+    candidate's DOI and no registry knew it (no title, no OpenAlex id), so a
+    real DOI that merely prefixes some longer string is kept.
+    """
+    dois = [str(p.get("doi") or "").lower() for p in papers]
+    kept: list[dict] = []
+    for paper, doi in zip(papers, dois):
+        resolved = paper.get("title") or paper.get("openalex_id")
+        if doi and not resolved and any(other != doi and other.startswith(doi) for other in dois):
+            logger.info("Dropping cut-off DOI %s: a longer DOI starting with it was also found", doi)
+            continue
+        kept.append(paper)
+    return kept
 
 
 def publication_year_from_date(publication_date: Optional[str]) -> Optional[int]:

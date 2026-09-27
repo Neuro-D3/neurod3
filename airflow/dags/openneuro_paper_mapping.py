@@ -1247,9 +1247,19 @@ def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_i
     meta_by_id: Dict[str, Dict[str, Any]] = {}
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
+            # DOIs come from the full description: `description` is cut at 256
+            # characters, which can cut a DOI in half (ds003509: `10.1016/j.neur`).
             cursor.execute(
                 """
-                SELECT dataset_id, title, description, updated_at
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'openneuro_dataset'
+                  AND column_name = 'full_description';
+                """
+            )
+            text_col = "COALESCE(full_description, description)" if cursor.fetchone() else "description"
+            cursor.execute(
+                f"""
+                SELECT dataset_id, title, {text_col} AS description, updated_at
                 FROM openneuro_dataset
                 WHERE dataset_id = ANY(%s);
                 """,

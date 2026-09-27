@@ -19,6 +19,7 @@ import requests
 
 from utils.find_reuse_core import (
     Telemetry,
+    drop_cut_off_papers,
     extract_dois_from_text,
     http_get_json,
     normalize_doi,
@@ -346,8 +347,8 @@ def resolve_papers_for_dandiset(
         # Keep a normalized DOI for storage safety
         p["doi"] = normalize_doi(doi)
 
-    # Drop any entries that failed DOI normalization
-    papers = [p for p in papers if p.get("doi")]
+    # Drop any entries that failed DOI normalization, and cut-off DOIs
+    papers = drop_cut_off_papers([p for p in papers if p.get("doi")])
 
     return PaperResolutionResult(
         papers=papers,
