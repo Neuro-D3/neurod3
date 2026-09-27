@@ -32,7 +32,7 @@ export interface DatasetPaperItem {
   /** Publication date, or the year alone when that is all there is. */
   date: string | null;
   country: string | null;
-  /** Mapped primary papers: how many citing papers were found for it. */
+  /** Mapped primary papers: the works found citing any version of it. */
   citingCount?: number;
   openalexId?: string | null;
   /** Classified citing papers: the row whose label the paper takes (evidence, reuse type). */
@@ -83,7 +83,7 @@ export function buildPaperList(
       journal: shown.journal ?? null,
       date: shown.publication_date ?? (shown.publication_year ? String(shown.publication_year) : null),
       country: shown.senior_author_country ?? null,
-      citingCount: rows.reduce((sum, p) => sum + p.citing_papers_count, 0),
+      citingCount: shown.citing_works_count ?? shown.citing_papers_count,
       openalexId: shown.openalex_id ?? null,
       versions: shown.work_versions ?? [],
       isPreprint: shown.is_preprint ?? false,

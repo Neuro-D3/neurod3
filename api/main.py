@@ -1598,7 +1598,32 @@ async def get_dataset_detail(source: str, dataset_id: str):
                         doi_key="paper_doi", work_key="work_key", date_key="publication_date",
                     )
 
-                    c_journal = "p_citing.journal AS citing_journal," if "journal" in paper_opt_cols else "NULL AS citing_journal,"
+                    # What the site shows per primary paper: the works citing any
+                    # version of it, so a paper citing both a preprint and its
+                    # published version counts once. Counted over every edge,
+                    # not just the citations returned below.
+                    citing_works_query = f"""
+                        {_paper_mapping_ctes(cursor)}
+                        SELECT
+                            {work_key_sql('p.title', 'map.paper_doi')} AS work_key,
+                            COUNT(DISTINCT {work_key_sql('p_citing.title', 'ce.citing_paper_doi')})::int
+                                AS citing_works_count
+                        FROM dataset_map map
+                        LEFT JOIN papers p ON p.paper_doi = map.paper_doi
+                        JOIN citation_edges ce
+                          ON ce.source = map.source
+                         AND ce.dataset_id = map.dataset_id
+                         AND ce.primary_paper_doi = map.paper_doi
+                        LEFT JOIN papers p_citing ON p_citing.paper_doi = ce.citing_paper_doi
+                        WHERE map.source = %s AND map.dataset_id = %s
+                        GROUP BY 1;
+                    """
+                    cursor.execute(citing_works_query, [source, dataset_id])
+                    citing_works = {r["work_key"]: r["citing_works_count"] for r in cursor.fetchall()}
+                    for paper in primary_papers:
+                        paper["citing_works_count"] = citing_works.get(paper.get("work_key"), 0)
+
+                    c_journal ="p_citing.journal AS citing_journal," if "journal" in paper_opt_cols else "NULL AS citing_journal,"
                     c_country = "p_citing.senior_author_country AS citing_senior_author_country," if "senior_author_country" in paper_opt_cols else "NULL AS citing_senior_author_country,"
 
                     citations_query = f"""

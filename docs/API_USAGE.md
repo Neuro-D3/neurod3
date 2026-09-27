@@ -169,7 +169,7 @@ curl "http://localhost:8000/api/datasets/DANDI/000016" | jq '.citations[] | sele
 | `reuse_papers` | `{doi, title, first_author, author_count, publication_date, first_date, versions, same_lab, same_lab_basis}`, newest `first_date` first. `doi`, `title` and `publication_date` are the shown (published) version's; `first_date` is the earliest version's; `versions` lists every `{doi, is_preprint, publication_date}` when there are several; `same_lab_basis` lists `classifier`, `author_ids` and/or `author_names` |
 | `coverage` | `citing_papers` (works) found, `classified` (has a label), `no_full_text` (the classifier or the mapping found no text for any version), `pending` (the rest, including errors) |
 
-`GET /api/datasets/{source}/{id}` marks versions the same way so a list can show each work once: every citing row carries `citing_work_key`, `citing_is_preprint`, `citing_work_doi` (the version to show) and `citing_work_versions` (all versions among the returned rows when there are several); primary papers carry `work_key`, `is_preprint`, `work_doi` and `work_versions`.
+`GET /api/datasets/{source}/{id}` marks versions the same way so a list can show each work once: every citing row carries `citing_work_key`, `citing_is_preprint`, `citing_work_doi` (the version to show) and `citing_work_versions` (all versions among the returned rows when there are several); primary papers carry `work_key`, `is_preprint`, `work_doi` and `work_versions`, plus `citing_works_count`: the works citing any version of that paper, each counted once, over all its citations (`citing_papers_count` stays the citing DOIs of that one DOI).
 
 Dataset ids may contain slashes (CRCNS DOIs, Kaggle): the route reads everything between the source and `/metrics` as the id.
 

@@ -217,7 +217,10 @@ export interface DatasetDetailPaper {
   senior_author_country?: string | null;
   publication_date?: string | null;
   publication_year?: number | null;
+  /** Citing DOIs of this DOI. */
   citing_papers_count: number;
+  /** Works citing any version of this paper, each once; what the page shows. */
+  citing_works_count?: number;
 }
 
 export interface DatasetDetailCitation extends ClassificationFields {

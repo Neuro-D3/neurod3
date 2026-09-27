@@ -100,12 +100,15 @@ describe('buildPaperList', () => {
     expect([paper.label, paper.isPreprint, paper.versions]).toEqual(['MENTION', true, []]);
   });
 
-  it('groups primary papers by work too, adding up their citing papers', () => {
+  it("groups primary papers by work too, showing the API's count of citing works", () => {
+    // 3 + 7 citing DOIs, but papers citing both versions are one citing work.
     const items = buildPaperList([
-      primary('10.1101/2020.01.01.111111', '2020-01', { work_key: 't:data', work_doi: '10.1038/data', citing_papers_count: 3, is_preprint: true }),
-      primary('10.1038/data', '2020-06', { work_key: 't:data', work_doi: '10.1038/data', citing_papers_count: 7 }),
+      primary('10.1101/2020.01.01.111111', '2020-01', {
+        work_key: 't:data', work_doi: '10.1038/data', citing_papers_count: 3, citing_works_count: 8, is_preprint: true,
+      }),
+      primary('10.1038/data', '2020-06', { work_key: 't:data', work_doi: '10.1038/data', citing_papers_count: 7, citing_works_count: 8 }),
     ], []);
-    expect(items.map((i) => [i.doi, i.citingCount])).toEqual([['10.1038/data', 10]]);
+    expect(items.map((i) => [i.doi, i.citingCount])).toEqual([['10.1038/data', 8]]);
   });
 
   it('leaves out a citing paper that is a version of a primary paper', () => {
