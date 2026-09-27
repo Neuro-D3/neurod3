@@ -119,9 +119,9 @@ const HOW_WE_COUNT_ID = 'dataset-how-we-count';
 const HOW_WE_COUNT_CLOSE_MS = 150;
 
 /**
- * "How we count": opens on hover, click or tap (Enter from the keyboard), and
- * closes when the pointer leaves it, on a click outside, Escape, or focus
- * moving elsewhere.
+ * "How we count" with an info bubble: the bubble opens the definitions on
+ * hover, click or tap (Enter from the keyboard), and they close when the
+ * pointer leaves, on a click outside, Escape, or focus moving elsewhere.
  */
 function HowWeCount() {
   const [open, setOpen] = useState(false);
@@ -161,67 +161,77 @@ function HowWeCount() {
   }, [open]);
 
   return (
-    <div
-      ref={wrap}
-      className="relative"
-      onMouseEnter={() => {
-        cancelClose();
-        setOpen(true);
-      }}
-      onMouseLeave={closeSoon}
-      onBlur={(e) => {
-        if (!wrap.current?.contains(e.relatedTarget as Node | null)) setOpen(false);
-      }}
-    >
-      <button
-        ref={button}
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-expanded={open}
-        aria-controls={HOW_WE_COUNT_ID}
-        className="text-[13px] text-blue-700 hover:text-blue-900 hover:underline"
+    <div className="flex items-center gap-0.5">
+      <span className="text-[13px] text-slate-500">How we count</span>
+      <div
+        ref={wrap}
+        className="relative"
+        onMouseEnter={() => {
+          cancelClose();
+          setOpen(true);
+        }}
+        onMouseLeave={closeSoon}
+        onBlur={(e) => {
+          if (!wrap.current?.contains(e.relatedTarget as Node | null)) setOpen(false);
+        }}
       >
-        How we count
-      </button>
-      {open && (
-        // Focusable so a click inside it keeps focus within the popover.
-        <div
-          id={HOW_WE_COUNT_ID}
-          role="region"
+        <button
+          ref={button}
+          type="button"
+          onClick={() => setOpen(true)}
           aria-label="How we count"
-          tabIndex={-1}
-          className="absolute right-0 top-full z-20 mt-2 w-[min(320px,calc(100vw-4rem))] rounded-xl border border-slate-200 bg-white p-4 text-left shadow-lg outline-none"
+          aria-expanded={open}
+          aria-controls={HOW_WE_COUNT_ID}
+          className="flex h-7 w-7 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
         >
-          <dl className="flex flex-col gap-2 text-xs leading-snug text-slate-600">
-            <div>
-              <dt className="font-semibold text-slate-900">Reuse</dt>
-              <dd>The citing paper's full text shows it used this dataset's data.</dd>
-            </div>
-            <div>
-              <dt className="font-semibold text-slate-900">Independent</dt>
-              <dd>
-                None of its authors are authors of the dataset or its papers, and the classifier didn't judge it the
-                dataset's own lab.
-              </dd>
-            </div>
-            <div>
-              <dt className="font-semibold text-slate-900">Mention</dt>
-              <dd>Cites the dataset or its paper without using the data.</dd>
-            </div>
-            <div>
-              <dt className="font-semibold text-slate-900">Per year</dt>
-              <dd>By the citing paper's publication year, from the dataset's release to now.</dd>
-            </div>
-            <div>
-              <dt className="font-semibold text-slate-900">Coverage</dt>
-              <dd>
-                Papers are labelled from their full text. Citing papers without full text, or not reached yet, aren't
-                counted until they are.
-              </dd>
-            </div>
-          </dl>
-        </div>
-      )}
+          <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+            <path
+              fillRule="evenodd"
+              d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-7-4a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM9 9a.75.75 0 0 0 0 1.5h.253a.25.25 0 0 1 .244.304l-.459 2.066A1.75 1.75 0 0 0 10.747 15H11a.75.75 0 0 0 0-1.5h-.253a.25.25 0 0 1-.244-.304l.459-2.066A1.75 1.75 0 0 0 9.253 9H9Z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </button>
+        {open && (
+          // Focusable so a click inside it keeps focus within the popover.
+          <div
+            id={HOW_WE_COUNT_ID}
+            role="region"
+            aria-label="How we count"
+            tabIndex={-1}
+            className="absolute right-0 top-full z-20 mt-2 w-[min(320px,calc(100vw-4rem))] rounded-xl border border-slate-200 bg-white p-4 text-left shadow-lg outline-none"
+          >
+            <dl className="flex flex-col gap-2 text-xs leading-snug text-slate-600">
+              <div>
+                <dt className="font-semibold text-slate-900">Reuse</dt>
+                <dd>The citing paper's full text shows it used this dataset's data.</dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-slate-900">Independent</dt>
+                <dd>
+                  None of its authors are authors of the dataset or its papers, and the classifier didn't judge it the
+                  dataset's own lab.
+                </dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-slate-900">Mention</dt>
+                <dd>Cites the dataset or its paper without using the data.</dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-slate-900">Per year</dt>
+                <dd>By the citing paper's publication year, from the dataset's release to now.</dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-slate-900">Coverage</dt>
+                <dd>
+                  Papers are labelled from their full text. Citing papers without full text, or not reached yet, aren't
+                  counted until they are.
+                </dd>
+              </div>
+            </dl>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
