@@ -52,6 +52,7 @@ from utils.paper_citations import (
 from utils.paper_fulltext import fetch_fulltext_oa
 from utils.openalex_budget import check_openalex_budget, fetch_openalex_budget, format_budget
 from utils.batch_progress import BatchProgress
+from utils.titles import clean_title
 from utils.openneuro_paper_resolution import resolve_papers_for_openneuro_dataset, OpenNeuroPaperResolutionResult
 
 logger = logging.getLogger(__name__)
@@ -602,7 +603,7 @@ def _persist_openneuro_records(
                         (
                             doi_norm,
                             rec.get("openalex_id"),
-                            rec.get("paper_title"),
+                            clean_title(rec.get("paper_title")),
                             json.dumps(rec.get("authors")) if rec.get("authors") is not None else None,
                             rec.get("publication_date"),
                             rec.get("publication_year"),
@@ -825,7 +826,7 @@ def _ensure_citing_paper_record(
         (
             doi,
             paper.get("openalex_id"),
-            paper.get("title"),
+            clean_title(paper.get("title")),
             json.dumps(paper.get("authors")) if paper.get("authors") is not None else None,
             paper.get("publication_date"),
             paper.get("publication_year"),

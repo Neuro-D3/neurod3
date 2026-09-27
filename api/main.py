@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import html
 import logging
 import re
 import unicodedata
@@ -122,6 +123,34 @@ CITATION_DISPLAY_ORDER_SQL = """
         ELSE 5
     END
 """
+
+
+# Inline markup publishers leave in paper titles (JATS, HTML, MathML); the same
+# list as airflow/dags/utils/titles.py, which cleans titles as they are stored.
+# Titles stored before that are cleaned here, as they are served.
+_TITLE_MARKUP_TAG = re.compile(
+    r"</?(?:i|b|em|strong|u|sup|sub|scp|sc|span|italic|bold|small|underline"
+    r"|inline-formula|tex-math|alternatives|mml:[a-z]+)\b[^<>]*>",
+    re.IGNORECASE,
+)
+_PAPER_TITLE_KEYS: Tuple[str, ...] = ("paper_title", "primary_paper_title", "citing_paper_title", "title")
+
+
+def _clean_title(title: Any) -> Any:
+    """A paper title without markup: entities decoded, known inline tags dropped (text kept)."""
+    if not isinstance(title, str):
+        return title
+    text = re.sub(r"\s+", " ", _TITLE_MARKUP_TAG.sub("", html.unescape(title))).strip()
+    return text or None
+
+
+def _clean_paper_titles(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Clean the paper-title fields of API rows in place (dataset titles are left alone)."""
+    for row in rows:
+        for key in _PAPER_TITLE_KEYS:
+            if key in row:
+                row[key] = _clean_title(row[key])
+    return rows
 
 
 def _paper_mapping_relation_exists(cursor, relation_name: str, relation_type: str = "table") -> bool:
@@ -1247,7 +1276,7 @@ def _fetch_metric_edges(cursor, prefix: str, id_col: str, dataset_id: str) -> Li
         id=sql.Identifier(id_col),
     )
     cursor.execute(query, (dataset_id,))
-    return [dict(r) for r in cursor.fetchall()]
+    return _clean_paper_titles([dict(r) for r in cursor.fetchall()])
 
 
 # Registered before the detail route: its `{dataset_id:path}` would otherwise
@@ -1417,7 +1446,7 @@ async def get_dataset_detail(source: str, dataset_id: str):
                         ORDER BY COALESCE(p.publication_date, '') DESC, map.paper_doi ASC;
                     """
                     cursor.execute(primary_papers_query, [source, dataset_id])
-                    primary_papers = [dict(r) for r in cursor.fetchall()]
+                    primary_papers = _clean_paper_titles([dict(r) for r in cursor.fetchall()])
 
                     c_journal = "p_citing.journal AS citing_journal," if "journal" in paper_opt_cols else "NULL AS citing_journal,"
                     c_country = "p_citing.senior_author_country AS citing_senior_author_country," if "senior_author_country" in paper_opt_cols else "NULL AS citing_senior_author_country,"
@@ -1467,7 +1496,7 @@ async def get_dataset_detail(source: str, dataset_id: str):
                         LIMIT 250;
                     """
                     cursor.execute(citations_query, [source, dataset_id])
-                    citations = [dict(r) for r in cursor.fetchall()]
+                    citations = _clean_paper_titles([dict(r) for r in cursor.fetchall()])
 
                 except HTTPException:
                     pass
@@ -1870,7 +1899,7 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                     ORDER BY COALESCE(p.publication_date, '') DESC, map.paper_doi ASC;
                 """
                 cursor.execute(primary_papers_query, [source, dataset_id, source, dataset_id, source, dataset_id])
-                primary_papers = [dict(row) for row in cursor.fetchall()]
+                primary_papers = _clean_paper_titles([dict(row) for row in cursor.fetchall()])
 
                 c_text_status = (
                     "p_citing.text_status AS citing_text_status,"
@@ -1929,7 +1958,7 @@ async def get_paper_mapping_dataset_detail(source: str, dataset_id: str):
                     LIMIT 250;
                 """
                 cursor.execute(citations_query, [source, dataset_id])
-                citations = [dict(row) for row in cursor.fetchall()]
+                citations = _clean_paper_titles([dict(row) for row in cursor.fetchall()])
 
                 return {
                     "dataset": dict(dataset),
@@ -2027,7 +2056,7 @@ async def get_paper_mapping_citations(
                     LIMIT %s OFFSET %s;
                 """
                 cursor.execute(query, params + [limit, offset])
-                return {"citations": [dict(row) for row in cursor.fetchall()], "count": total}
+                return {"citations": _clean_paper_titles([dict(row) for row in cursor.fetchall()]), "count": total}
     except HTTPException:
         raise
     except psycopg.Error as e:
