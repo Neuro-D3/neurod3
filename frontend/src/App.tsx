@@ -4,6 +4,7 @@ import './App.css';
 import NeuroDatasetDiscovery from './components/NeuroDatasetDiscovery';
 import PaperMappingDashboard from './pages/PaperMappingDashboard';
 import DatasetDetailPage from './pages/DatasetDetailPage';
+import { SiteFooter } from './components/SiteFooter';
 
 function scrollWindowToTop() {
   window.scrollTo(0, 0);
@@ -47,7 +48,7 @@ function AppLayout() {
             onClick={() => navigate('/')}
             className="text-left hover:opacity-80 transition-opacity"
           >
-            <div className="text-lg font-semibold text-slate-900">NeuroD3</div>
+            <div className="text-lg font-semibold text-slate-900">Dataset Reuse Hub</div>
             <div className="text-sm text-slate-500">Dataset discovery and internal paper mapping</div>
           </button>
           {!isDetailPage && (
@@ -81,6 +82,7 @@ function AppLayout() {
         <Route path="/datasets/:source/:datasetId" element={<DatasetDetailPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <SiteFooter />
     </div>
   );
 }

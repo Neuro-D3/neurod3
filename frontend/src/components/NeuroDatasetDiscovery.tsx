@@ -603,7 +603,7 @@ export default function NeuroDatasetDiscovery() {
                   : 'from-blue-600 via-purple-600 to-pink-600'
               }`}
             >
-              Neuro Dataset Discovery
+              Dataset Reuse Hub
             </h1>
             <p className={darkMode ? 'text-lg text-gray-300' : 'text-lg text-gray-600'}>
               Explore neuroscience datasets across multiple repositories
@@ -1175,44 +1175,6 @@ export default function NeuroDatasetDiscovery() {
             </a>
           </div>
           <p className="mt-3 text-xs opacity-75">
-            Developed by{' '}
-            <a
-              href="https://foresight.org/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              Foresight Institute
-            </a>
-            {' | '}
-            <a
-              href="https://catalystneuro.com/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              Catalyst Neuro
-            </a>
-            {' | '}
-            <a
-              href="https://duralabs.ai"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              Dura Labs
-            </a>
-            {' | '}
-            <a
-              href="https://linktr.ee/BerkeleyLab"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              Berkeley Lab
-            </a>
-          </p>
-          <p className="mt-1 text-xs opacity-75">
             Build:{' '}
             {GIT_SHA === 'dev' ? (
               '#dev'
