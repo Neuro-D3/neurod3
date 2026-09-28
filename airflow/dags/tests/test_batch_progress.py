@@ -212,6 +212,7 @@ class FakeResolution:
 def test_resolve_batch_logs_each_dataset_and_the_finish(dag_module, monkeypatch, caplog, tmp_path):
     archive, mod = dag_module
     resolver, persist, meta = RESOLVE[archive]
+    # ds9 has no metadata row: it gets a "skipped" line rather than none.
     monkeypatch.setattr(mod, "get_db_connection", fake_db([meta("ds1", "Dataset one"), meta("ds2", "Dataset two")]))
     monkeypatch.setattr(mod, resolver,
                         lambda **kw: FakeResolution([{"doi": "10.1/p"}] if "ds1" in kw.values() else []))
@@ -219,14 +220,16 @@ def test_resolve_batch_logs_each_dataset_and_the_finish(dag_module, monkeypatch,
     monkeypatch.setattr(mod, "_get_output_root", lambda: tmp_path)
 
     with caplog.at_level(logging.INFO):
-        out = mod.resolve_and_persist_batch(batch_index=4, dataset_ids=["ds1", "ds2"], run_id="r", params={})
+        out = mod.resolve_and_persist_batch(batch_index=4, dataset_ids=["ds1", "ds9", "ds2"], run_id="r", params={})
 
     assert out["resolved_mappings"] == 1
     text = "\n".join(r.getMessage() for r in caplog.records)
-    assert "Resolve batch 4: 0/2 datasets (0%) | papers_found=0 unresolved=0 | API requests=0" in text
+    assert "Resolve batch 4: 0/3 datasets (0%) | papers_found=0 unresolved=0 | API requests=0" in text
     assert "starting ds1 'Dataset one'" in text
-    assert "Resolve batch 4: 1/2 datasets (50%) | papers_found=1 unresolved=0 | API requests=3 429s=0 retries=1" in text
-    assert "Resolve batch 4: 2/2 datasets (100%) | papers_found=1 unresolved=1 | API requests=6" in text
+    assert "Resolve batch 4: 2/3 datasets (66%) | papers_found=1 unresolved=1 | API requests=3 429s=0 retries=1" in text
+    assert f"ds9: not in {archive}_dataset, skipped" in text
+    assert "starting ds2 'Dataset two'" in text
+    assert "Resolve batch 4: 3/3 datasets (100%) | papers_found=1 unresolved=2 | API requests=6" in text
     assert "batch finished" in text
 
 

@@ -1211,6 +1211,8 @@ def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_i
         meta = meta_by_id.get(str(ds_id))
         if not meta:
             unresolved.append({"crcns_id": str(ds_id), "crcns_title": None, "reason": "missing_in_db", "error": None})
+            found.update(unresolved=len(unresolved))
+            progress.update(i, note=f"{ds_id}: not in crcns_dataset, skipped", force=True)
             continue
 
         title = meta.get("title")
