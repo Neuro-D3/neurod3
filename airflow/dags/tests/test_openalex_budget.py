@@ -1,5 +1,7 @@
 """Tests for utils/openalex_budget.py. No network: the probe session is stubbed."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from utils import openalex_budget as B
@@ -58,6 +60,15 @@ class TestParseBudgetHeaders:
     def test_missing_or_bad_values_are_none(self):
         b = B.parse_budget_headers({"X-RateLimit-Remaining": "lots"})
         assert b["remaining"] is None and b["limit"] is None and b["resets_at"] is None
+
+
+class TestFormatBudget:
+    def test_reset_time_rounds_to_the_minute(self):
+        # now + seconds-to-reset can land just before midnight; it used to print 23:59.
+        almost_midnight = datetime(2026, 9, 28, 23, 59, 59, 900000, tzinfo=timezone.utc)
+        text = B.format_budget({"remaining": 9366, "limit": 10000, "remaining_usd": 0.9366,
+                                "resets_at": almost_midnight, "authenticated": True})
+        assert text == "OpenAlex budget: 9,366 of 10,000 requests remaining today ($0.9366), resets 00:00 UTC; API key"
 
 
 class TestFetchOpenalexBudget:

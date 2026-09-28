@@ -1,10 +1,12 @@
 """
 Tests for utils/batch_progress.py and the progress lines the four paper-mapping
-DAGs' citation and context batches log. No database, no network.
+DAGs log: resolve, citation and context batches, and the run summary's OpenAlex
+budget. No database, no network.
 """
 
 import importlib
 import logging
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -65,6 +67,24 @@ class TestBatchProgress:
         p = BatchProgress("Contexts batch 0", 0, "citation edges", clock=FakeClock())
         assert p.line().startswith("Contexts batch 0: 0/0 citation edges |")
 
+    def test_request_counts_can_come_from_a_dict_and_name_their_source(self):
+        # The resolve step keeps its counts in a dict, and they cover Crossref and DataCite too.
+        tel = {"total_requests": 40, "api_429_count": 1, "api_retry_count": 2}
+        p = BatchProgress("Resolve batch 1", 3, "datasets", clock=FakeClock(), telemetry=tel, requests_label="API")
+        assert "API requests=40 429s=1 retries=2" in p.line()
+
+    def test_ticking_keeps_a_heartbeat_through_one_long_call(self, caplog):
+        log = logging.getLogger("test.batch_progress")
+        p = BatchProgress("Resolve batch 1", 3, "datasets", every_seconds=0.05, log=log)
+        with caplog.at_level(logging.INFO, logger="test.batch_progress"):
+            with p.ticking("ds003509"):
+                time.sleep(0.3)
+            beats = sum("ds003509: still working" in r.getMessage() for r in caplog.records)
+            time.sleep(0.15)
+            after = sum("ds003509: still working" in r.getMessage() for r in caplog.records)
+        assert beats >= 2
+        assert after == beats  # the heartbeat stops with the block
+
 
 # ---------------------------------------------------------------------------
 # The DAGs' batch functions, run against a fake database and API
@@ -82,6 +102,9 @@ class FakeCursor:
 
     def fetchall(self):
         return self._rows
+
+    def fetchone(self):
+        return None
 
     def __enter__(self):
         return self
@@ -163,3 +186,62 @@ def test_context_batch_logs_start_and_finish(dag_module, monkeypatch, caplog):
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "Contexts batch 2: 0/2 citation edges (0%)" in text and "starting" in text
     assert "Contexts batch 2: 2/2 citation edges (100%)" in text and "citation_contexts_missing_text=2" in text
+
+
+# archive: (resolver, persist function, the dataset metadata row the batch reads)
+RESOLVE = {
+    "dandi": ("resolve_papers_for_dandiset", "_persist_resolved_records",
+              lambda ds, title: (ds, title, "desc", "https://x", None, "draft")),
+    "crcns": ("resolve_papers_for_crcns_dataset", "_persist_crcns_records",
+              lambda ds, title: (ds, title, "desc", "https://x", None)),
+    "openneuro": ("resolve_papers_for_openneuro_dataset", "_persist_openneuro_records",
+                  lambda ds, title: (ds, title, "desc", None)),
+    "sparc": ("resolve_papers_for_sparc_dataset", "_persist_sparc_records",
+              lambda ds, title: (ds, title, "desc", "https://x", None)),
+}
+
+
+class FakeResolution:
+    def __init__(self, papers):
+        self.papers = papers
+        self.reason = None if papers else "no_papers_found"
+        self.error = None
+        self.telemetry = {"total_requests": 3, "api_429_count": 0, "api_retry_count": 1}
+
+
+def test_resolve_batch_logs_each_dataset_and_the_finish(dag_module, monkeypatch, caplog, tmp_path):
+    archive, mod = dag_module
+    resolver, persist, meta = RESOLVE[archive]
+    monkeypatch.setattr(mod, "get_db_connection", fake_db([meta("ds1", "Dataset one"), meta("ds2", "Dataset two")]))
+    monkeypatch.setattr(mod, resolver,
+                        lambda **kw: FakeResolution([{"doi": "10.1/p"}] if "ds1" in kw.values() else []))
+    monkeypatch.setattr(mod, persist, lambda **kw: {})
+    monkeypatch.setattr(mod, "_get_output_root", lambda: tmp_path)
+
+    with caplog.at_level(logging.INFO):
+        out = mod.resolve_and_persist_batch(batch_index=4, dataset_ids=["ds1", "ds2"], run_id="r", params={})
+
+    assert out["resolved_mappings"] == 1
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "Resolve batch 4: 0/2 datasets (0%) | papers_found=0 unresolved=0 | API requests=0" in text
+    assert "starting ds1 'Dataset one'" in text
+    assert "Resolve batch 4: 1/2 datasets (50%) | papers_found=1 unresolved=0 | API requests=3 429s=0 retries=1" in text
+    assert "Resolve batch 4: 2/2 datasets (100%) | papers_found=1 unresolved=1 | API requests=6" in text
+    assert "batch finished" in text
+
+
+class NoXcoms:
+    def xcom_pull(self, *a, **k):
+        return None
+
+
+def test_run_summary_ends_with_the_openalex_budget(dag_module, monkeypatch, caplog):
+    archive, mod = dag_module
+    monkeypatch.setattr(mod, "get_db_connection", fake_db([]))
+    monkeypatch.setattr(mod, "backfill_papers_text_status", lambda cursor: None, raising=False)
+
+    with caplog.at_level(logging.INFO):
+        mod.summarize_run(ti=NoXcoms(), run_id="manual__1")
+
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "- after this run: OpenAlex budget: 9,000 of 10,000 requests remaining today" in text

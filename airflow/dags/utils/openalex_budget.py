@@ -108,7 +108,8 @@ def format_budget(budget: Mapping[str, Any]) -> str:
     if rem is None or lim is None:
         return "OpenAlex budget unknown" + (f" (HTTP {budget['status']})" if budget.get("status") else "")
     resets = budget.get("resets_at")
-    when = f", resets {resets:%H:%M} UTC" if resets else ""
+    # Rounded to the minute: now + seconds-to-reset lands a few ms either side of midnight.
+    when = f", resets {resets + timedelta(seconds=30):%H:%M} UTC" if resets else ""
     who = "API key" if budget.get("authenticated") else "NO API KEY (shared per-IP budget)"
     usd = budget.get("remaining_usd")
     usd_s = f" (${usd:.4f})" if usd is not None else ""
