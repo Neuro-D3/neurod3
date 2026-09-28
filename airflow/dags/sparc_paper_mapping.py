@@ -1431,26 +1431,36 @@ def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_i
         "total_requests": 0,
     }
 
+    # A line per dataset, and a heartbeat while a slow one resolves (Crossref and
+    # OpenAlex retries can take minutes), with the batch's API request counts.
+    found = {"papers_found": 0, "unresolved": 0}
+    progress = BatchProgress(f"Resolve batch {batch_index}", len(dataset_ids), "datasets",
+                             counters=found, telemetry=telemetry, requests_label="API")
+
     for i, ds_id in enumerate(dataset_ids, start=1):
+        found.update(papers_found=len(resolved), unresolved=len(unresolved))
         meta = meta_by_id.get(str(ds_id))
         if not meta:
             unresolved.append({"sparc_id": str(ds_id), "sparc_title": None, "reason": "missing_in_db", "error": None})
+            found.update(unresolved=len(unresolved))
+            progress.update(i, note=f"{ds_id}: not in sparc_dataset, skipped", force=True)
             continue
 
         title = meta.get("title")
         desc = meta.get("description")
         url = meta.get("url")
-        logger.info("Batch %d: processing %d/%d sparc=%s title=%r", batch_index, i, len(dataset_ids), ds_id, (title or "")[:120])
+        progress.update(i - 1, note=f"starting {ds_id} {(title or '')[:120]!r}", force=True)
         try:
-            result: SparcPaperResolutionResult = resolve_papers_for_sparc_dataset(
-                dataset_id=str(ds_id),
-                dataset_title=title,
-                dataset_description=desc,
-                dataset_url=url,
-                min_interval_seconds=min_interval_seconds,
-                max_retries=max_retries,
-                backoff_seconds=backoff_seconds,
-            )
+            with progress.ticking(str(ds_id)):
+                result: SparcPaperResolutionResult = resolve_papers_for_sparc_dataset(
+                    dataset_id=str(ds_id),
+                    dataset_title=title,
+                    dataset_description=desc,
+                    dataset_url=url,
+                    min_interval_seconds=min_interval_seconds,
+                    max_retries=max_retries,
+                    backoff_seconds=backoff_seconds,
+                )
             for k in telemetry.keys():
                 telemetry[k] += result.telemetry.get(k, 0)  # type: ignore[operator]
 
@@ -1480,6 +1490,9 @@ def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_i
         except Exception as e:
             unresolved.append({"sparc_id": str(ds_id), "sparc_title": title, "reason": "exception", "error": str(e)})
             logger.exception("Batch %d: exception resolving papers for sparc %s", batch_index, ds_id)
+
+    found.update(papers_found=len(resolved), unresolved=len(unresolved))
+    progress.update(len(dataset_ids), note="batch finished", force=True)
 
     persist_metrics = _persist_sparc_records(
         resolved=resolved,
@@ -1688,6 +1701,8 @@ def summarize_run(**context) -> None:
                 f"- citing papers upserted: {totals['citing_papers_upserted']} (datasets_with_primary_papers={totals['datasets_with_primary_papers']})",
                 f"- citation contexts: extracted={totals['citation_contexts_extracted']} missing_text={totals['citation_contexts_missing_text']}",
                 f"- telemetry: {telemetry_totals}",
+                # One more metered request, to show where today's OpenAlex budget stands.
+                f"- after this run: {format_budget(fetch_openalex_budget())}",
                 f"- cache root: {_get_output_root()}",
                 f"- run output dir: {output_dir}",
             ]

@@ -5,6 +5,7 @@ the OpenAlex lookup are stubbed.
 """
 
 import importlib
+import logging
 from contextlib import contextmanager
 
 import pytest
@@ -64,6 +65,11 @@ class FakeDb:
         self.tables = set(tables)
         self.to_look_up = list(to_look_up)
         self.statements = []
+        self.budget_probes = 0
+
+    def budget(self, session=None, telemetry=None):
+        self.budget_probes += 1
+        return {"remaining": 9000, "limit": 10000, "authenticated": True}
 
     @contextmanager
     def connection(self):
@@ -112,6 +118,7 @@ class TestFillMissingAuthorIds:
             fake = FakeDb(tables, to_look_up)
             monkeypatch.setattr(D, "get_db_connection", fake.connection)
             monkeypatch.setattr(D, "apply_schema_ddl", lambda cursor, ddl: fake.statements.append(("DDL", ddl)))
+            monkeypatch.setattr(P, "fetch_openalex_budget", fake.budget)
             return fake
         return make
 
@@ -154,3 +161,15 @@ class TestFillMissingAuthorIds:
         monkeypatch.setattr(P, "fetch_author_ids", lambda *a, **kw: pytest.fail("nothing to look up"))
         assert P.fill_missing_author_ids(archives=["sparc"], session=object())["papers"] == 0
         assert not any(text.startswith("SELECT p.paper_doi") for text, _ in fake.statements)
+        assert fake.budget_probes == 0  # no request spent just to report the budget
+
+    def test_logs_its_start_and_the_budget_left_at_the_end(self, db, monkeypatch, caplog):
+        fake = db()
+        monkeypatch.setattr(P, "fetch_author_ids", lambda session, dois, **kw: ({}, set(dois)))
+        with caplog.at_level(logging.INFO):
+            stats = P.fill_missing_author_ids(archives=["dandi"], session=object())
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert "author ids: 0/3 papers (0%)" in text and "starting" in text
+        assert "author ids: 3/3 papers (100%)" in text
+        assert "done. OpenAlex budget: 9,000 of 10,000 requests remaining today; API key" in text
+        assert stats["openalex_remaining"] == 9000 and fake.budget_probes == 1

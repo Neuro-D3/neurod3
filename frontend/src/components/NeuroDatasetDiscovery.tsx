@@ -9,6 +9,10 @@ import { formatPublishedDate } from '../utils/reuseMetrics';
 // Git SHA baked into the image at build time (CI --build-arg GIT_SHA -> Dockerfile
 // ENV REACT_APP_GIT_SHA, inlined by CRA). Defaults to "dev" locally.
 const GIT_SHA = process.env.REACT_APP_GIT_SHA || 'dev';
+
+type DatasetSort = 'published' | 'papers' | 'reuse' | 'title' | 'id' | 'source' | 'modality';
+// The list opens on the most reused datasets; the URL carries ?sort= only for other orders.
+const DEFAULT_SORT: DatasetSort = 'reuse';
 const REPO_URL = 'https://github.com/Neuro-D3/neurod3';
 
 // Lightweight icon stand-ins (avoid external deps in preview)
@@ -94,9 +98,7 @@ export default function NeuroDatasetDiscovery() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [noDatasetsFound, setNoDatasetsFound] = useState<boolean>(false);
-  const [sortBy, setSortBy] = useState<'published' | 'papers' | 'reuse' | 'title' | 'id' | 'source' | 'modality'>(
-    'published',
-  );
+  const [sortBy, setSortBy] = useState<DatasetSort>(DEFAULT_SORT);
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'CRCNS' | 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet' | 'SPARC'>(
     'all',
@@ -302,7 +304,7 @@ export default function NeuroDatasetDiscovery() {
     if (page <= 1) params.delete('page');
     else params.set('page', String(page));
 
-    if (sortBy === 'published') params.delete('sort');
+    if (sortBy === DEFAULT_SORT) params.delete('sort');
     else params.set('sort', sortBy);
 
     if (sortOrder === 'desc') params.delete('order');
@@ -601,7 +603,7 @@ export default function NeuroDatasetDiscovery() {
                   : 'from-blue-600 via-purple-600 to-pink-600'
               }`}
             >
-              Neuro Dataset Discovery
+              Dataset Reuse Hub
             </h1>
             <p className={darkMode ? 'text-lg text-gray-300' : 'text-lg text-gray-600'}>
               Explore neuroscience datasets across multiple repositories
@@ -1173,44 +1175,6 @@ export default function NeuroDatasetDiscovery() {
             </a>
           </div>
           <p className="mt-3 text-xs opacity-75">
-            Developed by{' '}
-            <a
-              href="https://foresight.org/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              Foresight Institute
-            </a>
-            {' | '}
-            <a
-              href="https://catalystneuro.com/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              Catalyst Neuro
-            </a>
-            {' | '}
-            <a
-              href="https://duralabs.ai"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              Dura Labs
-            </a>
-            {' | '}
-            <a
-              href="https://linktr.ee/BerkeleyLab"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              Berkeley Lab
-            </a>
-          </p>
-          <p className="mt-1 text-xs opacity-75">
             Build:{' '}
             {GIT_SHA === 'dev' ? (
               '#dev'

@@ -123,6 +123,13 @@ class TestDag:
     def test_polls_triggered_runs_often(self):
         assert S.dag.get_task("dandi__map").poke_interval <= 5
 
+    def test_a_trigger_that_finds_its_own_run_waits_for_it(self):
+        # A timed-out trigger request is retried after the run exists; that must
+        # not fail the step (staging, 2026-09-27: all four ingest steps).
+        triggers = [t for t in S.dag.tasks if hasattr(t, "trigger_dag_id")]
+        assert len(triggers) == len(S.ARCHIVES) * len(S.TRIGGERED_DAG)
+        assert all(t.reset_dag_run for t in triggers)
+
 
 FIXTURE = {
     "datasets": {k: [{"dataset_id": f"{k}-1"}, {"dataset_id": f"{k}-2"}] for k in S.ARCHIVE_LABELS},

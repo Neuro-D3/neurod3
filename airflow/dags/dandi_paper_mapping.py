@@ -1894,28 +1894,38 @@ def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_i
         "total_requests": 0,
     }
 
+    # A line per dataset, and a heartbeat while a slow one resolves (Crossref and
+    # OpenAlex retries can take minutes), with the batch's API request counts.
+    found = {"papers_found": 0, "unresolved": 0}
+    progress = BatchProgress(f"Resolve batch {batch_index}", len(dataset_ids), "datasets",
+                             counters=found, telemetry=telemetry, requests_label="API")
+
     for i, ds_id in enumerate(dataset_ids, start=1):
+        found.update(papers_found=len(resolved_mappings), unresolved=len(unresolved))
         meta = meta_by_id.get(str(ds_id))
         if not meta:
             unresolved.append({"dandi_id": str(ds_id), "dandi_title": None, "reason": "missing_in_db", "error": None})
+            found.update(unresolved=len(unresolved))
+            progress.update(i, note=f"{ds_id}: not in dandi_dataset, skipped", force=True)
             continue
 
         ds_title = meta.get("title")
         ds_desc = meta.get("description")
         ds_version = meta.get("version")
 
-        logger.info("Batch %d: processing %d/%d dandiset=%s title=%r", batch_index, i, len(dataset_ids), ds_id, (ds_title or "")[:120])
+        progress.update(i - 1, note=f"starting {ds_id} {(ds_title or '')[:120]!r}", force=True)
         try:
-            result: PaperResolutionResult = resolve_papers_for_dandiset(
-                dandiset_id=str(ds_id),
-                dandiset_title=ds_title,
-                dandiset_description=ds_desc,
-                dandiset_version=ds_version,
-                include_secondary_relations=include_secondary_relations,
-                min_interval_seconds=min_interval_seconds,
-                max_retries=max_retries,
-                backoff_seconds=backoff_seconds,
-            )
+            with progress.ticking(str(ds_id)):
+                result: PaperResolutionResult = resolve_papers_for_dandiset(
+                    dandiset_id=str(ds_id),
+                    dandiset_title=ds_title,
+                    dandiset_description=ds_desc,
+                    dandiset_version=ds_version,
+                    include_secondary_relations=include_secondary_relations,
+                    min_interval_seconds=min_interval_seconds,
+                    max_retries=max_retries,
+                    backoff_seconds=backoff_seconds,
+                )
 
             for k in telemetry.keys():
                 telemetry[k] += result.telemetry.get(k, 0)  # type: ignore[operator]
@@ -1974,6 +1984,9 @@ def resolve_and_persist_batch(*, batch_index: int, dataset_ids: List[str], run_i
         except Exception as e:
             unresolved.append({"dandi_id": str(ds_id), "dandi_title": ds_title, "reason": "exception", "error": str(e)})
             logger.exception("Batch %d: exception resolving papers for dandiset %s", batch_index, ds_id)
+
+    found.update(papers_found=len(resolved_mappings), unresolved=len(unresolved))
+    progress.update(len(dataset_ids), note="batch finished", force=True)
 
     persist_metrics = _persist_resolved_records(
         resolved=resolved_mappings,
@@ -2235,6 +2248,8 @@ def summarize_run(**context) -> None:
                 f"- citing papers upserted: {totals['citing_papers_upserted']} (datasets_with_primary_papers={totals['datasets_with_primary_papers']})",
                 f"- citation contexts: extracted={totals['citation_contexts_extracted']} missing_text={totals['citation_contexts_missing_text']}",
                 f"- telemetry: {telemetry_totals}",
+                # One more metered request, to show where today's OpenAlex budget stands.
+                f"- after this run: {format_budget(fetch_openalex_budget())}",
                 f"- cache root: {_get_output_root()}",
                 f"- run output dir: {output_dir}",
             ]

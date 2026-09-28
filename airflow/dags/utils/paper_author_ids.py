@@ -21,6 +21,7 @@ import requests
 
 from utils.batch_progress import BatchProgress
 from utils.find_reuse_core import ApiQuotaExhausted, Telemetry, http_get_json
+from utils.openalex_budget import fetch_openalex_budget, format_budget
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +203,7 @@ def fill_missing_author_ids(
     stats: Dict[str, Any] = {"papers": len(dois), "with_author_ids": 0, "not_in_openalex": 0,
                              "unanswered": 0, "stopped_early": False}
     progress = BatchProgress("author ids", total=len(dois), unit="papers", counters=stats, telemetry=telemetry)
-    progress.line("starting")
+    progress.update(0, note="starting", force=True)
     for start in range(0, len(dois), BATCH_SIZE):
         batch = dois[start:start + BATCH_SIZE]
         try:
@@ -230,7 +231,14 @@ def fill_missing_author_ids(
                 )
                 stats["with_author_ids" if ids is not None else "not_in_openalex"] += 1
         progress.update(done=start + len(batch))
-    progress.update(force=True, note="done")
+    note = "done"
+    if dois:
+        # Where today's OpenAlex budget stands now: one more metered request, so
+        # skipped when there was nothing to look up.
+        budget = fetch_openalex_budget(session, telemetry=telemetry)
+        stats["openalex_remaining"] = budget.get("remaining")
+        note = f"done. {format_budget(budget)}"
+    progress.update(force=True, note=note)
     stats["openalex_requests"] = telemetry.total_requests
     logger.info("Author ids: %s", stats)
     return stats
