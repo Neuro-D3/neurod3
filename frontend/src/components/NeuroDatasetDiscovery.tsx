@@ -9,6 +9,10 @@ import { formatPublishedDate } from '../utils/reuseMetrics';
 // Git SHA baked into the image at build time (CI --build-arg GIT_SHA -> Dockerfile
 // ENV REACT_APP_GIT_SHA, inlined by CRA). Defaults to "dev" locally.
 const GIT_SHA = process.env.REACT_APP_GIT_SHA || 'dev';
+
+type DatasetSort = 'published' | 'papers' | 'reuse' | 'title' | 'id' | 'source' | 'modality';
+// The list opens on the most reused datasets; the URL carries ?sort= only for other orders.
+const DEFAULT_SORT: DatasetSort = 'reuse';
 const REPO_URL = 'https://github.com/Neuro-D3/neurod3';
 
 // Lightweight icon stand-ins (avoid external deps in preview)
@@ -94,9 +98,7 @@ export default function NeuroDatasetDiscovery() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [noDatasetsFound, setNoDatasetsFound] = useState<boolean>(false);
-  const [sortBy, setSortBy] = useState<'published' | 'papers' | 'reuse' | 'title' | 'id' | 'source' | 'modality'>(
-    'published',
-  );
+  const [sortBy, setSortBy] = useState<DatasetSort>(DEFAULT_SORT);
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'CRCNS' | 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet' | 'SPARC'>(
     'all',
@@ -302,7 +304,7 @@ export default function NeuroDatasetDiscovery() {
     if (page <= 1) params.delete('page');
     else params.set('page', String(page));
 
-    if (sortBy === 'published') params.delete('sort');
+    if (sortBy === DEFAULT_SORT) params.delete('sort');
     else params.set('sort', sortBy);
 
     if (sortOrder === 'desc') params.delete('order');
