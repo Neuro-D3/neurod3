@@ -47,9 +47,9 @@ variable "airflow_image" {
 
 # ─── Cloud SQL ──────────────────────────────────────────────────────────────
 variable "db_tier" {
-  description = "Cloud SQL machine tier. Staging default is the smallest shared-core tier."
+  description = "Cloud SQL machine tier. db-custom-1-3840 (1 dedicated vCPU, 3.75 GB, ~100 connections) is the staging default: db-f1-micro (shared core, 0.6 GB, ~25 connections) was the bottleneck for paper mapping, whose parallel batches commit every paper. Changing the tier restarts the instance (a few minutes of downtime)."
   type        = string
-  default     = "db-f1-micro"
+  default     = "db-custom-1-3840"
 }
 
 variable "db_deletion_protection" {
@@ -82,6 +82,18 @@ variable "cloudrun_memory" {
   description = "Memory per Cloud Run instance."
   type        = string
   default     = "512Mi"
+}
+
+variable "api_min_instances" {
+  description = "Warm API instances kept running. 1 = no cold start; 0 = scale to zero (cheapest)."
+  type        = number
+  default     = 1
+}
+
+variable "frontend_min_instances" {
+  description = "Warm frontend instances kept running. 1 avoids a webpack compile on the first request after idle; 0 = scale to zero (cheapest)."
+  type        = number
+  default     = 1
 }
 
 variable "cloudrun_max_instances" {

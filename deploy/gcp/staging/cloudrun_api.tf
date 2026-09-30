@@ -11,7 +11,9 @@ resource "google_cloud_run_v2_service" "api" {
     service_account = google_service_account.api.email
 
     scaling {
-      min_instance_count = 0 # scale to zero (staging cost)
+      # 1 keeps an instance warm (no cold start on the first request after idle);
+      # 0 scales to zero. With cpu_idle below, a warm idle instance bills at the idle rate.
+      min_instance_count = var.api_min_instances
       max_instance_count = var.cloudrun_max_instances
     }
 
@@ -29,7 +31,8 @@ resource "google_cloud_run_v2_service" "api" {
         }
         # Cloud SQL connector volume forces always-allocated CPU mode, which
         # requires >= 1 CPU. cpu_idle = true re-enables throttling at idle.
-        cpu_idle = true
+        cpu_idle          = true
+        startup_cpu_boost = true
       }
 
       # psycopg treats a host that starts with "/" as a Unix socket directory.
