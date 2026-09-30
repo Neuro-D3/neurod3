@@ -47,9 +47,9 @@ variable "airflow_image" {
 
 # ─── Cloud SQL ──────────────────────────────────────────────────────────────
 variable "db_tier" {
-  description = "Cloud SQL machine tier. db-custom-1-3840 (1 dedicated vCPU, 3.75 GB, ~100 connections) is the staging default: db-f1-micro (shared core, 0.6 GB, ~25 connections) was the bottleneck for paper mapping, whose parallel batches commit every paper. Changing the tier restarts the instance (a few minutes of downtime)."
+  description = "Cloud SQL machine tier. db-g1-small (shared core, 1.7 GB) is the staging default: db-f1-micro (0.6 GB) sat at 100% memory even at idle. Production: db-custom-2-7680 or db-custom-1-3840 (docs/PRODUCTION_TODO.md item 10). Changing the tier restarts the instance for a minute or two."
   type        = string
-  default     = "db-custom-1-3840"
+  default     = "db-g1-small"
 }
 
 variable "db_deletion_protection" {
@@ -91,7 +91,7 @@ variable "api_min_instances" {
 }
 
 variable "frontend_min_instances" {
-  description = "Warm frontend instances kept running. 1 avoids a webpack compile on the first request after idle; 0 = scale to zero (cheapest)."
+  description = "Warm frontend instances kept running. 1 avoids the ~70 s webpack compile on the first request after idle, but the dev-server image runs unthrottled, so the instance bills as always-on; 0 = scale to zero (cheapest)."
   type        = number
   default     = 1
 }

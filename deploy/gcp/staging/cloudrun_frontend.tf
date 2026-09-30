@@ -16,9 +16,9 @@
 #
 # Scaling: var.frontend_min_instances. Because this image runs the CRA dev server,
 # every cold start pays a full webpack compile, so with 0 the first request after
-# idle is slow. 1 keeps one instance warm (compiled once, billed at the idle rate
-# between requests via cpu_idle). Serving a static production build (the "later
-# optimization" noted above) is what would make scale-to-zero cheap AND fast.
+# idle is slow (~70 s). 1 keeps one compiled instance warm, but CPU is not throttled
+# here, so the warm instance bills as always-on. Serving a static production build
+# (docs/PRODUCTION_TODO.md item 17) is what makes scale-to-zero cheap AND fast.
 
 resource "google_cloud_run_v2_service" "frontend" {
   name     = "neuro-d3-frontend"
@@ -45,7 +45,6 @@ resource "google_cloud_run_v2_service" "frontend" {
           cpu    = "1"
           memory = "1Gi"
         }
-        cpu_idle          = true
         startup_cpu_boost = true
       }
 

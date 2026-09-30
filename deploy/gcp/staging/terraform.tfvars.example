@@ -14,9 +14,9 @@ frontend_image = "us-west1-docker.pkg.dev/neuro-d3-staging/neuro-d3/frontend:lat
 airflow_image  = "us-west1-docker.pkg.dev/neuro-d3-staging/neuro-d3/airflow:latest"
 
 # Cloud SQL
-# db-custom-1-3840: 1 dedicated vCPU, 3.75 GB. db-f1-micro is cheaper but slows
-# paper mapping. Changing the tier restarts the instance.
-db_tier                = "db-custom-1-3840"
+# db-g1-small (1.7 GB): db-f1-micro (0.6 GB) runs out of memory. Production sizes
+# are in docs/PRODUCTION_TODO.md item 10. Changing the tier restarts the instance.
+db_tier                = "db-g1-small"
 db_deletion_protection = false
 
 # Airflow VM. e2-standard-2 (8 GB); e2-medium (4 GB) runs out of memory.
