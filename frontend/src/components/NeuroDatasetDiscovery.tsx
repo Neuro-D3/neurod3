@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
+import Spinner from './Spinner';
 import { datasetDetailPath, fetchDatasets, fetchDatasetStats } from '../services/api';
 import type { Dataset } from '../services/api';
 import { PopulationIcon } from './PopulationIcon';
@@ -842,7 +843,12 @@ export default function NeuroDatasetDiscovery() {
                 </select>
               </div>
 
-              <div className={darkMode ? 'text-sm text-gray-300 text-center' : 'text-sm text-gray-600 text-center'}>
+              <div
+                className={`flex items-center justify-center gap-2 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}
+                aria-live="polite"
+              >
+                {loading ? <Spinner darkMode={darkMode} /> : null}
+                <span>
                 {firstLoad ? 'Loading datasets…' : (
                 <>
                 Showing{' '}
@@ -856,6 +862,7 @@ export default function NeuroDatasetDiscovery() {
                 datasets
                 </>
                 )}
+                </span>
               </div>
             </div>
 
@@ -1290,7 +1297,7 @@ function SkeletonBar({ darkMode, className }: { darkMode: boolean; className: st
   return (
     <div
       aria-hidden="true"
-      className={`animate-pulse rounded-lg motion-reduce:animate-none ${darkMode ? 'bg-white/10' : 'bg-slate-200'} ${className}`}
+      className={`animate-skeleton rounded-lg motion-reduce:animate-none ${darkMode ? 'bg-white/20' : 'bg-slate-300'} ${className}`}
     />
   );
 }
