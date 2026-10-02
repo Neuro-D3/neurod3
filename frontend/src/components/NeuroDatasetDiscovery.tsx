@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import Spinner from './Spinner';
+import { Skeleton, Spinner } from './Loading';
 import { datasetDetailPath, fetchDatasets, fetchDatasetStats } from '../services/api';
 import type { Dataset } from '../services/api';
 import { PopulationIcon } from './PopulationIcon';
@@ -415,11 +415,11 @@ export default function NeuroDatasetDiscovery() {
         unique: response.total,
         bySources: response.by_source || {},
       });
-      setStatsLoaded(true);
     } catch (err) {
       if (isCancelled?.()) return;
       console.error('Error fetching dataset stats from API:', err);
-      setStatsLoaded(true);
+    } finally {
+      if (!isCancelled?.()) setStatsLoaded(true);
     }
   }, [sourceFilter, selectedModalities, searchQuery]);
 
@@ -650,7 +650,7 @@ export default function NeuroDatasetDiscovery() {
             }`}
           >
             <div className={darkMode ? 'text-2xl font-bold text-white' : 'text-2xl font-bold text-gray-900'}>
-              {statsLoaded ? stats.total : <SkeletonBar darkMode={darkMode} className="h-8 w-16" />}
+              {statsLoaded ? stats.total : <Skeleton darkMode={darkMode} className="rounded-lg h-8 w-16" />}
             </div>
             <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>Total Datasets</div>
           </div>
@@ -660,7 +660,7 @@ export default function NeuroDatasetDiscovery() {
             }`}
           >
             <div className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-purple-400 bg-clip-text text-transparent">
-              {statsLoaded ? stats.bySources['DANDI'] || 0 : <SkeletonBar darkMode={darkMode} className="h-8 w-16" />}
+              {statsLoaded ? stats.bySources['DANDI'] || 0 : <Skeleton darkMode={darkMode} className="rounded-lg h-8 w-16" />}
             </div>
             <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>DANDI</div>
           </div>
@@ -670,7 +670,7 @@ export default function NeuroDatasetDiscovery() {
             }`}
           >
             <div className="text-2xl font-bold bg-gradient-to-r from-green-600 to-green-400 bg-clip-text text-transparent">
-              {statsLoaded ? stats.bySources['OpenNeuro'] || 0 : <SkeletonBar darkMode={darkMode} className="h-8 w-16" />}
+              {statsLoaded ? stats.bySources['OpenNeuro'] || 0 : <Skeleton darkMode={darkMode} className="rounded-lg h-8 w-16" />}
             </div>
             <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>OpenNeuro</div>
           </div>
@@ -680,7 +680,7 @@ export default function NeuroDatasetDiscovery() {
             }`}
           >
             <div className="text-2xl font-bold bg-gradient-to-r from-cyan-600 to-cyan-400 bg-clip-text text-transparent">
-              {statsLoaded ? stats.bySources['CRCNS'] || 0 : <SkeletonBar darkMode={darkMode} className="h-8 w-16" />}
+              {statsLoaded ? stats.bySources['CRCNS'] || 0 : <Skeleton darkMode={darkMode} className="rounded-lg h-8 w-16" />}
             </div>
             <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>CRCNS</div>
           </div>
@@ -690,7 +690,7 @@ export default function NeuroDatasetDiscovery() {
             }`}
           >
             <div className="text-2xl font-bold bg-gradient-to-r from-amber-600 to-amber-400 bg-clip-text text-transparent">
-              {statsLoaded ? stats.bySources['SPARC'] || 0 : <SkeletonBar darkMode={darkMode} className="h-8 w-16" />}
+              {statsLoaded ? stats.bySources['SPARC'] || 0 : <Skeleton darkMode={darkMode} className="rounded-lg h-8 w-16" />}
             </div>
             <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>SPARC</div>
           </div>
@@ -1292,16 +1292,6 @@ export default function NeuroDatasetDiscovery() {
 }
 
 
-
-function SkeletonBar({ darkMode, className }: { darkMode: boolean; className: string }) {
-  return (
-    <div
-      aria-hidden="true"
-      className={`animate-skeleton rounded-lg motion-reduce:animate-none ${darkMode ? 'bg-white/20' : 'bg-slate-300'} ${className}`}
-    />
-  );
-}
-
 /** Placeholder cards shaped like the dataset feed, shown until the first page arrives. */
 function DatasetFeedSkeleton({ darkMode, count }: { darkMode: boolean; count: number }) {
   return (
@@ -1315,14 +1305,14 @@ function DatasetFeedSkeleton({ darkMode, count }: { darkMode: boolean; count: nu
         >
           <div className="flex flex-col sm:flex-row gap-4 p-5">
             <div className="flex-1 min-w-0 space-y-3">
-              <SkeletonBar darkMode={darkMode} className="h-5 w-2/3" />
-              <SkeletonBar darkMode={darkMode} className="h-3 w-1/3" />
-              <SkeletonBar darkMode={darkMode} className="h-3 w-full" />
-              <SkeletonBar darkMode={darkMode} className="h-3 w-5/6" />
+              <Skeleton darkMode={darkMode} className="rounded-lg h-5 w-2/3" />
+              <Skeleton darkMode={darkMode} className="rounded-lg h-3 w-1/3" />
+              <Skeleton darkMode={darkMode} className="rounded-lg h-3 w-full" />
+              <Skeleton darkMode={darkMode} className="rounded-lg h-3 w-5/6" />
             </div>
             <div className="flex sm:flex-col items-start sm:items-end gap-2">
-              <SkeletonBar darkMode={darkMode} className="h-6 w-20 rounded-full" />
-              <SkeletonBar darkMode={darkMode} className="h-7 w-24" />
+              <Skeleton darkMode={darkMode} className="h-6 w-20 rounded-full" />
+              <Skeleton darkMode={darkMode} className="rounded-lg h-7 w-24" />
             </div>
           </div>
         </div>

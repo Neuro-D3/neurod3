@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import Spinner from '../components/Spinner';
+import { Skeleton, Spinner } from '../components/Loading';
 import {
   datasetDetailPath,
   fetchPaperMappingCitations,
@@ -428,7 +428,7 @@ export default function PaperMappingDashboard() {
               </p>
               <div className="mt-3 space-y-2 text-sm">
                 {firstLoad ? (
-                  <SkeletonList count={4} itemClassName="h-9 rounded-lg" />
+                  [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-9 rounded-lg" />)
                 ) : classificationBreakdown.length ? (
                   classificationBreakdown.map(([bucket, count]) => {
                     const active = classificationBucketFilter === bucket;
@@ -462,7 +462,7 @@ export default function PaperMappingDashboard() {
             <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-base font-semibold">Source Breakdown</h2>
               <div className="mt-3 space-y-3 text-sm">
-                {firstLoad ? <SkeletonList count={2} itemClassName="h-[124px] rounded-xl" /> : null}
+                {firstLoad ? [0, 1].map((i) => <Skeleton key={i} className="h-[124px] rounded-xl" />) : null}
                 {(summary?.by_source || []).map((entry) => (
                   <div key={entry.source} className="rounded-xl bg-slate-50 p-3">
                     <div className="font-medium text-slate-900">{entry.source}</div>
@@ -780,21 +780,11 @@ function SummaryCard({ title, value, loading = false }: { title: string; value: 
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-busy={loading}>
       <div className="text-sm font-medium text-slate-500">{title}</div>
       {loading ? (
-        <div className="mt-2 h-9 w-24 animate-skeleton rounded-lg bg-slate-300 motion-reduce:animate-none" />
+        <Skeleton className="mt-2 h-9 w-24 rounded-lg" />
       ) : (
         <div className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">{value}</div>
       )}
     </div>
-  );
-}
-
-function SkeletonList({ count, itemClassName }: { count: number; itemClassName: string }) {
-  return (
-    <>
-      {Array.from({ length: count }, (_, i) => (
-        <div key={i} className={`animate-skeleton bg-slate-200 motion-reduce:animate-none ${itemClassName}`} />
-      ))}
-    </>
   );
 }
 
@@ -805,10 +795,8 @@ function TableSkeletonRows({ rows, columns }: { rows: number; columns: number })
         <tr key={r}>
           {Array.from({ length: columns }, (_, c) => (
             <td key={c} className="px-4 py-3 align-top">
-              <div
-                className={`h-4 animate-skeleton rounded bg-slate-300 motion-reduce:animate-none ${c === 2 ? 'w-48' : 'w-12'}`}
-              />
-              {c === 2 ? <div className="mt-2 h-3 w-64 animate-skeleton rounded bg-slate-200 motion-reduce:animate-none" /> : null}
+              <Skeleton className={`h-4 rounded ${c === 2 ? 'w-48' : 'w-12'}`} />
+              {c === 2 ? <Skeleton className="mt-2 h-3 w-64 rounded" /> : null}
             </td>
           ))}
         </tr>
@@ -822,11 +810,11 @@ function ClassificationDistributionSkeleton() {
     <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-busy="true">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-base font-semibold">Classification Progress</h2>
-        <div className="h-4 w-72 max-w-full animate-skeleton rounded bg-slate-300 motion-reduce:animate-none" />
+        <Skeleton className="h-4 w-72 max-w-full rounded" />
       </div>
-      <div className="mt-3 h-3 w-full animate-skeleton rounded bg-slate-300 motion-reduce:animate-none" />
+      <Skeleton className="mt-3 h-3 w-full rounded" />
       <h3 className="mt-5 text-sm font-medium text-slate-700">Outcome of attempted edges</h3>
-      <div className="mt-2 h-6 w-full animate-skeleton rounded bg-slate-200 motion-reduce:animate-none" />
+      <Skeleton className="mt-2 h-6 w-full rounded" />
     </section>
   );
 }
