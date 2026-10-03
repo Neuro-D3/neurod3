@@ -1,0 +1,8 @@
+# Files that run or are rendered on Linux keep LF on every checkout, including
+# Windows with core.autocrlf=true. A CRLF startup-airflow.sh.tftpl made
+# `terraform plan` rewrite the VM's startup script, and bash fails on "\r".
+*.sh    text eol=lf
+*.tftpl text eol=lf
+*.tf    text eol=lf
+*.tfvars text eol=lf
+*.example text eol=lf

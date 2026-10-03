@@ -46,9 +46,9 @@ flowchart LR
     V[("airflow-output volume<br/>paper text cache, boot disk")]
     X[cloudsql-proxy]
   end
-  SQL[("Cloud SQL · db-f1-micro<br/>airflow + dag_data")]
+  SQL[("Cloud SQL · db-g1-small<br/>airflow + dag_data")]
   API[Cloud Run: API] --> SQL
-  FE[Cloud Run: frontend<br/>React dev server] --> API
+  FE[Cloud Run: frontend<br/>React dev server, 1 warm instance] --> API
   X --> SQL
   S --> V
   S -->|OpenAlex, Europe PMC, PMC,<br/>Crossref, Unpaywall, publishers| NET((internet))
@@ -243,8 +243,9 @@ e2-standard-2.
 10. **Upgrade Cloud SQL.**
    - Memory is at 100% on `db-f1-micro` (0.6 GB) even at idle. Warm, the
      dashboard's summary query takes ~1.9 s and the dataset list ~2.3 s.
-   - **Staging: `db-g1-small`** (shared core, 1.7 GB, ~$26/mo). One
-     Terraform variable (`db_tier`). Do this before production work starts.
+   - **Staging: `db-g1-small`** (shared core, 1.7 GB, ~$26/mo). Done
+     2026-10-01: it is now the `db_tier` default. Recheck the Cloud SQL memory
+     chart and the API timings below against it.
    - **Production: `db-custom-2-7680`** (2 vCPU, 7.5 GB, ~$100/mo), or
      `db-custom-1-3840` (1 vCPU, 3.75 GB, ~$50/mo) if load testing shows it's
      enough. Dedicated cores avoid shared-core throttling during backfills.
@@ -325,10 +326,14 @@ e2-standard-2.
     - Turn CPU throttling back on for the frontend (it's `cpu-throttling:
       false` today, so CPU is billed whenever an instance is up); a static
       server doesn't need always-on CPU.
+    - Stopgap since 2026-10-01: one warm frontend instance
+      (`frontend_min_instances = 1`), so visitors skip the compile. Because CPU
+      isn't throttled, it bills as always-on (~$50/mo). Set it back to 0 once
+      this item is done.
 18. **API cold starts and latency.**
-    - Keep one API instance warm: `min_instance_count = 1` on the API's Cloud
-      Run service (a few dollars a month). Today it scales to zero and the
-      first dashboard request waits for Python to start.
+    - Done 2026-10-01: one API instance stays warm (`api_min_instances = 1`,
+      a few dollars a month), so the first dashboard request no longer waits
+      for Python to start.
     - `/api/paper-mapping/summary` takes 1.9–4.8 s: cache it or use a
       materialised view. Recheck after item 10.
 19. **Progress and metrics for long tasks.**
@@ -392,9 +397,10 @@ committing; spot prices vary.
 |---|---|---|---|
 | Airflow VM (UI, scheduler, daily runs) | e2-standard-2, ~$49/mo | e2-standard-2, with tasks moved to a worker (item 12). e2-standard-4 if they stay local | $49–98 |
 | Backfill VM, weekends only | — | e2-highcpu-16, ~10 h per weekend: ~$0.40/h on-demand, ~$0.12/h spot | $5–17 |
-| Cloud SQL | db-f1-micro, ~$8/mo + storage (→ db-g1-small, ~$26) | db-custom-1-3840 (~$50) or db-custom-2-7680 (~$100) | $50–100 |
+| Cloud SQL | db-g1-small, ~$26/mo + storage (was db-f1-micro, ~$8) | db-custom-1-3840 (~$50) or db-custom-2-7680 (~$100) | $50–100 |
 | Paper text store | boot disk (free, not durable) | GCS Standard, 10–50 GB at ~$0.02/GB | < $1 |
 | Boot disk, Cloud Run, Artifact Registry | ~$5–10/mo | same | $5–10 |
 | OpenAlex | free key, 10k requests/day | free, or a paid tier if item 7 shows it's needed | TBD |
-| API warm instance (item 18) | scales to zero | `min_instance_count = 1` | ~$5 |
-| **Total** | **~$65–70/mo** (~$85 with db-g1-small) | lean: **~$115/mo**; comfortable: **~$230/mo** | |
+| API warm instance (item 18) | 1 warm instance, ~$5 | same | ~$5 |
+| Frontend warm instance (item 17 stopgap) | 1 warm instance, unthrottled, ~$50 | none: a static build scales to zero | $0 |
+| **Total** | **~$140/mo** (~$90 without the warm frontend) | lean: **~$115/mo**; comfortable: **~$230/mo** | |

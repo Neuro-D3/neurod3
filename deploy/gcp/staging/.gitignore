@@ -13,3 +13,7 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# Saved plans (terraform plan -out=tfplan) hold secret values in plain text.
+tfplan
+*.tfplan
