@@ -229,6 +229,8 @@ export default function PaperMappingDashboard() {
   // Nothing fetched yet: placeholders. Later loads (filter, sort, page) keep the
   // previous data on screen, dimmed, so the layout doesn't jump.
   const firstLoad = loading && !summary;
+  // Applied to everything that shows fetched data, so stale numbers are visibly stale.
+  const reloadDim = `transition-opacity ${loading && !firstLoad ? 'opacity-50' : ''}`;
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900">
@@ -271,16 +273,18 @@ export default function PaperMappingDashboard() {
           <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
         ) : null}
 
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className={`grid gap-4 md:grid-cols-3 ${reloadDim}`}>
           <SummaryCard title="Datasets With Mapped Papers" loading={firstLoad} value={formatNumber(summary?.summary.datasets_with_mapped_papers)} />
           <SummaryCard title="Distinct Primary Papers" loading={firstLoad} value={formatNumber(summary?.summary.distinct_mapped_primary_papers)} />
           <SummaryCard title="Citation Edges" loading={firstLoad} value={formatNumber(summary?.summary.citation_edges)} />
         </div>
 
         {summary ? (
-          <ClassificationDistribution
-            progress={classificationProgress(summary.summary.citation_edges, summary.by_classification)}
-          />
+          <div className={reloadDim}>
+            <ClassificationDistribution
+              progress={classificationProgress(summary.summary.citation_edges, summary.by_classification)}
+            />
+          </div>
         ) : firstLoad ? (
           <ClassificationDistributionSkeleton />
         ) : null}
@@ -348,7 +352,7 @@ export default function PaperMappingDashboard() {
                 </thead>
                 <tbody
                   aria-busy={loading}
-                  className={`divide-y divide-slate-100 transition-opacity ${loading && !firstLoad ? 'opacity-50' : ''}`}
+                  className={`divide-y divide-slate-100 ${reloadDim}`}
                 >
                   {firstLoad ? <TableSkeletonRows rows={8} columns={6} /> : null}
                   {datasets.map((dataset) => {
@@ -426,7 +430,7 @@ export default function PaperMappingDashboard() {
               <p className="mt-1 text-xs text-slate-500">
                 Click a row to show only datasets that have at least one edge in that bucket. Click again to clear.
               </p>
-              <div className="mt-3 space-y-2 text-sm">
+              <div className={`mt-3 space-y-2 text-sm ${reloadDim}`}>
                 {firstLoad ? (
                   [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-9 rounded-lg" />)
                 ) : classificationBreakdown.length ? (
@@ -461,7 +465,7 @@ export default function PaperMappingDashboard() {
 
             <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-base font-semibold">Source Breakdown</h2>
-              <div className="mt-3 space-y-3 text-sm">
+              <div className={`mt-3 space-y-3 text-sm ${reloadDim}`}>
                 {firstLoad ? [0, 1].map((i) => <Skeleton key={i} className="h-[124px] rounded-xl" />) : null}
                 {(summary?.by_source || []).map((entry) => (
                   <div key={entry.source} className="rounded-xl bg-slate-50 p-3">

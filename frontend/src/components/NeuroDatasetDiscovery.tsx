@@ -113,6 +113,8 @@ export default function NeuroDatasetDiscovery() {
   });
   // False until the first stats response (or failure): the cards pulse instead of reading 0.
   const [statsLoaded, setStatsLoaded] = useState<boolean>(false);
+  // True while any stats request is pending; after the first, the cards dim instead.
+  const [statsLoading, setStatsLoading] = useState<boolean>(true);
   const [page, setPage] = useState<number>(1);
   const [pageSize] = useState<number>(25);
   const [totalCount, setTotalCount] = useState<number>(0);
@@ -387,6 +389,7 @@ export default function NeuroDatasetDiscovery() {
   }, [fetchAllDatasets]);
 
   const fetchStats = useCallback(async (isCancelled?: () => boolean) => {
+    setStatsLoading(true);
     try {
       const sourceParam = sourceFilter !== 'all' ? sourceFilter : undefined;
       const modalitiesParam = selectedModalities.length ? selectedModalities : undefined;
@@ -419,7 +422,10 @@ export default function NeuroDatasetDiscovery() {
       if (isCancelled?.()) return;
       console.error('Error fetching dataset stats from API:', err);
     } finally {
-      if (!isCancelled?.()) setStatsLoaded(true);
+      if (!isCancelled?.()) {
+        setStatsLoaded(true);
+        setStatsLoading(false);
+      }
     }
   }, [sourceFilter, selectedModalities, searchQuery]);
 
@@ -643,7 +649,11 @@ export default function NeuroDatasetDiscovery() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <div
+          className={`grid grid-cols-2 md:grid-cols-5 gap-4 mb-6 transition-opacity ${
+            statsLoading && statsLoaded ? 'opacity-50' : ''
+          }`}
+        >
           <div
             className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
               darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
