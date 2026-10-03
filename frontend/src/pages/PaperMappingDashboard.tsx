@@ -9,6 +9,7 @@ import {
   PaperMappingCitation,
   PaperMappingDatasetDetail,
   PaperMappingDatasetRow,
+  PaperMappingSourceSummary,
   PaperMappingSummary,
 } from '../services/api';
 import {
@@ -266,8 +267,30 @@ export default function PaperMappingDashboard() {
           <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
         ) : null}
 
-        <div className="grid gap-4 md:grid-cols-3">
-          <SummaryCard title="Datasets With Mapped Papers" value={formatNumber(summary?.summary.datasets_with_mapped_papers)} />
+        <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-5">
+          <SummaryCard
+            title="Ingested Datasets"
+            value={formatNumber(summary?.summary.ingested_datasets)}
+            hint={
+              typeof summary?.summary.ingested_total === 'number'
+                ? `${formatNumber(summary.summary.ingested_total)} ingested, junk removed`
+                : 'Run an ingestion DAG to compute'
+            }
+          />
+          <SummaryCard
+            title="Junk Excluded"
+            value={formatNumber(summary?.summary.junk_datasets)}
+            hint="Test, placeholder and empty uploads; hidden from the dataset list"
+          />
+          <SummaryCard
+            title="Datasets With Mapped Papers"
+            value={formatNumber(summary?.summary.datasets_with_mapped_papers)}
+            hint={
+              typeof summary?.summary.ingested_datasets === 'number' && summary.summary.ingested_datasets > 0
+                ? `${Math.round((100 * summary.summary.datasets_with_mapped_papers) / summary.summary.ingested_datasets)}% of ingested`
+                : undefined
+            }
+          />
           <SummaryCard title="Distinct Primary Papers" value={formatNumber(summary?.summary.distinct_mapped_primary_papers)} />
           <SummaryCard title="Citation Edges" value={formatNumber(summary?.summary.citation_edges)} />
         </div>
@@ -448,8 +471,7 @@ export default function PaperMappingDashboard() {
                   <div key={entry.source} className="rounded-xl bg-slate-50 p-3">
                     <div className="font-medium text-slate-900">{entry.source}</div>
                     <div className="mt-2 grid grid-cols-2 gap-2 text-slate-600">
-                      <span>Datasets</span>
-                      <span className="text-right">{formatNumber(entry.datasets_with_mapped_papers)}</span>
+                      <DatasetFunnelRows entry={entry} />
                       <span>Primary papers</span>
                       <span className="text-right">{formatNumber(entry.distinct_mapped_primary_papers)}</span>
                       <span>Citation edges</span>
@@ -751,12 +773,89 @@ function ClassificationDistribution({ progress }: { progress: ClassificationProg
   );
 }
 
-function SummaryCard({ title, value }: { title: string; value: string }) {
+function SummaryCard({ title, value, hint }: { title: string; value: string; hint?: string }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="text-sm font-medium text-slate-500">{title}</div>
       <div className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">{value}</div>
+      {hint ? <div className="mt-1 text-xs text-slate-400">{hint}</div> : null}
     </div>
+  );
+}
+
+/**
+ * One archive's dataset funnel: ingested (junk removed) split into mapped /
+ * no paper found / pending, with the junk count underneath. Shows nothing
+ * until the DAGs have written dataset_status.
+ */
+function DatasetFunnelRows({ entry }: { entry: PaperMappingSourceSummary }) {
+  if (typeof entry.ingested_datasets !== 'number') {
+    return (
+      <>
+        <span>Datasets</span>
+        <span className="text-right">{formatNumber(entry.datasets_with_mapped_papers)}</span>
+      </>
+    );
+  }
+  const ingested = entry.ingested_datasets;
+  const mapped = entry.datasets_with_mapped_papers;
+  const noPaper = entry.no_paper_datasets ?? 0;
+  const pending = entry.pending_datasets ?? 0;
+  const pct = (n: number) => (ingested > 0 ? `${(100 * n) / ingested}%` : '0%');
+  const share = (n: number) => (ingested > 0 ? ` (${Math.round((100 * n) / ingested)}%)` : '');
+  const junkReasons = Object.entries(entry.junk_reasons || {})
+    .map(([reason, n]) => `${reason.replace(/_/g, ' ').replace(/:/g, ': ')} ${formatNumber(n)}`)
+    .join(', ');
+  return (
+    <>
+      <span className="font-medium text-slate-800">Ingested datasets</span>
+      <span className="text-right font-medium text-slate-800">{formatNumber(ingested)}</span>
+      <div
+        className="col-span-2 flex h-2 overflow-hidden rounded-full bg-slate-200"
+        role="img"
+        aria-label={`${formatNumber(mapped)} mapped, ${formatNumber(noPaper)} no paper found, ${formatNumber(pending)} pending`}
+      >
+        <div className="bg-emerald-500" style={{ width: pct(mapped) }} />
+        <div className="bg-slate-400" style={{ width: pct(noPaper) }} />
+        <div className="bg-amber-400" style={{ width: pct(pending) }} />
+      </div>
+      <span className="flex items-center gap-2">
+        <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500" aria-hidden="true" />
+        Mapped
+      </span>
+      <span className="text-right">
+        {formatNumber(mapped)}
+        <span className="text-slate-400">{share(mapped)}</span>
+      </span>
+      <span className="flex items-center gap-2">
+        <span className="inline-block h-2.5 w-2.5 rounded-full bg-slate-400" aria-hidden="true" />
+        No paper found
+      </span>
+      <span className="text-right">
+        {formatNumber(noPaper)}
+        <span className="text-slate-400">{share(noPaper)}</span>
+      </span>
+      <span className="flex items-center gap-2">
+        <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-400" aria-hidden="true" />
+        Pending
+      </span>
+      <span className="text-right">
+        {formatNumber(pending)}
+        <span className="text-slate-400">{share(pending)}</span>
+      </span>
+      {typeof entry.never_published_datasets === 'number' ? (
+        <>
+          <span className="pl-4 text-slate-500">of which never published (draft only)</span>
+          <span className="text-right text-slate-500">{formatNumber(entry.never_published_datasets)}</span>
+        </>
+      ) : null}
+      <span className="text-rose-700" title={junkReasons || undefined}>
+        Junk excluded
+      </span>
+      <span className="text-right text-rose-700">{formatNumber(entry.junk_datasets)}</span>
+      {junkReasons ? <span className="col-span-2 text-[11px] leading-snug text-slate-400">{junkReasons}</span> : null}
+      <span className="col-span-2 my-1 border-t border-slate-200" aria-hidden="true" />
+    </>
   );
 }
 

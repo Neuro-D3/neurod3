@@ -57,7 +57,28 @@ export interface ApiHealthResponse {
   database: string;
 }
 
-export interface PaperMappingSourceSummary {
+/**
+ * Where an archive's ingested datasets stand (dataset_status column, written by
+ * the ingestion and paper-mapping DAGs). All null until the DAGs have run on a
+ * schema that has the column.
+ *   ingested_total      every row ingestion wrote
+ *   junk_datasets       test / placeholder / empty uploads (dataset_status = 'excluded')
+ *   ingested_datasets   ingested_total - junk_datasets: the count the site shows
+ *   no_paper_datasets   mapping ran, the archive's metadata named no paper
+ *   pending_datasets    not mapped yet
+ *   never_published_datasets  DANDI only: draft-only dandisets that are not junk
+ */
+export interface DatasetFunnel {
+  ingested_total: number | null;
+  junk_datasets: number | null;
+  ingested_datasets: number | null;
+  no_paper_datasets: number | null;
+  pending_datasets: number | null;
+  never_published_datasets?: number | null;
+  junk_reasons?: Record<string, number> | null;
+}
+
+export interface PaperMappingSourceSummary extends DatasetFunnel {
   source: 'CRCNS' | 'DANDI' | 'OpenNeuro' | 'SPARC';
   datasets_with_mapped_papers: number;
   distinct_mapped_primary_papers: number;
@@ -67,7 +88,7 @@ export interface PaperMappingSourceSummary {
 }
 
 export interface PaperMappingSummary {
-  summary: {
+  summary: DatasetFunnel & {
     datasets_with_mapped_papers: number;
     distinct_mapped_primary_papers: number;
     citation_edges: number;

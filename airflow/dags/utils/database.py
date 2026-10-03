@@ -323,6 +323,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         li = _col_or_null("dandi_dataset", "license", "text")
         ns = _col_or_null("dandi_dataset", "num_subjects", "integer")
         pr = _col_or_null("dandi_dataset", "created_at_precision", "text")
+        st = _col_or_null("dandi_dataset", "dataset_status", "text")
         selects.append(f"""
         SELECT
             'DANDI'::text AS source,
@@ -333,7 +334,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             {li},
             {ns},
             created_at, updated_at,
-            {pr}
+            {pr},
+            {st}
         FROM dandi_dataset
         """.strip())
 
@@ -344,6 +346,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         li = _col_or_null("openneuro_dataset", "license", "text")
         ns = _col_or_null("openneuro_dataset", "num_subjects", "integer")
         pr = _col_or_null("openneuro_dataset", "created_at_precision", "text")
+        st = _col_or_null("openneuro_dataset", "dataset_status", "text")
         selects.append(f"""
         SELECT
             'OpenNeuro'::text AS source,
@@ -354,7 +357,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             {li},
             {ns},
             created_at, updated_at,
-            {pr}
+            {pr},
+            {st}
         FROM openneuro_dataset
         """.strip())
 
@@ -365,6 +369,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         li = _col_or_null("crcns_dataset", "license", "text")
         ns = _col_or_null("crcns_dataset", "num_subjects", "integer")
         pr = _col_or_null("crcns_dataset", "created_at_precision", "text")
+        st = _col_or_null("crcns_dataset", "dataset_status", "text")
         selects.append(f"""
         SELECT
             'CRCNS'::text AS source,
@@ -375,7 +380,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             {li},
             {ns},
             created_at, updated_at,
-            {pr}
+            {pr},
+            {st}
         FROM crcns_dataset
         """.strip())
 
@@ -386,6 +392,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         li = _col_or_null("sparc_dataset", "license", "text")
         ns = _col_or_null("sparc_dataset", "num_subjects", "integer")
         pr = _col_or_null("sparc_dataset", "created_at_precision", "text")
+        st = _col_or_null("sparc_dataset", "dataset_status", "text")
         selects.append(f"""
         SELECT
             'SPARC'::text AS source,
@@ -396,7 +403,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             {li},
             {ns},
             created_at, updated_at,
-            {pr}
+            {pr},
+            {st}
         FROM sparc_dataset
         """.strip())
 
@@ -424,7 +432,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             NULL::text AS license,
             NULL::integer AS num_subjects,
             created_at, updated_at,
-            NULL::text AS created_at_precision
+            NULL::text AS created_at_precision,
+            NULL::text AS dataset_status
         FROM neuroscience_datasets
         {where_clause}
         """.strip())

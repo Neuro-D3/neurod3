@@ -214,6 +214,29 @@ Stores datasets fetched from the DANDI Archive API.
 - `created_at` (TIMESTAMP) - Record creation timestamp
 - `updated_at` (TIMESTAMP) - Last update timestamp
 - `version` (VARCHAR) - Dataset version
+- `asset_count` (INTEGER) - Files in the version shown; 0 marks an empty dandiset
+- `dataset_status` (TEXT) - Where the dataset stands in paper mapping (see below); also on `openneuro_dataset`, `crcns_dataset`, `sparc_dataset`
+- `dataset_status_reason` (TEXT) - Why a dataset is `excluded`
+
+**Dataset status** (`airflow/dags/utils/dataset_status.py`): every archive's dataset
+table carries `dataset_status`, recomputed at the end of each ingestion run and at the
+start and end of each paper-mapping run:
+
+| status | meaning |
+|---|---|
+| `mapped` | at least one primary paper in `<src>_paper_map` |
+| `no_paper` | mapping ran and the archive's metadata named no paper (`papers = 0`) |
+| `pending` | not tried yet |
+| `excluded` | junk: a test, placeholder or empty upload. Never mapped, and left out of the site's dataset list and counts |
+
+Junk rules follow the find_reuse repo where it has one (DANDI: empty dandisets and its
+curated test-dandiset list; SPARC: test/embargo tags, applied at ingestion) plus title
+checks for placeholder names ("Test", "asdf", "Unnamed Dataset", title equal to the id)
+and test/dummy/placeholder/tutorial/example as a word in the title ("test-retest" is
+kept). Descriptions are not keyword-matched any more: the old filter dropped real
+datasets whose descriptions mentioned a sample, a benchmark or a behavioral test. The
+paper-mapping dashboard shows each archive's funnel (ingested, junk, mapped, no paper,
+pending) from `GET /api/paper-mapping/summary`.
 
 #### 2. `neuroscience_datasets`
 Stores datasets from multiple sources (Kaggle, OpenNeuro, PhysioNet).

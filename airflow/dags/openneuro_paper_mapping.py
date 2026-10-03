@@ -43,6 +43,7 @@ from utils.database import (
 from utils.cache_keys import paper_cache_key_for_doi
 from utils.find_reuse_core import is_definitive_no_paper, normalize_doi, Telemetry
 from utils.targeting import requested_dataset_ids, sql_id_list
+from utils.dataset_status import STATUS_EXCLUDED, ensure_dataset_status_columns, refresh_dataset_status
 from utils.paper_citations import (
     find_citation_contexts,
     get_alternate_doi,
@@ -110,18 +111,6 @@ def _parse_batch_size(value: Any, default: int = 25) -> int:
     if n <= 0:
         raise ValueError(f"Invalid batch_size: {value!r}")
     return min(n, 1000)
-
-
-_TEST_DUMMY_KEYWORDS = (
-    "test",
-    "dummy",
-    "example",
-    "sample",
-    "tutorial",
-    "benchmark",
-    "synthetic",
-    "placeholder",
-)
 
 
 def keyword_filter_dataset(
@@ -276,6 +265,8 @@ def create_openneuro_paper_mapping_tables(**_context) -> None:
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             apply_schema_ddl(cursor, ddl)
+            # dataset_status / dataset_status_reason on the dataset table (utils/dataset_status.py)
+            ensure_dataset_status_columns(cursor, "OpenNeuro")
             # Whole-paper classification columns + runs table (utils/database.py);
             # idempotent, shared with the paper_reuse_classification DAG.
             ensure_paper_reuse_classification_columns(cursor)
@@ -294,10 +285,15 @@ def fetch_unmapped_openneuro_ids(**context) -> Dict[str, Any]:
     batch_size = _parse_batch_size(params.get("batch_size", 25), default=25)
     prioritize_doi_signals = bool(params.get("prioritize_doi_signals", True))
 
+    # Junk (test / placeholder / empty datasets) is decided once per dataset by
+    # utils.dataset_status and stored as dataset_status = 'excluded'; by default
+    # those rows are skipped here. exclude_keywords keeps the old ad-hoc
+    # title+description keyword filter for one-off runs.
     exclude_kw_raw = params.get("exclude_keywords")
-    exclude_keywords = _TEST_DUMMY_KEYWORDS
+    exclude_keywords: Tuple[str, ...] = ()
     if isinstance(exclude_kw_raw, str) and exclude_kw_raw.strip():
         exclude_keywords = tuple([k.strip().lower() for k in exclude_kw_raw.split(",") if k.strip()])
+    skip_excluded = True
 
     base_where = ""
     if not include_already_mapped:
@@ -335,6 +331,7 @@ def fetch_unmapped_openneuro_ids(**context) -> Dict[str, Any]:
     if requested:
         base_where = f"WHERE d.dataset_id IN ({sql_id_list(requested)})"
         exclude_keywords = ()
+        skip_excluded = False
         max_cap = None
 
     join_mapped_counts = """
@@ -359,7 +356,8 @@ def fetch_unmapped_openneuro_ids(**context) -> Dict[str, Any]:
     order_by = ",\n    ".join(order_parts)
 
     query = f"""
-    SELECT d.dataset_id, d.title, d.description, d.updated_at
+    SELECT d.dataset_id, d.title, d.description, d.updated_at,
+           d.dataset_status, d.dataset_status_reason
     FROM openneuro_dataset d
     {join_mapped_counts}
     {base_where}
@@ -368,13 +366,19 @@ def fetch_unmapped_openneuro_ids(**context) -> Dict[str, Any]:
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
+            # Bring dataset_status up to date (new rows from ingestion, mappings
+            # written since the last run) before reading it.
+            refresh_dataset_status(cursor, "OpenNeuro")
             cursor.execute(query)
             rows = cursor.fetchall()
 
     filtered_counts: Dict[str, int] = {}
     dataset_ids: List[str] = []
-    for (ds_id, title, description, _updated_at) in rows:
-        filtered, reason = keyword_filter_dataset(title, description, exclude_keywords)
+    for (ds_id, title, description, _updated_at, ds_status, ds_status_reason) in rows:
+        if exclude_keywords:
+            filtered, reason = keyword_filter_dataset(title, description, exclude_keywords)
+        else:
+            filtered, reason = (skip_excluded and ds_status == STATUS_EXCLUDED), ds_status_reason
         if filtered:
             filtered_counts[reason or "filtered"] = filtered_counts.get(reason or "filtered", 0) + 1
             continue
@@ -1371,6 +1375,10 @@ def fill_author_ids(**context) -> Dict[str, Any]:
 
 
 def summarize_run(**context) -> None:
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # Datasets mapped by this run move to dataset_status = 'mapped'.
+            refresh_dataset_status(cursor, "OpenNeuro")
     ti = context["ti"]
     seed: Dict[str, Any] = ti.xcom_pull(task_ids="fetch_unmapped_openneuro_ids") or {}
     run_id = seed.get("run_id") or _sanitize_run_id(

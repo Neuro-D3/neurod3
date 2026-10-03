@@ -13,6 +13,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 
 from utils.database import get_db_connection, create_unified_datasets_view, apply_schema_ddl
+from utils.dataset_status import ensure_dataset_status_columns, refresh_dataset_status
 from utils.targeting import LIST_ALL, keep_requested, requested_dataset_ids
 
 logger = logging.getLogger(__name__)
@@ -78,9 +79,15 @@ def parse_dandiset(dandiset: Dict[str, Any]) -> Dict[str, Any]:
     updated_at: Optional[datetime] = None
     url: str = ""
     version_id: Optional[str] = None
+    # Assets in the version shown; 0 = an empty dandiset (junk, like find_reuse).
+    asset_count: Optional[int] = None
 
     if version_obj:
         title = version_obj.get("name") or None
+        try:
+            asset_count = int(version_obj.get("asset_count")) if version_obj.get("asset_count") is not None else None
+        except (TypeError, ValueError):
+            asset_count = None
         updated_at = _parse_iso8601(version_obj.get("modified")) or root_modified
         version_id = version_obj.get("version") or None
 
@@ -120,6 +127,7 @@ def parse_dandiset(dandiset: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": created_at,
         "updated_at": updated_at,
         "version": version_id,
+        "asset_count": asset_count,
     }
 
 
@@ -168,6 +176,8 @@ def create_dandi_table(**context):
                     ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS license TEXT;
                     ALTER TABLE dandi_dataset ADD COLUMN IF NOT EXISTS num_subjects INTEGER;
                 """)
+                # dataset_status / dataset_status_reason (utils/dataset_status.py)
+                ensure_dataset_status_columns(cursor, "DANDI")
                 conn.commit()
         logger.info("Successfully created dandi_dataset table (or it already exists)")
     except Exception as e:
@@ -540,8 +550,8 @@ def insert_dandi_datasets(**context):
         return
 
     insert_sql = """
-    INSERT INTO dandi_dataset (dataset_id, title, modality, citations, papers, url, description, full_description, authors, contributors, license, num_subjects, created_at, updated_at, version)
-    VALUES (%(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(papers)s, %(url)s, %(description)s, %(full_description)s, %(authors)s, %(contributors)s, %(license)s, %(num_subjects)s, %(created_at)s, %(updated_at)s, %(version)s)
+    INSERT INTO dandi_dataset (dataset_id, title, modality, citations, papers, url, description, full_description, authors, contributors, license, num_subjects, created_at, updated_at, version, asset_count)
+    VALUES (%(dataset_id)s, %(title)s, %(modality)s, %(citations)s, %(papers)s, %(url)s, %(description)s, %(full_description)s, %(authors)s, %(contributors)s, %(license)s, %(num_subjects)s, %(created_at)s, %(updated_at)s, %(version)s, %(asset_count)s)
     ON CONFLICT (dataset_id)
     DO UPDATE SET
         title = EXCLUDED.title,
@@ -557,7 +567,8 @@ def insert_dandi_datasets(**context):
         num_subjects = COALESCE(EXCLUDED.num_subjects, dandi_dataset.num_subjects),
         created_at = EXCLUDED.created_at,
         updated_at = EXCLUDED.updated_at,
-        version = EXCLUDED.version
+        version = EXCLUDED.version,
+        asset_count = COALESCE(EXCLUDED.asset_count, dandi_dataset.asset_count)
     RETURNING (xmax = 0) AS inserted;
     """
 
@@ -568,6 +579,8 @@ def insert_dandi_datasets(**context):
                 updated_count = 0
 
                 for dataset in datasets:
+                    # Records fetched by a run from before the column existed lack it.
+                    dataset.setdefault("asset_count", None)
                     authors_val = dataset.get("authors")
                     dataset["authors"] = json.dumps(authors_val) if authors_val is not None else None
                     contributors_val = dataset.get("contributors")
@@ -599,6 +612,9 @@ def create_unified_datasets_view_task(**context):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
+                # Junk / no-paper / pending / mapped for every row, so the API sees
+                # the new rows with a status and the counts exclude junk.
+                refresh_dataset_status(cursor, "DANDI")
                 result = create_unified_datasets_view(cursor)
                 conn.commit()
                 return result
