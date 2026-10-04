@@ -9,10 +9,10 @@ import { DatasetPaperList } from '../components/DatasetPaperList';
 import { formatPublishedDate, plural } from '../utils/reuseMetrics';
 
 const SOURCE_COLORS: Record<string, string> = {
+  CRCNS: 'bg-cyan-100 text-cyan-800',
   DANDI: 'bg-purple-100 text-purple-800',
   OpenNeuro: 'bg-green-100 text-green-800',
-  Kaggle: 'bg-blue-100 text-blue-800',
-  PhysioNet: 'bg-orange-100 text-orange-800',
+  SPARC: 'bg-amber-100 text-amber-800',
 };
 
 const AUTHOR_COLORS: [string, string][] = [

@@ -323,6 +323,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         li = _col_or_null("dandi_dataset", "license", "text")
         ns = _col_or_null("dandi_dataset", "num_subjects", "integer")
         pr = _col_or_null("dandi_dataset", "created_at_precision", "text")
+        st = _col_or_null("dandi_dataset", "dataset_status", "text")
         selects.append(f"""
         SELECT
             'DANDI'::text AS source,
@@ -333,7 +334,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             {li},
             {ns},
             created_at, updated_at,
-            {pr}
+            {pr},
+            {st}
         FROM dandi_dataset
         """.strip())
 
@@ -344,6 +346,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         li = _col_or_null("openneuro_dataset", "license", "text")
         ns = _col_or_null("openneuro_dataset", "num_subjects", "integer")
         pr = _col_or_null("openneuro_dataset", "created_at_precision", "text")
+        st = _col_or_null("openneuro_dataset", "dataset_status", "text")
         selects.append(f"""
         SELECT
             'OpenNeuro'::text AS source,
@@ -354,7 +357,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             {li},
             {ns},
             created_at, updated_at,
-            {pr}
+            {pr},
+            {st}
         FROM openneuro_dataset
         """.strip())
 
@@ -365,6 +369,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         li = _col_or_null("crcns_dataset", "license", "text")
         ns = _col_or_null("crcns_dataset", "num_subjects", "integer")
         pr = _col_or_null("crcns_dataset", "created_at_precision", "text")
+        st = _col_or_null("crcns_dataset", "dataset_status", "text")
         selects.append(f"""
         SELECT
             'CRCNS'::text AS source,
@@ -375,7 +380,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             {li},
             {ns},
             created_at, updated_at,
-            {pr}
+            {pr},
+            {st}
         FROM crcns_dataset
         """.strip())
 
@@ -386,6 +392,7 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         li = _col_or_null("sparc_dataset", "license", "text")
         ns = _col_or_null("sparc_dataset", "num_subjects", "integer")
         pr = _col_or_null("sparc_dataset", "created_at_precision", "text")
+        st = _col_or_null("sparc_dataset", "dataset_status", "text")
         selects.append(f"""
         SELECT
             'SPARC'::text AS source,
@@ -396,11 +403,17 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             {li},
             {ns},
             created_at, updated_at,
-            {pr}
+            {pr},
+            {st}
         FROM sparc_dataset
         """.strip())
 
     if neuro_table_exists:
+        # neuroscience_datasets is the legacy seed table (populate_datasets_dag).
+        # Its rows for an archive are superseded once that archive's own table
+        # exists. Its hand-entered Kaggle and PhysioNet rows are never shown:
+        # those sources have no ingestion or paper-mapping pipeline, so they only
+        # put the home page's total out of step with the mapping dashboard.
         excluded_sources = ["'DANDI'", "'OpenNeuro'", "'CRCNS'", "'SPARC'"]
         if not dandi_table_exists:
             excluded_sources.remove("'DANDI'")
@@ -410,10 +423,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             excluded_sources.remove("'CRCNS'")
         if not sparc_table_exists:
             excluded_sources.remove("'SPARC'")
-        if excluded_sources:
-            where_clause = f"WHERE source NOT IN ({', '.join(excluded_sources)})"
-        else:
-            where_clause = ""
+        excluded_sources += ["'Kaggle'", "'PhysioNet'"]
+        where_clause = f"WHERE source NOT IN ({', '.join(excluded_sources)})"
         selects.append(f"""
         SELECT
             source::text,
@@ -424,7 +435,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             NULL::text AS license,
             NULL::integer AS num_subjects,
             created_at, updated_at,
-            NULL::text AS created_at_precision
+            NULL::text AS created_at_precision,
+            NULL::text AS dataset_status
         FROM neuroscience_datasets
         {where_clause}
         """.strip())

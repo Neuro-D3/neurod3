@@ -359,9 +359,12 @@ class TestRoutes:
         assert endpoint is M.get_dataset_detail
         assert params["dataset_id"] == "10.6080/k0s46pv7"
 
-    def test_archive_without_paper_mapping_is_untracked(self):
-        result = asyncio.run(M.get_dataset_metrics("kaggle", "UCI/epileptic-seizure"))
-        assert result == {"source": "Kaggle", "dataset_id": "UCI/epileptic-seizure", "tracked": False}
+    def test_dropped_seed_sources_are_not_found(self):
+        # Kaggle and PhysioNet seed rows are no longer exposed anywhere on the site.
+        for source in ("kaggle", "physionet"):
+            with pytest.raises(HTTPException) as err:
+                asyncio.run(M.get_dataset_metrics(source, "UCI/epileptic-seizure"))
+            assert err.value.status_code == 404
 
     def test_unknown_archive_is_not_found(self):
         with pytest.raises(HTTPException) as err:

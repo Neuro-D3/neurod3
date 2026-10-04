@@ -50,6 +50,7 @@ from utils.find_reuse_core import (
     resolve_openalex_work,
 )
 from utils.targeting import requested_dataset_ids, sql_id_list
+from utils.dataset_status import STATUS_EXCLUDED, ensure_dataset_status_columns, refresh_dataset_status
 from utils.paper_citations import (
     find_citation_contexts,
     get_alternate_doi,
@@ -358,12 +359,6 @@ def _parse_batch_size(value: Any, default: int = 25) -> int:
     return min(n, 1000)
 
 
-_TEST_DUMMY_KEYWORDS = (
-    "test", "dummy", "example", "sample", "tutorial",
-    "benchmark", "synthetic", "placeholder",
-)
-
-
 def keyword_filter_dataset(
     title: Optional[str], description: Optional[str], keywords: Tuple[str, ...]
 ) -> Tuple[bool, Optional[str]]:
@@ -505,6 +500,8 @@ def create_sparc_paper_mapping_tables(**_context) -> None:
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             apply_schema_ddl(cursor, ddl)
+            # dataset_status / dataset_status_reason on the dataset table (utils/dataset_status.py)
+            ensure_dataset_status_columns(cursor, "SPARC")
             # Whole-paper classification columns + runs table (utils/database.py);
             # idempotent, shared with the paper_reuse_classification DAG.
             ensure_paper_reuse_classification_columns(cursor)
@@ -521,10 +518,15 @@ def fetch_unmapped_sparc_ids(**context) -> Dict[str, Any]:
     max_cap = _parse_max_datasets_per_run(params.get("max_datasets_per_run", 50))
     batch_size = _parse_batch_size(params.get("batch_size", 25), default=25)
 
+    # Junk (test / placeholder / empty datasets) is decided once per dataset by
+    # utils.dataset_status and stored as dataset_status = 'excluded'; by default
+    # those rows are skipped here. exclude_keywords keeps the old ad-hoc
+    # title+description keyword filter for one-off runs.
     exclude_kw_raw = params.get("exclude_keywords")
-    exclude_keywords = _TEST_DUMMY_KEYWORDS
+    exclude_keywords: Tuple[str, ...] = ()
     if isinstance(exclude_kw_raw, str) and exclude_kw_raw.strip():
         exclude_keywords = tuple([k.strip().lower() for k in exclude_kw_raw.split(",") if k.strip()])
+    skip_excluded = True
 
     base_where = ""
     if not include_already_mapped:
@@ -544,10 +546,12 @@ def fetch_unmapped_sparc_ids(**context) -> Dict[str, Any]:
     if requested:
         base_where = f"WHERE d.dataset_id IN ({sql_id_list(requested)})"
         exclude_keywords = ()
+        skip_excluded = False
         max_cap = None
 
     query = f"""
-    SELECT d.dataset_id, d.title, d.description, d.url, d.updated_at
+    SELECT d.dataset_id, d.title, d.description, d.url, d.updated_at,
+           d.dataset_status, d.dataset_status_reason
     FROM sparc_dataset d
     {base_where}
     ORDER BY d.updated_at DESC NULLS LAST, d.dataset_id ASC;
@@ -555,13 +559,19 @@ def fetch_unmapped_sparc_ids(**context) -> Dict[str, Any]:
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
+            # Bring dataset_status up to date (new rows from ingestion, mappings
+            # written since the last run) before reading it.
+            refresh_dataset_status(cursor, "SPARC")
             cursor.execute(query)
             rows = cursor.fetchall()
 
     filtered_counts: Dict[str, int] = {}
     dataset_ids: List[str] = []
-    for (ds_id, title, description, _url, _updated_at) in rows:
-        filtered, reason = keyword_filter_dataset(title, description, exclude_keywords)
+    for (ds_id, title, description, _url, _updated_at, ds_status, ds_status_reason) in rows:
+        if exclude_keywords:
+            filtered, reason = keyword_filter_dataset(title, description, exclude_keywords)
+        else:
+            filtered, reason = (skip_excluded and ds_status == STATUS_EXCLUDED), ds_status_reason
         if filtered:
             filtered_counts[reason or "filtered"] = filtered_counts.get(reason or "filtered", 0) + 1
             continue
@@ -1530,6 +1540,10 @@ def fill_author_ids(**context) -> Dict[str, Any]:
 
 
 def summarize_run(**context) -> None:
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # Datasets mapped by this run move to dataset_status = 'mapped'.
+            refresh_dataset_status(cursor, "SPARC")
     ti = context["ti"]
     seed: Dict[str, Any] = ti.xcom_pull(task_ids="fetch_unmapped_sparc_ids") or {}
     run_id = seed.get("run_id") or _sanitize_run_id(

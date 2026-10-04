@@ -62,6 +62,7 @@ from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
 from utils.database import get_db_connection, create_unified_datasets_view, apply_schema_ddl
+from utils.dataset_status import ensure_dataset_status_columns, refresh_dataset_status
 from utils.targeting import LIST_ALL, keep_requested, requested_dataset_ids
 
 logger = logging.getLogger(__name__)
@@ -1415,6 +1416,8 @@ def create_openneuro_table(**context):
                     CREATE INDEX IF NOT EXISTS idx_openneuro_papers ON openneuro_dataset(papers DESC);
                     CREATE INDEX IF NOT EXISTS idx_openneuro_public ON openneuro_dataset(public);
                 """)
+                # dataset_status / dataset_status_reason (utils/dataset_status.py)
+                ensure_dataset_status_columns(cursor, "OpenNeuro")
                 conn.commit()
         logger.info("Successfully created openneuro_dataset table (or it already exists)")
     except Exception as e:
@@ -2222,6 +2225,9 @@ def create_unified_datasets_view_task(**context):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
+                # Junk / no-paper / pending / mapped for every row, so the API sees
+                # the new rows with a status and the counts exclude junk.
+                refresh_dataset_status(cursor, "OpenNeuro")
                 result = create_unified_datasets_view(cursor)
                 conn.commit()
                 return result

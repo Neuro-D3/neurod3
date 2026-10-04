@@ -49,7 +49,10 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="NeuroD3 API", version="1.0.0")
 
 # Allowed filter values
-ALLOWED_SOURCES = {"CRCNS", "DANDI", "Kaggle", "OpenNeuro", "PhysioNet", "SPARC"}
+# The four archives with ingestion + paper-mapping pipelines. Kaggle and
+# PhysioNet seed rows still exist in neuroscience_datasets but are left out of
+# the unified view (utils/database.py) and are not valid filters here.
+ALLOWED_SOURCES = {"CRCNS", "DANDI", "OpenNeuro", "SPARC"}
 ALLOWED_PAPER_MAPPING_SOURCES = {"CRCNS", "DANDI", "OpenNeuro", "SPARC"}
 
 # CORS configuration to allow the frontend to access the API.
@@ -740,6 +743,33 @@ async def health_check():
         )
 
 
+def _dataset_visible_sql(alias: str, has_status_column: bool) -> str:
+    """
+    ` AND <alias>.dataset_status <> 'excluded'` once the dataset tables carry the
+    column (utils/dataset_status.py), else "". Junk datasets (test / placeholder /
+    empty uploads) are ingested, so the mapping DAGs can record them, but never
+    shown or counted on the site.
+    """
+    if not has_status_column:
+        return ""
+    prefix = f"{alias}." if alias else ""
+    return f" AND COALESCE({prefix}dataset_status, '') <> 'excluded'"
+
+
+def _relation_has_column(cursor, relation: str, column: str) -> bool:
+    cursor.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s AND column_name = %s
+        ) AS exists;
+        """,
+        (relation, column),
+    )
+    row = cursor.fetchone()
+    return bool(row and row["exists"])
+
+
 def _dataset_order_sql(sort_by: Optional[str], sort_order: Optional[str], reuse_subquery: str) -> str:
     """
     ORDER BY clause for GET /api/datasets. Ties are broken deterministically;
@@ -773,7 +803,7 @@ def _dataset_order_sql(sort_by: Optional[str], sort_order: Optional[str], reuse_
 
 @app.get("/api/datasets")
 async def get_datasets(
-    source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, Kaggle, OpenNeuro, PhysioNet, SPARC)"),
+    source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, OpenNeuro, SPARC)"),
     modality: Optional[str] = Query(None, description="Filter by modality (comma-separated for AND)"),
     search: Optional[str] = Query(None, description="Search in title and description"),
     sort_by: str = Query("published", description="Sort column (published, papers, reuse, title, id, source, modality)"),
@@ -834,9 +864,11 @@ async def get_datasets(
                 cursor.execute("""
                     SELECT column_name FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = %s
-                      AND column_name IN ('authors', 'num_subjects', 'created_at_precision')
+                      AND column_name IN ('authors', 'num_subjects', 'created_at_precision', 'dataset_status')
                 """, (table_name,))
                 ds_opt_cols = {r["column_name"] for r in cursor.fetchall()}
+                # Junk datasets (dataset_status = 'excluded') stay out of the list and its count.
+                visible_sql = _dataset_visible_sql("d", "dataset_status" in ds_opt_cols)
                 authors_expr = "authors," if "authors" in ds_opt_cols else "NULL::jsonb AS authors,"
                 num_subjects_expr = "num_subjects," if "num_subjects" in ds_opt_cols else "NULL::integer AS num_subjects,"
                 # "year" when only the publication year is known (CRCNS), so the page shows "2011".
@@ -868,9 +900,9 @@ async def get_datasets(
                         d.updated_at,
                         ({reuse_subquery}) AS reuse_count
                     FROM {table_name} d
-                    WHERE 1=1
+                    WHERE 1=1{visible_sql}
                 """
-                base_count = f"SELECT COUNT(*) as total FROM {table_name} d WHERE 1=1"
+                base_count = f"SELECT COUNT(*) as total FROM {table_name} d WHERE 1=1{visible_sql}"
                 filters = []
                 params = []
 
@@ -1039,7 +1071,12 @@ async def get_dataset_stats(
                 
                 # Use psycopg.sql.Identifier() for safe table name construction
                 table_identifier = sql.Identifier(table_name)
-                
+
+                # Junk datasets (dataset_status = 'excluded') are left out of every count.
+                visible_clauses: List[Any] = []
+                if _relation_has_column(cursor, table_name, "dataset_status"):
+                    visible_clauses.append(sql.SQL("COALESCE(dataset_status, '') <> 'excluded'"))
+
                 # Parse/validate incoming filters (used for facets/total)
                 if source and source not in ALLOWED_SOURCES:
                     raise HTTPException(status_code=400, detail=f"Invalid source: {source}")
@@ -1052,7 +1089,7 @@ async def get_dataset_stats(
                 # - by_source: apply modality + search filters (but not source)
                 # - by_modality: apply source + search filters (but not modality)
                 by_source_params = []
-                by_source_clauses = []
+                by_source_clauses = list(visible_clauses)
                 if modalities:
                     by_source_params.extend([f"%{m}%" for m in modalities])
                     by_source_clauses.extend([sql.SQL("modality ILIKE %s")] * len(modalities))
@@ -1074,7 +1111,7 @@ async def get_dataset_stats(
                 by_source = {row["source"]: row["count"] for row in cursor.fetchall()}
 
                 by_modality_params = []
-                by_modality_clauses = []
+                by_modality_clauses = list(visible_clauses)
                 if source:
                     by_modality_clauses.append(sql.SQL("source = %s"))
                     by_modality_params.append(source)
@@ -1118,7 +1155,7 @@ async def get_dataset_stats(
                 by_modality = {row["modality"]: row["count"] for row in cursor.fetchall()}
 
                 # Total count (apply BOTH filters)
-                total_where_clauses = []
+                total_where_clauses = list(visible_clauses)
                 total_params = []
                 if source:
                     total_where_clauses.append(sql.SQL("source = %s"))
@@ -1707,6 +1744,64 @@ async def get_dataset_detail(source: str, dataset_id: str):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+_DATASET_FUNNEL_KEYS = (
+    "ingested_total", "junk_datasets", "ingested_datasets",
+    "no_paper_datasets", "pending_datasets", "never_published_datasets", "junk_reasons",
+)
+
+
+def _dataset_funnel(cursor, source: str) -> Dict[str, Any]:
+    """
+    Where an archive's ingested datasets stand, from {prefix}_dataset.dataset_status
+    (written by utils/dataset_status.py in the ingestion and mapping DAGs):
+
+      ingested_total       every row ingestion wrote
+      junk_datasets        dataset_status = 'excluded' (test / placeholder / empty uploads)
+      ingested_datasets    ingested_total - junk_datasets: the count the site shows
+      no_paper_datasets    mapping ran, the archive's metadata named no paper
+      pending_datasets     not mapped yet (NULL status counts as pending)
+      never_published_datasets  DANDI only: draft-only dandisets that are not junk
+      junk_reasons         {reason: count} behind junk_datasets
+
+    All None when the table or the column does not exist yet (older schema).
+    """
+    empty = {k: None for k in _DATASET_FUNNEL_KEYS}
+    tables = _ARCHIVE_PAPER_TABLES.get(source)
+    if not tables:
+        return empty
+    ds_tbl = f"{tables[0]}_dataset"
+    if not _paper_mapping_relation_exists(cursor, ds_tbl):
+        return empty
+    if not _relation_has_column(cursor, ds_tbl, "dataset_status"):
+        return empty
+    never_published_sql = "NULL::int"
+    if source == "DANDI" and _relation_has_column(cursor, ds_tbl, "version"):
+        never_published_sql = (
+            "COUNT(*) FILTER (WHERE version = 'draft' "
+            "AND COALESCE(dataset_status, '') <> 'excluded')::int"
+        )
+    cursor.execute(f"""
+        SELECT
+            COUNT(*)::int AS ingested_total,
+            COUNT(*) FILTER (WHERE dataset_status = 'excluded')::int AS junk_datasets,
+            COUNT(*) FILTER (WHERE COALESCE(dataset_status, '') <> 'excluded')::int AS ingested_datasets,
+            COUNT(*) FILTER (WHERE dataset_status = 'no_paper')::int AS no_paper_datasets,
+            COUNT(*) FILTER (WHERE dataset_status = 'pending' OR dataset_status IS NULL)::int AS pending_datasets,
+            {never_published_sql} AS never_published_datasets
+        FROM {ds_tbl};
+    """)
+    row = dict(cursor.fetchone() or {})
+    cursor.execute(f"""
+        SELECT COALESCE(dataset_status_reason, 'unknown') AS reason, COUNT(*)::int AS n
+        FROM {ds_tbl}
+        WHERE dataset_status = 'excluded'
+        GROUP BY 1
+        ORDER BY n DESC, reason ASC;
+    """)
+    row["junk_reasons"] = {r["reason"]: r["n"] for r in cursor.fetchall()}
+    return {k: row.get(k) for k in _DATASET_FUNNEL_KEYS}
+
+
 @app.get("/api/paper-mapping/summary")
 async def get_paper_mapping_summary(
     source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, OpenNeuro, SPARC)"),
@@ -1728,6 +1823,7 @@ async def get_paper_mapping_summary(
                         FROM {map_tbl};
                     """)
                     map_row = dict(cursor.fetchone() or {})
+                    funnel_row = _dataset_funnel(cursor, src_label)
 
                     ctx_expr = (
                         f"CASE WHEN jsonb_typeof(citation_contexts) = 'array' "
@@ -1751,7 +1847,7 @@ async def get_paper_mapping_summary(
                     cls_row = dict(cursor.fetchone() or {})
                     return {
                         "source": src_label,
-                        **map_row, **cit_row, **cls_row,
+                        **map_row, **cit_row, **cls_row, **funnel_row,
                     }
 
                 # CRCNS and SPARC paper-mapping tables are optional (their
@@ -1803,7 +1899,25 @@ async def get_paper_mapping_summary(
                 else:
                     distinct_papers = 0
 
+                def _sum_or_none(key: str) -> Optional[int]:
+                    # A total is only a total when every included source has the
+                    # value. During a staggered rollout one archive may have
+                    # dataset_status while another does not yet; a partial sum
+                    # would read as a complete, smaller number.
+                    vals = [r.get(key) for r in by_source]
+                    if not vals or any(not isinstance(v, int) for v in vals):
+                        return None
+                    return sum(vals)
+
                 summary = {
+                    # Dataset funnel (utils/dataset_status.py): ingested_total is every
+                    # row the ingestion DAGs wrote; junk is excluded from ingested_datasets,
+                    # which is what the site shows as the archive's dataset count.
+                    "ingested_total": _sum_or_none("ingested_total"),
+                    "junk_datasets": _sum_or_none("junk_datasets"),
+                    "ingested_datasets": _sum_or_none("ingested_datasets"),
+                    "no_paper_datasets": _sum_or_none("no_paper_datasets"),
+                    "pending_datasets": _sum_or_none("pending_datasets"),
                     "datasets_with_mapped_papers": sum(r.get("datasets_with_mapped_papers", 0) for r in by_source),
                     "distinct_mapped_primary_papers": distinct_papers,
                     "citation_edges": sum(r.get("citation_edges", 0) for r in by_source),
