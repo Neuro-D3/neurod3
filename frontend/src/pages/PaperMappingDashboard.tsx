@@ -267,6 +267,9 @@ export default function PaperMappingDashboard() {
           <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
         ) : null}
 
+        {/* All sources: the five totals. One archive: its funnel card takes the
+            cards' place, since the totals would just repeat the funnel's numbers. */}
+        {sourceFilter === 'all' ? (
         <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-5">
           <SummaryCard
             title="Ingested Datasets"
@@ -294,33 +297,40 @@ export default function PaperMappingDashboard() {
           <SummaryCard title="Distinct Primary Papers" value={formatNumber(summary?.summary.distinct_mapped_primary_papers)} />
           <SummaryCard title="Citation Edges" value={formatNumber(summary?.summary.citation_edges)} />
         </div>
-
-        {/* Source Breakdown: one card per archive with its dataset funnel. Sits
-            with the summary cards so the per-archive numbers are the first thing
-            on the page, not a sidebar afterthought. */}
-        {summary?.by_source?.length ? (
-          <section className="mt-4" aria-labelledby="source-breakdown-heading">
+        ) : (
+          <section aria-labelledby="source-breakdown-heading">
             <h2 id="source-breakdown-heading" className="sr-only">
               Source Breakdown
             </h2>
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              {summary.by_source.map((entry) => (
-                <div key={entry.source} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="text-sm font-semibold text-slate-900">{entry.source}</div>
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-slate-600">
+            {(summary?.by_source || []).map((entry) => (
+              <div key={entry.source} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="text-base font-semibold text-slate-900">{entry.source}</div>
+                <div className="mt-3 grid gap-x-8 gap-y-2 text-sm text-slate-600 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                  <div className="grid grid-cols-2 gap-2">
                     <DatasetFunnelRows entry={entry} />
+                  </div>
+                  <div className="grid grid-cols-2 content-start gap-2">
+                    <span className="font-medium text-slate-800">Papers and citations</span>
+                    <span />
                     <span>Primary papers</span>
                     <span className="text-right">{formatNumber(entry.distinct_mapped_primary_papers)}</span>
                     <span>Citation edges</span>
                     <span className="text-right">{formatNumber(entry.citation_edges)}</span>
                     <span>Contexts</span>
                     <span className="text-right">{formatNumber(entry.citations_with_contexts)}</span>
+                    <span>Classified edges</span>
+                    <span className="text-right">{formatNumber(entry.classified_edges)}</span>
                   </div>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
+            {summary && summary.by_source.length === 0 ? (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500 shadow-sm">
+                No paper-mapping tables for {sourceFilter} yet. Run its paper-mapping DAG.
+              </div>
+            ) : null}
           </section>
-        ) : null}
+        )}
 
         {summary ? (
           <ClassificationDistribution
@@ -861,7 +871,6 @@ function DatasetFunnelRows({ entry }: { entry: PaperMappingSourceSummary }) {
       </span>
       <span className="text-right text-rose-700">{formatNumber(entry.junk_datasets)}</span>
       {junkReasons ? <span className="col-span-2 text-[11px] leading-snug text-slate-400">{junkReasons}</span> : null}
-      <span className="col-span-2 my-1 border-t border-slate-200" aria-hidden="true" />
     </>
   );
 }
