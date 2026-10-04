@@ -381,6 +381,51 @@ e2-standard-2.
         override survives reclassification (see item 9, label versioning).
       - **Metrics:** decide whether flagged, unreviewed reuses count (for
         example count them, and show "N unverified" on the card).
+22. **Recover primary papers for `no_paper` datasets with an LLM, the way find_reuse does.**
+    - **Why:** after the dataset_status work (2026-10-03), 37% of real datasets
+      are `no_paper`: mapping ran and the archive's metadata named no DOI
+      (staging: 543 DANDI, 1,456 OpenNeuro, 63 CRCNS, 237 SPARC). Only ~25%
+      of ingested datasets have a mapped paper. find_reuse's paper reaches
+      65% of non-empty dandisets by adding an LLM step on top of the metadata
+      resolver; without it we stay at the metadata ceiling.
+    - **What find_reuse does** (`src/direct_pipeline/find_missing_papers.py`,
+      DANDI only): for each dandiset with no paper link, send name,
+      description (2,000 chars), up to 15 contributors and related resources
+      to an LLM (DeepSeek v4 Flash via OpenRouter) and ask for the single most
+      likely primary paper as JSON; `found=false` for test datasets and
+      workshop exercises, `found=true` only at confidence ≥ 6. Every proposed
+      DOI is validated against CrossRef, then OpenAlex. When the DOI fails but
+      a title was given, recover by title search in Europe PMC, OpenAlex, then
+      CrossRef (CrossRef accepted only with > 50% title-word overlap). Results
+      are cached per dandiset with the draft's modified timestamp. Reported:
+      175 DOIs validated, 106 rejected as hallucinations (38% before
+      validation), so validation is not optional.
+    - **Ours:** a `recover_papers_llm` task in each mapping DAG that runs only
+      over `dataset_status = 'no_paper'` rows, after the metadata resolver,
+      with a per-run cap and the existing OpenAlex budget preflight; all four
+      archives, not just DANDI. Reuse what exists: the OpenRouter client and
+      DOI normalisation in `utils/find_reuse_core.py`, the OpenAlex/CrossRef
+      title search in `utils/openneuro_paper_resolution.py`. Cache the LLM
+      answer per dataset keyed on `updated_at` so unchanged datasets are not
+      re-asked. A recovered dataset moves to `mapped` like any other.
+    - **Provenance:** write the map rows with `doi_source = 'llm'` (plus the
+      recovery source: `llm_doi`, `llm_title:europepmc`, `llm_title:openalex`,
+      `llm_title:crossref`) and keep the LLM's confidence and reasoning on the
+      row. Never mix them silently with metadata-sourced mappings.
+    - **Paper-mapping dashboard:** per archive in the Source Breakdown funnel,
+      split Mapped into "from archive metadata" and "via LLM", and add an
+      "LLM recovery" row (attempted / found / rejected as hallucination). Add
+      a classification-snapshot-style filter so the Mapped Datasets table can
+      show only LLM-recovered datasets.
+    - **Dataset view** (`DatasetDetailPage`): when any primary paper on the
+      page has `doi_source = 'llm'`, show a small label next to it
+      ("primary paper found via LLM, validated against CrossRef/OpenAlex")
+      so dataset authors and reviewers know it was inferred, not declared by
+      the archive. Same label on the dashboard's drill-down panel.
+    - **Benchmark:** take a sample of validated LLM mappings through human
+      review before relying on them in the impact metrics; add the confirmed
+      pairs to the known-pairs file and the wrong ones to the benchmark's hard
+      cases (see item 21).
 
 ## Projected cost
 
