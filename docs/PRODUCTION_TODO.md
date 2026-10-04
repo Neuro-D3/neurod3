@@ -154,17 +154,21 @@ e2-standard-2.
      whose publisher has never yielded text.
 
 5. **Store paper full text in a persistent shared store (GCS bucket).**
-   - **Today it isn't persisted anywhere safe.** Text lives in the
-     `airflow-output` Docker volume on the VM boot disk (`/opt/airflow/output`,
-     about 1.4 GB after one partial run). `docker-compose.gce.yml` already marks
-     it "ephemeral; TODO move to GCS".
-   - It survives restarts, but a VM rebuild loses it, and
-     `papers.fulltext_cache_key` would then point at files that no longer exist.
-   - Put the text in a bucket, keyed by normalised DOI, read and written by
-     both mapping and classification.
-   - That also lets a separate backfill VM (item 11) and the regular VM share
-     one cache.
-   - Add a lifecycle policy, and a one-time upload of the existing cache.
+   - **Staging, 2026-10-04:** the `…-paper-mapping` bucket is mounted on the VM
+     with gcsfuse (`deploy/gcp/staging/mount-output-bucket.sh`) as the
+     containers' `/opt/airflow/output`, so the paper-text-fetcher cache and the
+     mapping DAGs' per-DOI text and run artifacts land in GCS with no DAG
+     change. `papers.fulltext_cache_key` stays a relative path. The bucket has
+     no lifecycle rule (papers cost about 7 s each to refetch, artifacts are
+     kept for audit) and `force_destroy = false`. Cutover runbook in
+     `deploy/gcp/staging/DEPLOY.md`.
+   - Before that, text lived in the `airflow-output` Docker volume on the VM
+     boot disk (about 1.4 GB after one partial run) and a VM rebuild would have
+     left `fulltext_cache_key` pointing at files that no longer exist.
+   - Still open: a separate backfill VM (item 11) can mount the same bucket
+     and share the cache; production needs the same Terraform. If gcsfuse
+     latency ever matters, the DAG-side alternative is Airflow's
+     `ObjectStoragePath`, but paper-text-fetcher only takes a directory.
 
 6. **Extract citation contexts per chunk, not after the whole run.**
    - Run context extraction right after a chunk's text is available (or in the

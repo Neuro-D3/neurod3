@@ -23,6 +23,20 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
+# /opt/airflow/output in the containers is a bind mount of /mnt/airflow-output,
+# which mount-output-bucket.sh makes the paper-mapping bucket. Starting the stack
+# while it is a plain directory would send the paper cache to the boot disk with
+# no error, so refuse. (CI deploys run `up -d` through this wrapper too.)
+case "${1:-}" in
+  up|start|restart|run)
+    if ! mountpoint -q /mnt/airflow-output; then
+      echo "ERROR: /mnt/airflow-output is not a mountpoint. Mount the paper-mapping" >&2
+      echo "       bucket first: sudo bash $APP_DIR/deploy/gcp/staging/mount-output-bucket.sh" >&2
+      exit 1
+    fi
+    ;;
+esac
+
 exec docker compose \
   --project-directory "$APP_DIR" \
   --env-file "$ENV_FILE" \

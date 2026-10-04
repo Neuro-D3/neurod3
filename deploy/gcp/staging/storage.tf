@@ -1,29 +1,23 @@
-# Bucket for paper-mapping DAG output.
-# TODO(separate PR): the DAGs don't write here yet — paper-mapping output is
-# currently ephemeral on the VM. A follow-up PR will switch the DAGs to Airflow
-# ObjectStoragePath and point *_PAPER_MAPPING_OUTPUT_DIR at
-# gs://<this bucket>/<source>_paper_mapping (ADC auth via the VM service account,
-# which already has objectAdmin below). The bucket is provisioned now so that PR
-# is a pure DAG change.
+# Bucket for the paper-mapping DAGs' output: the paper-text-fetcher cache (one
+# JSON per DOI), the per-DOI full text the citation phase writes, and run
+# artifacts. The Airflow VM mounts it with gcsfuse at /mnt/airflow-output, which
+# the containers see as /opt/airflow/output (deploy/gcp/staging/mount-output-bucket.sh).
+#
+# Nothing in here expires. Cached papers are expensive to refetch (about 7 s
+# each, and a third have no open text at all), papers.fulltext_cache_key points
+# at these objects, and run artifacts are kept for audit.
 
 resource "google_storage_bucket" "data" {
   name                        = "${var.project_id}-paper-mapping"
   location                    = var.region
   uniform_bucket_level_access = true
-  force_destroy               = true # staging convenience
-
-  # Artifacts are reproducible by re-running DAGs; auto-clean to control cost.
-  lifecycle_rule {
-    condition {
-      age = 30
-    }
-    action {
-      type = "Delete"
-    }
-  }
+  # The cache is the one piece of staging state that is not reproducible for
+  # free, so `terraform destroy` must not take it with the rest.
+  force_destroy = false
 }
 
-# Only the Airflow VM reads/writes artifacts.
+# Only the Airflow VM reads/writes the cache (gcsfuse authenticates as the VM
+# service account through the metadata server).
 resource "google_storage_bucket_iam_member" "airflow_object_admin" {
   bucket = google_storage_bucket.data.name
   role   = "roles/storage.objectAdmin"
@@ -31,8 +25,8 @@ resource "google_storage_bucket_iam_member" "airflow_object_admin" {
 }
 
 # Durable Airflow task logs (Airflow native GCS remote logging writes here, and
-# the api-server reads them back for the UI). Kept in its own bucket so logs and
-# (future) paper-mapping artifacts have independent lifecycles.
+# the api-server reads them back for the UI). Kept in its own bucket so logs can
+# expire while the paper cache above is kept.
 resource "google_storage_bucket" "airflow_logs" {
   name                        = "${var.project_id}-airflow-logs"
   location                    = var.region

@@ -22,7 +22,7 @@ pre-provisioned project **`neuro-d3-staging`** (`us-west1`).
 | Cloud Run — `neuro-d3-frontend` | React app (`:3000`, dev server), scale-to-zero |
 | GCE VM — `neuro-d3-airflow` | Airflow docker-compose stack + Caddy (TLS); DB via Cloud SQL Auth Proxy; static IP |
 | VPC + subnet + firewall | VM NIC; SSH IAP-only, Airflow via Caddy `:80/:443` public; **no NAT** |
-| GCS bucket (`neuro-d3-staging-paper-mapping`) | Paper-mapping DAG output — **reserved**; not written yet (see TODO) |
+| GCS bucket (`neuro-d3-staging-paper-mapping`) | Paper cache + paper-mapping run artifacts; gcsfuse-mounted on the Airflow VM as `/opt/airflow/output`. No expiry. |
 | GCS bucket (`…-airflow-logs`) | Airflow task logs (native GCS remote logging) |
 | 3 service accounts + scoped IAM | Least-privilege identities for API / frontend / VM |
 
@@ -106,19 +106,22 @@ triggers a deterministic redeploy.
 - Run history / task state → **Cloud SQL** metadata DB ✅
 - Task logs → **GCS** (`…-airflow-logs`) ✅
 - DAG code → git (re-cloned on boot) ✅
-- Paper-mapping artifacts → **ephemeral on the VM** ⚠️ (local Airflow volume) — see TODO
+- Paper cache + run artifacts → **GCS** (`…-paper-mapping`) ✅, see below
 
-### TODO (separate PR): paper-mapping output → GCS
-Paper-mapping DAG output is currently written to a local VM volume and is lost on
-VM rebuild. The `neuro-d3-staging-paper-mapping` bucket + the VM's `objectAdmin`
-IAM are already provisioned for this. The follow-up is a **DAG-only** change: in
-each `dags/*_paper_mapping.py`, switch `_get_output_root()` to return Airflow's
-`ObjectStoragePath` and change the inline `open(p, …)` write/cache-read sites to
-`p.open(…)`, then set `*_PAPER_MAPPING_OUTPUT_DIR` to
-`gs://neuro-d3-staging-paper-mapping/<source>_paper_mapping` (in the GCE compose /
-startup env). The Google provider is already baked into the airflow image, so no
-new dependency is needed. (We held this out of the infra PR since it touches core
-pipeline write/cache logic and needs a real DAG run to verify.)
+### Paper cache in GCS (gcsfuse)
+The paper-text-fetcher cache and the four `*_paper_mapping` output dirs live
+under `/opt/airflow/output` in the containers. On the VM that path is a bind mount
+of `/mnt/airflow-output`, which `mount-output-bucket.sh` (run by the startup
+script on every boot) mounts from the `…-paper-mapping` bucket with gcsfuse. The
+DAGs and the fetcher package keep writing plain files, `papers.fulltext_cache_key`
+stays a relative path, and local dev keeps its Docker volume. gcsfuse was chosen
+over Airflow's `ObjectStoragePath` because paper-text-fetcher owns its cache
+layout and only takes a directory. `airflow-compose.sh` refuses to start the stack
+when the mount is missing, since Docker would otherwise create a plain directory
+and the cache would silently land on the boot disk. The bucket has no lifecycle
+rule and `force_destroy = false`: refetching papers costs about 7 s each and a
+third have no open text, and run artifacts are kept for audit. Cutover steps for
+an existing VM are in [DEPLOY.md](DEPLOY.md).
 
 **Still owned by app/ops (not infra):**
 - **Schema** — Cloud SQL only creates empty databases. Create the `dag_data` tables
@@ -128,8 +131,9 @@ pipeline write/cache logic and needs a real DAG run to verify.)
 
 ## Notes
 
-- `db_deletion_protection = false` and the bucket's `force_destroy = true` so
-  `terraform destroy` works for staging.
+- `db_deletion_protection = false` and the logs bucket's `force_destroy = true` so
+  `terraform destroy` works for staging. The paper-mapping bucket is the exception
+  (`force_destroy = false`): empty it by hand if you really mean to lose the cache.
 - The Airflow VM defaults to `e2-standard-2` (2 vCPU, 8 GB). `e2-medium` (4 GB)
   ran out of memory once whole-paper classification and headless Chromium were
   added: the kernel killed Airflow, logging and DNS, and SSH (so deploys) stopped

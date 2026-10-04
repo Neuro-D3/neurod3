@@ -150,9 +150,12 @@ terraform output -raw airflow_url    # https://<static-ip> — self-signed cert 
   gcloud run services update neuro-d3-api      --image <ref> --region us-west1 --project neuro-d3-staging
   gcloud run services update neuro-d3-frontend --image <ref> --region us-west1 --project neuro-d3-staging
   ```
-- **Teardown:** `terraform destroy` works cleanly (`db_deletion_protection = false`,
-  buckets `force_destroy = true`). It removes only in-project resources, never the
-  platform-owned project/state bucket.
+- **Teardown:** `terraform destroy` removes only in-project resources, never the
+  platform-owned project/state bucket. `db_deletion_protection = false` and the
+  logs bucket's `force_destroy = true` let it run cleanly; the paper-mapping
+  bucket has `force_destroy = false` on purpose, so destroying it means emptying
+  it by hand first. Its contents (cached papers) are the one piece of staging
+  state that is slow and costly to rebuild.
 
 ---
 
@@ -165,15 +168,66 @@ terraform output -raw airflow_url    # https://<static-ip> — self-signed cert 
 | Task logs | GCS (`…-airflow-logs`) | ✅ |
 | DAG code | git (re-cloned on boot) | ✅ |
 | Secrets | Secret Manager | ✅ |
-| **Paper-mapping artifacts** | **local VM volume** | ⚠️ **ephemeral — TODO (separate PR), see README** |
+| Paper cache + run artifacts | GCS (`…-paper-mapping`), gcsfuse-mounted on the VM | ✅ |
+
+
+---
+
+## Paper cache cutover (one-time, moving an existing VM onto the bucket)
+
+The containers' `/opt/airflow/output` (paper-text-fetcher cache, the four
+`*_paper_mapping` output dirs) is a bind mount of `/mnt/airflow-output`, which
+`mount-output-bucket.sh` makes the `…-paper-mapping` bucket with gcsfuse. A fresh
+VM gets this from the startup script. A VM that already has papers in the old
+`airflow-output` Docker volume is moved over like this. `airflow-compose.sh`
+refuses to start the stack until the mount exists, so merging this change before
+the cutover only makes the CI deploy fail loudly; it cannot send the cache to the
+boot disk.
+
+1. **Terraform apply** (lifecycle rule off, startup script). Safe while DAGs run:
+   the startup-script change is a metadata update and does not reboot the VM.
+2. **First copy, Airflow still running.** Moves the bulk so the outage later is
+   short. `gcloud storage rsync` is incremental, so re-running it only uploads
+   what changed.
+   ```bash
+   gcloud compute ssh neuro-d3-airflow --zone us-west1-a --tunnel-through-iap
+   ```
+   ```bash
+   sudo gcloud storage rsync -r /var/lib/docker/volumes/neuro-d3_airflow-output/_data gs://neuro-d3-staging-paper-mapping/
+   ```
+3. **Wait for any running paper-mapping DAG to finish** (the grid view, not the
+   clock: one heavily cited primary has taken three hours on its own). A task
+   killed mid-write leaves a truncated JSON in the fetcher cache.
+4. **Stop Airflow, final copy with nothing writing, pull main:**
+   ```bash
+   sudo bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh down
+   sudo gcloud storage rsync -r /var/lib/docker/volumes/neuro-d3_airflow-output/_data gs://neuro-d3-staging-paper-mapping/
+   sudo git -C /opt/neuro-d3 fetch origin main && sudo git -C /opt/neuro-d3 checkout -B main origin/main
+   ```
+5. **Mount the bucket and start Airflow:**
+   ```bash
+   sudo bash /opt/neuro-d3/deploy/gcp/staging/mount-output-bucket.sh
+   ls /mnt/airflow-output        # paper_text_fetcher/ and the four *_paper_mapping/ dirs
+   sudo bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh up -d
+   ```
+6. **Verify:** trigger one paper-mapping DAG on a dataset whose papers were
+   already cached. Its task log should show cache hits and no refetches, and
+   `gcloud storage ls gs://neuro-d3-staging-paper-mapping/paper_text_fetcher/ | head`
+   should list objects. New objects appear in the bucket as later runs write.
+7. **Later, once confident:** `sudo docker volume rm neuro-d3_airflow-output`
+   reclaims the boot-disk space. Nothing reads it any more.
+
+Performance notes: a write is one object upload on `close()` (about 50–150 ms,
+streamed while the file is written), small against the roughly 7 s each citing
+paper takes to fetch. Reads are one GET, or a boot-disk hit once gcsfuse's file
+cache (4 GB cap, `/var/cache/gcsfuse`) has the object. gcsfuse caches "not
+found" for 5 s, so two parallel tasks can still fetch the same paper within a few
+seconds of each other, the same harmless double download the local volume had.
 
 ---
 
 ## Known follow-ups (not in this deploy)
 
-- **Paper-mapping → GCS** (separate PR): switch the DAGs to `ObjectStoragePath` and
-  point `*_PAPER_MAPPING_OUTPUT_DIR` at `gs://neuro-d3-staging-paper-mapping/...`.
-  Bucket + IAM already provisioned. See the TODO in README.
 - **Airflow TLS:** self-signed today; point a hostname at the static IP and flip the
   Caddyfile to Let's Encrypt (no infra change).
 - **CI/Workload Identity Federation:** intentionally deferred.
