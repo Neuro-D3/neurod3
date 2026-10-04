@@ -295,6 +295,33 @@ export default function PaperMappingDashboard() {
           <SummaryCard title="Citation Edges" value={formatNumber(summary?.summary.citation_edges)} />
         </div>
 
+        {/* Source Breakdown: one card per archive with its dataset funnel. Sits
+            with the summary cards so the per-archive numbers are the first thing
+            on the page, not a sidebar afterthought. */}
+        {summary?.by_source?.length ? (
+          <section className="mt-4" aria-labelledby="source-breakdown-heading">
+            <h2 id="source-breakdown-heading" className="sr-only">
+              Source Breakdown
+            </h2>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              {summary.by_source.map((entry) => (
+                <div key={entry.source} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="text-sm font-semibold text-slate-900">{entry.source}</div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-slate-600">
+                    <DatasetFunnelRows entry={entry} />
+                    <span>Primary papers</span>
+                    <span className="text-right">{formatNumber(entry.distinct_mapped_primary_papers)}</span>
+                    <span>Citation edges</span>
+                    <span className="text-right">{formatNumber(entry.citation_edges)}</span>
+                    <span>Contexts</span>
+                    <span className="text-right">{formatNumber(entry.citations_with_contexts)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         {summary ? (
           <ClassificationDistribution
             progress={classificationProgress(summary.summary.citation_edges, summary.by_classification)}
@@ -424,8 +451,8 @@ export default function PaperMappingDashboard() {
             </div>
           </section>
 
-          {/* Phones: `contents` lets the Snapshot and Source Breakdown join the single
-              column separately, so the Snapshot (the filter) can sit above the table.
+          {/* Phones: `contents` lets the Snapshot join the single column on its own,
+              so the Snapshot (the filter) can sit above the table.
               Desktop: an ordinary sidebar. */}
           <aside className="contents lg:block lg:space-y-6">
             <section className="order-first rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:order-none">
@@ -461,26 +488,6 @@ export default function PaperMappingDashboard() {
                 ) : (
                   <p className="text-slate-500">No classification rows yet. Run the paper_reuse_classification DAG after paper mapping.</p>
                 )}
-              </div>
-            </section>
-
-            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <h2 className="text-base font-semibold">Source Breakdown</h2>
-              <div className="mt-3 space-y-3 text-sm">
-                {(summary?.by_source || []).map((entry) => (
-                  <div key={entry.source} className="rounded-xl bg-slate-50 p-3">
-                    <div className="font-medium text-slate-900">{entry.source}</div>
-                    <div className="mt-2 grid grid-cols-2 gap-2 text-slate-600">
-                      <DatasetFunnelRows entry={entry} />
-                      <span>Primary papers</span>
-                      <span className="text-right">{formatNumber(entry.distinct_mapped_primary_papers)}</span>
-                      <span>Citation edges</span>
-                      <span className="text-right">{formatNumber(entry.citation_edges)}</span>
-                      <span>Contexts</span>
-                      <span className="text-right">{formatNumber(entry.citations_with_contexts)}</span>
-                    </div>
-                  </div>
-                ))}
               </div>
             </section>
           </aside>
