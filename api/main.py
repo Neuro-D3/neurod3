@@ -770,6 +770,37 @@ def _relation_has_column(cursor, relation: str, column: str) -> bool:
     return bool(row and row["exists"])
 
 
+def _dataset_order_sql(sort_by: Optional[str], sort_order: Optional[str], reuse_subquery: str) -> str:
+    """
+    ORDER BY clause for GET /api/datasets. Ties are broken deterministically;
+    datasets with the same reuse count (most have none) stay newest first.
+    Unknown sorts are a 400.
+    """
+    sort_by_norm = (sort_by or "published").strip().lower()
+    sort_order_norm = (sort_order or "desc").strip().lower()
+    if sort_order_norm not in {"asc", "desc"}:
+        raise HTTPException(status_code=400, detail=f"Invalid sort_order: {sort_order}")
+
+    sort_column_by_key = {
+        "published": "d.created_at",
+        "papers": f"(COALESCE(d.papers, 0) + ({reuse_subquery}))",
+        # Citing works classified as reuse (a preprint and its published version once).
+        "reuse": f"({reuse_subquery})",
+        "title": "d.title",
+        "id": "d.dataset_id",
+        "source": "d.source",
+        "modality": "d.modality",
+    }
+    sort_col = sort_column_by_key.get(sort_by_norm)
+    if not sort_col:
+        raise HTTPException(status_code=400, detail=f"Invalid sort_by: {sort_by}")
+
+    tie_breakers = "d.title ASC, d.dataset_id ASC"
+    if sort_by_norm == "reuse":
+        tie_breakers = f"d.created_at DESC NULLS LAST, {tie_breakers}"
+    return f"{sort_col} {sort_order_norm.upper()} NULLS LAST, {tie_breakers}"
+
+
 @app.get("/api/datasets")
 async def get_datasets(
     source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, OpenNeuro, SPARC)"),
@@ -895,27 +926,7 @@ async def get_datasets(
                 filter_sql = f" AND {' AND '.join(filters)}" if filters else ""
 
                 # Server-side ordering (applies before pagination).
-                sort_by_norm = (sort_by or "published").strip().lower()
-                sort_order_norm = (sort_order or "desc").strip().lower()
-                if sort_order_norm not in {"asc", "desc"}:
-                    raise HTTPException(status_code=400, detail=f"Invalid sort_order: {sort_order}")
-
-                sort_column_by_key = {
-                    "published": "d.created_at",
-                    "papers": f"(COALESCE(d.papers, 0) + ({reuse_subquery}))",
-                    # Citing works classified as reuse (a preprint and its published version once).
-                    "reuse": f"({reuse_subquery})",
-                    "title": "d.title",
-                    "id": "d.dataset_id",
-                    "source": "d.source",
-                    "modality": "d.modality",
-                }
-                sort_col = sort_column_by_key.get(sort_by_norm)
-                if not sort_col:
-                    raise HTTPException(status_code=400, detail=f"Invalid sort_by: {sort_by}")
-
-                # Keep ordering deterministic with tie-breakers.
-                order_sql = f"{sort_col} {sort_order_norm.upper()} NULLS LAST, d.title ASC, d.dataset_id ASC"
+                order_sql = _dataset_order_sql(sort_by, sort_order, reuse_subquery)
                 query = f"{base_select}{filter_sql} ORDER BY {order_sql} LIMIT %s OFFSET %s"
                 count_query = f"{base_count}{filter_sql}"
 

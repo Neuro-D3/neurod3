@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Skeleton, Spinner } from '../components/Loading';
 import {
   datasetDetailPath,
   fetchPaperMappingCitations,
@@ -226,6 +227,12 @@ export default function PaperMappingDashboard() {
     }
   };
 
+  // Nothing fetched yet: placeholders. Later loads (filter, sort, page) keep the
+  // previous data on screen, dimmed, so the layout doesn't jump.
+  const firstLoad = loading && !summary;
+  // Applied to everything that shows fetched data, so stale numbers are visibly stale.
+  const reloadDim = `transition-opacity ${loading && !firstLoad ? 'opacity-50' : ''}`;
+
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
@@ -270,8 +277,9 @@ export default function PaperMappingDashboard() {
         {/* All sources: the five totals. One archive: its funnel card takes the
             cards' place, since the totals would just repeat the funnel's numbers. */}
         {sourceFilter === 'all' ? (
-        <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-5">
+        <div className={`grid gap-4 md:grid-cols-3 lg:grid-cols-5 ${reloadDim}`}>
           <SummaryCard
+            loading={firstLoad}
             title="Ingested Datasets"
             value={formatNumber(summary?.summary.ingested_datasets)}
             hint={
@@ -281,11 +289,13 @@ export default function PaperMappingDashboard() {
             }
           />
           <SummaryCard
+            loading={firstLoad}
             title="Junk Excluded"
             value={formatNumber(summary?.summary.junk_datasets)}
             hint="Test, placeholder and empty uploads; hidden from the dataset list"
           />
           <SummaryCard
+            loading={firstLoad}
             title="Datasets With Mapped Papers"
             value={formatNumber(summary?.summary.datasets_with_mapped_papers)}
             hint={
@@ -294,8 +304,8 @@ export default function PaperMappingDashboard() {
                 : undefined
             }
           />
-          <SummaryCard title="Distinct Primary Papers" value={formatNumber(summary?.summary.distinct_mapped_primary_papers)} />
-          <SummaryCard title="Citation Edges" value={formatNumber(summary?.summary.citation_edges)} />
+          <SummaryCard title="Distinct Primary Papers" loading={firstLoad} value={formatNumber(summary?.summary.distinct_mapped_primary_papers)} />
+          <SummaryCard title="Citation Edges" loading={firstLoad} value={formatNumber(summary?.summary.citation_edges)} />
         </div>
         ) : (
           <section aria-labelledby="source-breakdown-heading">
@@ -337,9 +347,13 @@ export default function PaperMappingDashboard() {
         )}
 
         {summary ? (
-          <ClassificationDistribution
-            progress={classificationProgress(summary.summary.citation_edges, summary.by_classification)}
-          />
+          <div className={reloadDim}>
+            <ClassificationDistribution
+              progress={classificationProgress(summary.summary.citation_edges, summary.by_classification)}
+            />
+          </div>
+        ) : firstLoad ? (
+          <ClassificationDistributionSkeleton />
         ) : null}
 
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
@@ -349,7 +363,7 @@ export default function PaperMappingDashboard() {
               <div>
                 <h2 className="text-base font-semibold">Mapped Datasets</h2>
                 <p className="text-sm text-slate-500">
-                  {formatNumber(datasetCount)} datasets in current view
+                  {firstLoad ? 'Loading datasets…' : `${formatNumber(datasetCount)} datasets in current view`}
                   {classificationBucketFilter ? (
                     <>
                       {' '}
@@ -368,7 +382,12 @@ export default function PaperMappingDashboard() {
                   ) : null}
                 </p>
               </div>
-              {loading ? <span className="text-sm text-slate-500">Loading…</span> : null}
+              {loading ? (
+                <span className="flex items-center gap-2 text-sm text-slate-500">
+                  <Spinner />
+                  Loading…
+                </span>
+              ) : null}
             </div>
 
             <div className="overflow-x-auto">
@@ -398,7 +417,11 @@ export default function PaperMappingDashboard() {
                     />
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody
+                  aria-busy={loading}
+                  className={`divide-y divide-slate-100 ${reloadDim}`}
+                >
+                  {firstLoad ? <TableSkeletonRows rows={8} columns={6} /> : null}
                   {datasets.map((dataset) => {
                     const isSelected =
                       selectedDataset?.source === dataset.source && selectedDataset?.dataset_id === dataset.dataset_id;
@@ -474,8 +497,10 @@ export default function PaperMappingDashboard() {
               <p className="mt-1 text-xs text-slate-500">
                 Click a row to show only datasets that have at least one edge in that bucket. Click again to clear.
               </p>
-              <div className="mt-3 space-y-2 text-sm">
-                {classificationBreakdown.length ? (
+              <div className={`mt-3 space-y-2 text-sm ${reloadDim}`}>
+                {firstLoad ? (
+                  [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-9 rounded-lg" />)
+                ) : classificationBreakdown.length ? (
                   classificationBreakdown.map(([bucket, count]) => {
                     const active = classificationBucketFilter === bucket;
                     return (
@@ -534,7 +559,12 @@ export default function PaperMappingDashboard() {
             </button>
           </div>
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
-            {detailLoading ? <p className="text-sm text-slate-500">Loading dataset detail…</p> : null}
+            {detailLoading ? (
+              <p className="flex items-center gap-2 text-sm text-slate-500">
+                <Spinner />
+                Loading dataset detail…
+              </p>
+            ) : null}
             {!detailLoading && datasetDetail ? (
               <div className="flex min-h-0 flex-1 flex-col gap-6">
                 <div className="shrink-0 rounded-xl border border-slate-200 bg-white p-4">
@@ -794,11 +824,15 @@ function ClassificationDistribution({ progress }: { progress: ClassificationProg
   );
 }
 
-function SummaryCard({ title, value, hint }: { title: string; value: string; hint?: string }) {
+function SummaryCard({ title, value, hint, loading = false }: { title: string; value: string; hint?: string; loading?: boolean }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-busy={loading}>
       <div className="text-sm font-medium text-slate-500">{title}</div>
-      <div className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">{value}</div>
+      {loading ? (
+        <Skeleton className="mt-2 h-9 w-24 rounded-lg" />
+      ) : (
+        <div className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">{value}</div>
+      )}
       {hint ? <div className="mt-1 text-xs text-slate-400">{hint}</div> : null}
     </div>
   );
@@ -876,6 +910,37 @@ function DatasetFunnelRows({ entry }: { entry: PaperMappingSourceSummary }) {
       <span className="text-right text-rose-700">{formatNumber(entry.junk_datasets)}</span>
       {junkReasons ? <span className="col-span-2 text-[11px] leading-snug text-slate-400">{junkReasons}</span> : null}
     </>
+  );
+}
+
+function TableSkeletonRows({ rows, columns }: { rows: number; columns: number }) {
+  return (
+    <>
+      {Array.from({ length: rows }, (_, r) => (
+        <tr key={r}>
+          {Array.from({ length: columns }, (_, c) => (
+            <td key={c} className="px-4 py-3 align-top">
+              <Skeleton className={`h-4 rounded ${c === 2 ? 'w-48' : 'w-12'}`} />
+              {c === 2 ? <Skeleton className="mt-2 h-3 w-64 rounded" /> : null}
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
+  );
+}
+
+function ClassificationDistributionSkeleton() {
+  return (
+    <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-busy="true">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-base font-semibold">Classification Progress</h2>
+        <Skeleton className="h-4 w-72 max-w-full rounded" />
+      </div>
+      <Skeleton className="mt-3 h-3 w-full rounded" />
+      <h3 className="mt-5 text-sm font-medium text-slate-700">Outcome of attempted edges</h3>
+      <Skeleton className="mt-2 h-6 w-full rounded" />
+    </section>
   );
 }
 

@@ -14,7 +14,9 @@ frontend_image = "us-west1-docker.pkg.dev/neuro-d3-staging/neuro-d3/frontend:lat
 airflow_image  = "us-west1-docker.pkg.dev/neuro-d3-staging/neuro-d3/airflow:latest"
 
 # Cloud SQL
-db_tier                = "db-f1-micro"
+# db-g1-small (1.7 GB): db-f1-micro (0.6 GB) runs out of memory. Production sizes
+# are in docs/PRODUCTION_TODO.md item 10. Changing the tier restarts the instance.
+db_tier                = "db-g1-small"
 db_deletion_protection = false
 
 # Airflow VM. e2-standard-2 (8 GB); e2-medium (4 GB) runs out of memory.
@@ -25,6 +27,9 @@ vm_boot_disk_gb = 30
 cloudrun_cpu           = "0.25"
 cloudrun_memory        = "512Mi"
 cloudrun_max_instances = 1
+# Warm instances (1) vs scale to zero (0). 1 removes the cold start after idle.
+api_min_instances      = 1
+frontend_min_instances = 1
 allow_unauthenticated  = true
 
 # Leave empty on the first apply; after the frontend is created, set this to its

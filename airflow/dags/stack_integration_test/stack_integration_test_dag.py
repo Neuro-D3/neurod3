@@ -993,6 +993,11 @@ def _trigger(key: str, stage: str, conf: Dict[str, Any], timeout_min: int) -> Tr
         task_id=f"{key}__{stage}",
         trigger_dag_id=TRIGGERED_DAG[stage].format(key=key),
         trigger_run_id="it__{{ run_id }}__" + key + "__" + stage,
+        # That run id is unique to this test run, so a run that already exists is
+        # this task's own: on a busy API server the trigger request can time out
+        # after creating the run, and the client's retry then gets "Dag Run
+        # already exists". Reset that run and wait for it instead of failing.
+        reset_dag_run=True,
         conf=conf,
         wait_for_completion=True,
         # The triggered runs take seconds to minutes; a long poke adds dead time

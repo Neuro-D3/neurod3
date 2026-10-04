@@ -14,11 +14,11 @@
 # change handled separately). startup_cpu_boost + 1Gi give the dev-server compile
 # enough headroom to bind the port before Cloud Run's startup deadline.
 #
-# Scaling: min_instance_count is 0 to match the API and keep staging cheap. The
-# tradeoff is real — because this image runs the CRA dev server, every cold start
-# pays a full webpack compile, so the first request after idle is slow. Serving a
-# static production build (the "later optimization" noted above) is what makes
-# scale-to-zero cheap AND fast; until then, expect slow first hits in staging.
+# Scaling: var.frontend_min_instances. Because this image runs the CRA dev server,
+# every cold start pays a full webpack compile, so with 0 the first request after
+# idle is slow (~70 s). 1 keeps one compiled instance warm, but CPU is not throttled
+# here, so the warm instance bills as always-on. Serving a static production build
+# (docs/PRODUCTION_TODO.md item 17) is what makes scale-to-zero cheap AND fast.
 
 resource "google_cloud_run_v2_service" "frontend" {
   name     = "neuro-d3-frontend"
@@ -29,7 +29,7 @@ resource "google_cloud_run_v2_service" "frontend" {
     service_account = google_service_account.frontend.email
 
     scaling {
-      min_instance_count = 0 # scale to zero (staging cost)
+      min_instance_count = var.frontend_min_instances
       max_instance_count = var.cloudrun_max_instances
     }
 

@@ -11,7 +11,8 @@ resource "google_cloud_run_v2_service" "api" {
     service_account = google_service_account.api.email
 
     scaling {
-      min_instance_count = 0 # scale to zero (staging cost)
+      # 1 keeps an instance warm (no cold start on the first request after idle); 0 scales to zero.
+      min_instance_count = var.api_min_instances
       max_instance_count = var.cloudrun_max_instances
     }
 
