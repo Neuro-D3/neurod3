@@ -400,10 +400,15 @@ e2-standard-2.
       are cached per dandiset with the draft's modified timestamp. Reported:
       175 DOIs validated, 106 rejected as hallucinations (38% before
       validation), so validation is not optional.
-    - **Ours:** a `recover_papers_llm` task in each mapping DAG that runs only
-      over `dataset_status = 'no_paper'` rows, after the metadata resolver,
-      with a per-run cap and the existing OpenAlex budget preflight; all four
-      archives, not just DANDI. Reuse what exists: the OpenRouter client and
+    - **Ours:** a separate `paper_llm_recovery` DAG, not a task in the mapping
+      DAGs (Nate, 2026-10-04): it costs money per dataset, runs over the
+      `dataset_status = 'no_paper'` backlog on its own schedule (manual
+      trigger first), with its own cap, pool and the OpenAlex budget
+      preflight, and leaves the daily mapping runs and the stack test alone.
+      One DAG with an `archives` param like `paper_reuse_classification`
+      (the step reads title, description and authors from the dataset tables
+      and is the same for every archive); split into one per archive only if
+      per-archive scheduling turns out to matter. Reuse what exists: the OpenRouter client and
       DOI normalisation in `utils/find_reuse_core.py`, the OpenAlex/CrossRef
       title search in `utils/openneuro_paper_resolution.py`. Cache the LLM
       answer per dataset keyed on `updated_at` so unchanged datasets are not
