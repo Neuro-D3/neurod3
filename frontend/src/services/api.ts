@@ -21,7 +21,7 @@ function inferApiBaseUrl(): string {
 const API_BASE_URL = inferApiBaseUrl();
 
 export interface Dataset {
-  source: 'CRCNS' | 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet' | 'SPARC';
+  source: 'CRCNS' | 'DANDI' | 'OpenNeuro' | 'SPARC';
   id: string;
   title: string;
   modality: string | null;

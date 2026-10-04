@@ -331,7 +331,7 @@ The FastAPI backend provides REST endpoints for accessing neuroscience datasets.
 ### Query Parameters
 
 **`GET /api/datasets`** supports:
-- `source` - Filter by source (DANDI, Kaggle, OpenNeuro, PhysioNet)
+- `source` - Filter by source (CRCNS, DANDI, OpenNeuro, SPARC)
 - `modality` - Filter by modality (fMRI, EEG, Electrophysiology, etc.)
 - `search` - Search in title and description (case-insensitive)
 
@@ -353,9 +353,9 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
    - Creates/updates `dandi_dataset` table
    - Automatically creates/refreshes `unified_datasets` view
 
-2. **`populate_neuroscience_datasets`** - Populates datasets from multiple sources (Kaggle, OpenNeuro, PhysioNet)
+2. **`populate_neuroscience_datasets`** - Legacy seed of a few hand-entered datasets (Kaggle, OpenNeuro, PhysioNet)
    - Creates/updates `neuroscience_datasets` table
-   - Automatically creates/refreshes `unified_datasets` view
+   - Automatically creates/refreshes `unified_datasets` view. The view only shows sources that have a real pipeline (DANDI, OpenNeuro, CRCNS, SPARC); the Kaggle and PhysioNet rows are left out
 
 3. **`database_example_dag`** - Demonstrates database operations with environment detection
 

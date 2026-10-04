@@ -49,7 +49,10 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="NeuroD3 API", version="1.0.0")
 
 # Allowed filter values
-ALLOWED_SOURCES = {"CRCNS", "DANDI", "Kaggle", "OpenNeuro", "PhysioNet", "SPARC"}
+# The four archives with ingestion + paper-mapping pipelines. Kaggle and
+# PhysioNet seed rows still exist in neuroscience_datasets but are left out of
+# the unified view (utils/database.py) and are not valid filters here.
+ALLOWED_SOURCES = {"CRCNS", "DANDI", "OpenNeuro", "SPARC"}
 ALLOWED_PAPER_MAPPING_SOURCES = {"CRCNS", "DANDI", "OpenNeuro", "SPARC"}
 
 # CORS configuration to allow the frontend to access the API.
@@ -769,7 +772,7 @@ def _relation_has_column(cursor, relation: str, column: str) -> bool:
 
 @app.get("/api/datasets")
 async def get_datasets(
-    source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, Kaggle, OpenNeuro, PhysioNet, SPARC)"),
+    source: Optional[str] = Query(None, description="Filter by source (CRCNS, DANDI, OpenNeuro, SPARC)"),
     modality: Optional[str] = Query(None, description="Filter by modality (comma-separated for AND)"),
     search: Optional[str] = Query(None, description="Search in title and description"),
     sort_by: str = Query("published", description="Sort column (published, papers, reuse, title, id, source, modality)"),

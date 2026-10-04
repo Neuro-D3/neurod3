@@ -46,7 +46,7 @@ Access: http://localhost:8000/docs
    - Expand `GET /api/datasets`
    - Click "Try it out"
    - Enter optional filters:
-     - **source**: `DANDI` (or `Kaggle`, `OpenNeuro`, `PhysioNet`)
+     - **source**: `DANDI` (or `CRCNS`, `OpenNeuro`, `SPARC`)
      - **modality**: `fMRI` (or `EEG`, `MRI`, etc.)
      - **search**: `brain` (searches in title and description)
    - Click "Execute"
@@ -101,7 +101,7 @@ curl http://localhost:8000/api/datasets
 curl "http://localhost:8000/api/datasets?source=DANDI"
 ```
 
-Available sources: `DANDI`, `Kaggle`, `OpenNeuro`, `PhysioNet`
+Available sources: `CRCNS`, `DANDI`, `OpenNeuro`, `SPARC`
 
 ### Filter by Modality
 
@@ -159,7 +159,7 @@ curl "http://localhost:8000/api/datasets/DANDI/000016" | jq '.citations[] | sele
 
 | Field | Meaning |
 |---|---|
-| `tracked` | `false` for archives without paper mapping (Kaggle, PhysioNet); the other fields are then absent |
+| `tracked` | `false` for a source without paper mapping (anything other than the four archives); the other fields are then absent |
 | `published`, `published_precision` | the dataset's `created_at` date; precision `year` when only the year is known (show the year alone), else null |
 | `reuse_count` | citing papers labelled `REUSE` |
 | `independent_reuse_count`, `same_lab_reuse_count` | a reuse is same lab when the classifier said `same_lab`; or it shares an OpenAlex author id with the dataset's primary papers (when both sides have ids: the mapping DAGs' `fill_author_ids` task, or `paper_author_ids_backfill`); or an author's name (surname and first initial) matches the archive's author list, or the primary papers' authors when ids are missing. Otherwise independent |

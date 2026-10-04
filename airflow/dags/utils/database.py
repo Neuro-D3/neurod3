@@ -409,6 +409,11 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
         """.strip())
 
     if neuro_table_exists:
+        # neuroscience_datasets is the legacy seed table (populate_datasets_dag).
+        # Its rows for an archive are superseded once that archive's own table
+        # exists. Its hand-entered Kaggle and PhysioNet rows are never shown:
+        # those sources have no ingestion or paper-mapping pipeline, so they only
+        # put the home page's total out of step with the mapping dashboard.
         excluded_sources = ["'DANDI'", "'OpenNeuro'", "'CRCNS'", "'SPARC'"]
         if not dandi_table_exists:
             excluded_sources.remove("'DANDI'")
@@ -418,10 +423,8 @@ def create_unified_datasets_view(cursor) -> Dict[str, Any]:
             excluded_sources.remove("'CRCNS'")
         if not sparc_table_exists:
             excluded_sources.remove("'SPARC'")
-        if excluded_sources:
-            where_clause = f"WHERE source NOT IN ({', '.join(excluded_sources)})"
-        else:
-            where_clause = ""
+        excluded_sources += ["'Kaggle'", "'PhysioNet'"]
+        where_clause = f"WHERE source NOT IN ({', '.join(excluded_sources)})"
         selects.append(f"""
         SELECT
             source::text,

@@ -61,7 +61,7 @@ const ChevronDown: React.FC<{ size?: number; className?: string }> = ({ classNam
   <IconWrapper className={className}>▾</IconWrapper>
 );
 
-const SOURCE_OPTIONS = ['CRCNS', 'DANDI', 'Kaggle', 'OpenNeuro', 'PhysioNet', 'SPARC'] as const;
+const SOURCE_OPTIONS = ['CRCNS', 'DANDI', 'OpenNeuro', 'SPARC'] as const;
 const SOURCE_CANONICAL_BY_PARAM = SOURCE_OPTIONS.reduce<Record<string, Dataset['source']>>((acc, s) => {
   acc[s.toLowerCase()] = s;
   return acc;
@@ -98,7 +98,7 @@ export default function NeuroDatasetDiscovery() {
     'published',
   );
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [sourceFilter, setSourceFilter] = useState<'all' | 'CRCNS' | 'DANDI' | 'Kaggle' | 'OpenNeuro' | 'PhysioNet' | 'SPARC'>(
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'CRCNS' | 'DANDI' | 'OpenNeuro' | 'SPARC'>(
     'all',
   );
   const [selectedModalities, setSelectedModalities] = useState<string[]>([]);
@@ -551,9 +551,7 @@ export default function NeuroDatasetDiscovery() {
     const colors: Record<Dataset['source'], string> = {
       CRCNS: 'bg-cyan-100 text-cyan-800',
       DANDI: 'bg-purple-100 text-purple-800',
-      Kaggle: 'bg-blue-100 text-blue-800',
       OpenNeuro: 'bg-green-100 text-green-800',
-      PhysioNet: 'bg-orange-100 text-orange-800',
       SPARC: 'bg-amber-100 text-amber-800',
     };
     return colors[source] || 'bg-gray-100 text-gray-800';
@@ -1132,14 +1130,6 @@ export default function NeuroDatasetDiscovery() {
               DANDI Archive
             </a>
             <a
-              href="https://kaggle.com/datasets"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              Kaggle Datasets
-            </a>
-            <a
               href="https://openneuro.org"
               target="_blank"
               rel="noopener noreferrer"
@@ -1162,14 +1152,6 @@ export default function NeuroDatasetDiscovery() {
               className="text-blue-500 hover:text-blue-400 transition-colors"
             >
               SPARC
-            </a>
-            <a
-              href="https://physionet.org"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              PhysioNet
             </a>
           </div>
           <p className="mt-3 text-xs opacity-75">
