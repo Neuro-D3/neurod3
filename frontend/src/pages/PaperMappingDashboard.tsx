@@ -302,7 +302,9 @@ export default function PaperMappingDashboard() {
             <h2 id="source-breakdown-heading" className="sr-only">
               Source Breakdown
             </h2>
-            {(summary?.by_source || []).map((entry) => (
+            {/* Only the filtered archive: right after a click `summary` is still the
+                previous response (all four archives) until the new fetch lands. */}
+            {(summary?.by_source || []).filter((entry) => entry.source === sourceFilter).map((entry) => (
               <div key={entry.source} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="text-base font-semibold text-slate-900">{entry.source}</div>
                 <div className="mt-3 grid gap-x-8 gap-y-2 text-sm text-slate-600 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
@@ -324,9 +326,11 @@ export default function PaperMappingDashboard() {
                 </div>
               </div>
             ))}
-            {summary && summary.by_source.length === 0 ? (
+            {!summary?.by_source?.some((entry) => entry.source === sourceFilter) ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500 shadow-sm">
-                No paper-mapping tables for {sourceFilter} yet. Run its paper-mapping DAG.
+                {loading || !summary
+                  ? `Loading ${sourceFilter}…`
+                  : `No paper-mapping tables for ${sourceFilter} yet. Run its paper-mapping DAG.`}
               </div>
             ) : null}
           </section>
