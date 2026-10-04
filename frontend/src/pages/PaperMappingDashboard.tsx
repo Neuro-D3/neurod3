@@ -324,7 +324,7 @@ export default function PaperMappingDashboard() {
             {/* Only the filtered archive: right after a click `summary` is still the
                 previous response (all four archives) until the new fetch lands. */}
             {(summary?.by_source || []).filter((entry) => entry.source === sourceFilter).map((entry) => (
-              <div key={entry.source} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div key={entry.source} className={`rounded-2xl border border-slate-200 bg-white p-4 shadow-sm ${reloadDim}`}>
                 <div className="text-base font-semibold text-slate-900">{entry.source}</div>
                 <div className="mt-3 grid gap-x-8 gap-y-2 text-sm text-slate-600 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                   <div className="grid grid-cols-2 gap-2">
@@ -346,11 +346,13 @@ export default function PaperMappingDashboard() {
               </div>
             ))}
             {!summary?.by_source?.some((entry) => entry.source === sourceFilter) ? (
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500 shadow-sm">
-                {loading || !summary
-                  ? `Loading ${sourceFilter}…`
-                  : `No paper-mapping tables for ${sourceFilter} yet. Run its paper-mapping DAG.`}
-              </div>
+              loading || !summary ? (
+                <SourceCardSkeleton source={sourceFilter} />
+              ) : (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500 shadow-sm">
+                  No paper-mapping tables for {sourceFilter} yet. Run its paper-mapping DAG.
+                </div>
+              )
             ) : null}
           </section>
         )}
@@ -936,6 +938,36 @@ function TableSkeletonRows({ rows, columns }: { rows: number; columns: number })
         </tr>
       ))}
     </>
+  );
+}
+
+/**
+ * Same shape as the filtered archive's card (title, funnel column with its
+ * bar, papers-and-citations column), so switching archives doesn't collapse
+ * the card to one line and grow it back when the summary lands.
+ */
+function SourceCardSkeleton({ source }: { source: string }) {
+  const row = (key: number, wide = false) => (
+    <React.Fragment key={key}>
+      <Skeleton className={`h-4 rounded ${wide ? 'w-40' : 'w-28'}`} />
+      <Skeleton className="h-4 w-14 justify-self-end rounded" />
+    </React.Fragment>
+  );
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-busy="true">
+      <div className="text-base font-semibold text-slate-900">{source}</div>
+      <div className="mt-3 grid gap-x-8 gap-y-2 text-sm md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <div className="grid grid-cols-2 gap-2">
+          {row(0, true)}
+          <Skeleton className="col-span-2 h-2 rounded-full" />
+          {[1, 2, 3, 4].map((i) => row(i))}
+          <Skeleton className="col-span-2 h-3 w-full rounded" />
+        </div>
+        <div className="grid grid-cols-2 content-start gap-2">
+          {[5, 6, 7, 8, 9].map((i) => row(i))}
+        </div>
+      </div>
+    </div>
   );
 }
 
