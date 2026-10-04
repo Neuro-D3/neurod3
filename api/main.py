@@ -1900,9 +1900,14 @@ async def get_paper_mapping_summary(
                     distinct_papers = 0
 
                 def _sum_or_none(key: str) -> Optional[int]:
+                    # A total is only a total when every included source has the
+                    # value. During a staggered rollout one archive may have
+                    # dataset_status while another does not yet; a partial sum
+                    # would read as a complete, smaller number.
                     vals = [r.get(key) for r in by_source]
-                    known = [v for v in vals if isinstance(v, int)]
-                    return sum(known) if known else None
+                    if not vals or any(not isinstance(v, int) for v in vals):
+                        return None
+                    return sum(vals)
 
                 summary = {
                     # Dataset funnel (utils/dataset_status.py): ingested_total is every

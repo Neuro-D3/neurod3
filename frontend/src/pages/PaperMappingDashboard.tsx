@@ -51,6 +51,15 @@ function formatNumber(value?: number | null): string {
   return value.toLocaleString();
 }
 
+/**
+ * For counts that are null until the DAGs have written dataset_status: an
+ * unknown count shows as a dash, not as zero.
+ */
+function formatCount(value?: number | null): string {
+  if (typeof value !== 'number') return '—';
+  return value.toLocaleString();
+}
+
 function truncate(text?: string | null, max = 160): string {
   if (!text) return '';
   if (text.length <= max) return text;
@@ -281,7 +290,7 @@ export default function PaperMappingDashboard() {
           <SummaryCard
             loading={firstLoad}
             title="Ingested Datasets"
-            value={formatNumber(summary?.summary.ingested_datasets)}
+            value={formatCount(summary?.summary.ingested_datasets)}
             hint={
               typeof summary?.summary.ingested_total === 'number'
                 ? `${formatNumber(summary.summary.ingested_total)} ingested, junk removed`
@@ -291,7 +300,7 @@ export default function PaperMappingDashboard() {
           <SummaryCard
             loading={firstLoad}
             title="Junk Excluded"
-            value={formatNumber(summary?.summary.junk_datasets)}
+            value={formatCount(summary?.summary.junk_datasets)}
             hint="Test, placeholder and empty uploads; hidden from the dataset list"
           />
           <SummaryCard
