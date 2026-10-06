@@ -17,10 +17,18 @@ resource "google_storage_bucket" "data" {
 }
 
 # Only the Airflow VM reads/writes the cache (gcsfuse authenticates as the VM
-# service account through the metadata server).
+# service account through the metadata server). objectAdmin covers the objects;
+# legacyBucketReader adds storage.buckets.get, which gcsfuse and
+# `gcloud storage rsync` need to open the bucket at all.
 resource "google_storage_bucket_iam_member" "airflow_object_admin" {
   bucket = google_storage_bucket.data.name
   role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.airflow.email}"
+}
+
+resource "google_storage_bucket_iam_member" "airflow_bucket_reader" {
+  bucket = google_storage_bucket.data.name
+  role   = "roles/storage.legacyBucketReader"
   member = "serviceAccount:${google_service_account.airflow.email}"
 }
 
