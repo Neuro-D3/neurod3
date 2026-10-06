@@ -26,15 +26,37 @@ fi
 # /opt/airflow/output in the containers is a bind mount of /mnt/airflow-output,
 # which mount-output-bucket.sh makes the paper-mapping bucket. Starting the stack
 # while it is a plain directory would send the paper cache to the boot disk with
-# no error, so refuse. (CI deploys run `up -d` through this wrapper too.)
+# no error, so refuse. (CI deploys and the VM startup script both run `up -d`
+# through this wrapper.)
+#
+# The check runs for every subcommand except the ones listed below that never
+# start a container, so a global option in front (`--ansi never up`) or an
+# unknown subcommand still gets checked.
+LEGACY_VOLUME="neuro-d3_airflow-output"            # project name = basename of APP_DIR
+CUTOVER_MARKER="/etc/neuro-d3/paper-cache-cutover-done"
+
+require_output_mount() {
+  if ! mountpoint -q /mnt/airflow-output; then
+    echo "ERROR: /mnt/airflow-output is not a mountpoint. Mount the paper-mapping" >&2
+    echo "       bucket first: sudo bash $APP_DIR/deploy/gcp/staging/mount-output-bucket.sh" >&2
+    exit 1
+  fi
+  # A VM that still has the pre-GCS Docker volume is mid-migration: the bucket
+  # may be missing papers written since the last rsync, and fulltext_cache_key
+  # rows point at them. Refuse until the operator has done the final offline
+  # rsync and said so (DEPLOY.md, "Paper cache cutover"). A fresh VM has no
+  # such volume and starts normally.
+  if [[ ! -f "$CUTOVER_MARKER" ]] && docker volume inspect "$LEGACY_VOLUME" >/dev/null 2>&1; then
+    echo "ERROR: the old $LEGACY_VOLUME Docker volume still exists and the paper-cache" >&2
+    echo "       cutover is not marked done. With Airflow stopped, run the final" >&2
+    echo "       gcloud storage rsync (DEPLOY.md), then: sudo touch $CUTOVER_MARKER" >&2
+    exit 1
+  fi
+}
+
 case "${1:-}" in
-  up|start|restart|run)
-    if ! mountpoint -q /mnt/airflow-output; then
-      echo "ERROR: /mnt/airflow-output is not a mountpoint. Mount the paper-mapping" >&2
-      echo "       bucket first: sudo bash $APP_DIR/deploy/gcp/staging/mount-output-bucket.sh" >&2
-      exit 1
-    fi
-    ;;
+  down|stop|kill|rm|ps|logs|config|pull|images|version|events|top|port|exec|ls|help|--help|-h|--version) ;;
+  *) require_output_mount ;;
 esac
 
 exec docker compose \

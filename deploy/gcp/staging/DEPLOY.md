@@ -180,9 +180,12 @@ The containers' `/opt/airflow/output` (paper-text-fetcher cache, the four
 `mount-output-bucket.sh` makes the `…-paper-mapping` bucket with gcsfuse. A fresh
 VM gets this from the startup script. A VM that already has papers in the old
 `airflow-output` Docker volume is moved over like this. `airflow-compose.sh`
-refuses to start the stack until the mount exists, so merging this change before
-the cutover only makes the CI deploy fail loudly; it cannot send the cache to the
-boot disk.
+(which CI deploys and the startup script both go through) refuses to start the
+stack until the mount exists **and**, while the old `neuro-d3_airflow-output`
+Docker volume still exists, until `/etc/neuro-d3/paper-cache-cutover-done` says
+the final copy was made. So merging this change, or rebooting the VM, before the
+cutover only makes the deploy or the boot fail loudly; neither can send the
+cache to the boot disk or start on a bucket that is missing recent papers.
 
 1. **Terraform apply** (lifecycle rule off, startup script). Safe while DAGs run:
    the startup-script change is a metadata update and does not reboot the VM.
@@ -198,12 +201,16 @@ boot disk.
 3. **Wait for any running paper-mapping DAG to finish** (the grid view, not the
    clock: one heavily cited primary has taken three hours on its own). A task
    killed mid-write leaves a truncated JSON in the fetcher cache.
-4. **Stop Airflow, final copy with nothing writing, pull main:**
+4. **Stop Airflow, final copy with nothing writing, mark the cutover done,
+   pull main:**
    ```bash
    sudo bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh down
    sudo gcloud storage rsync -r /var/lib/docker/volumes/neuro-d3_airflow-output/_data gs://neuro-d3-staging-paper-mapping/
+   sudo touch /etc/neuro-d3/paper-cache-cutover-done
    sudo git -C /opt/neuro-d3 fetch origin main && sudo git -C /opt/neuro-d3 checkout -B main origin/main
    ```
+   The marker is what lets `airflow-compose.sh up` proceed while the old volume
+   is still on disk. Only create it after a final rsync made with Airflow down.
 5. **Mount the bucket and start Airflow:**
    ```bash
    sudo bash /opt/neuro-d3/deploy/gcp/staging/mount-output-bucket.sh
@@ -215,7 +222,8 @@ boot disk.
    `gcloud storage ls gs://neuro-d3-staging-paper-mapping/paper_text_fetcher/ | head`
    should list objects. New objects appear in the bucket as later runs write.
 7. **Later, once confident:** `sudo docker volume rm neuro-d3_airflow-output`
-   reclaims the boot-disk space. Nothing reads it any more.
+   reclaims the boot-disk space. Nothing reads it any more, and with the volume
+   gone the marker file is no longer consulted.
 
 Performance notes: a write is one object upload on `close()` (about 50–150 ms,
 streamed while the file is written), small against the roughly 7 s each citing

@@ -116,9 +116,11 @@ script on every boot) mounts from the `…-paper-mapping` bucket with gcsfuse. T
 DAGs and the fetcher package keep writing plain files, `papers.fulltext_cache_key`
 stays a relative path, and local dev keeps its Docker volume. gcsfuse was chosen
 over Airflow's `ObjectStoragePath` because paper-text-fetcher owns its cache
-layout and only takes a directory. `airflow-compose.sh` refuses to start the stack
-when the mount is missing, since Docker would otherwise create a plain directory
-and the cache would silently land on the boot disk. The bucket has no lifecycle
+layout and only takes a directory. `airflow-compose.sh` (used by CI deploys and
+the startup script) refuses to start the stack when the mount is missing, since
+Docker would otherwise create a plain directory and the cache would silently land
+on the boot disk, and, while the pre-GCS Docker volume still exists, until the
+operator marks the final rsync done (`/etc/neuro-d3/paper-cache-cutover-done`). The bucket has no lifecycle
 rule and `force_destroy = false`: refetching papers costs about 7 s each and a
 third have no open text, and run artifacts are kept for audit. Cutover steps for
 an existing VM are in [DEPLOY.md](DEPLOY.md).

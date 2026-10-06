@@ -135,12 +135,16 @@ fi
 # take the writes onto the boot disk without any error. The fstab entry the
 # script writes also makes docker.service wait for the mount on later boots.
 bash "$APP_DIR/deploy/gcp/staging/mount-output-bucket.sh" "$DATA_BUCKET"
-mountpoint -q /mnt/airflow-output || { echo "ERROR: /mnt/airflow-output is not mounted; not starting Airflow"; exit 1; }
 
+COMPOSE_WRAPPER="$APP_DIR/deploy/gcp/staging/airflow-compose.sh"
 if [ -f "$COMPOSE_FILE" ]; then
-  # --project-directory = repo root so ./airflow/dags, ./airflow/config, ./deploy/... resolve.
-  docker compose --project-directory "$APP_DIR" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull || true
-  docker compose --project-directory "$APP_DIR" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d
+  # The wrapper targets this compose file with the repo root as project
+  # directory, and refuses to start when the bucket is not mounted or the
+  # pre-GCS Docker volume is still present without the cutover marker
+  # (DEPLOY.md). A reboot mid-migration therefore leaves Airflow down with a
+  # message in this log rather than silently switching storage.
+  bash "$COMPOSE_WRAPPER" pull || true
+  bash "$COMPOSE_WRAPPER" up -d
 else
   echo "ERROR: $COMPOSE_FILE not found in the checkout. Host is provisioned"
   echo "       (docker, secrets at $ENV_FILE) — bring up compose manually."

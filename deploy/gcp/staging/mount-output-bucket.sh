@@ -34,6 +34,9 @@ if ! command -v gcsfuse >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
   install -m 0755 -d /etc/apt/keyrings
+  # gpg refuses to overwrite in batch mode; a keyring left by an earlier run
+  # whose apt step failed must not block the retry.
+  rm -f /etc/apt/keyrings/gcsfuse.gpg
   curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
     | gpg --batch --no-tty --dearmor -o /etc/apt/keyrings/gcsfuse.gpg
   echo "deb [signed-by=/etc/apt/keyrings/gcsfuse.gpg] https://packages.cloud.google.com/apt gcsfuse-${CODENAME} main" \
