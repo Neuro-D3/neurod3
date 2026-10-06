@@ -192,21 +192,14 @@ cache to the boot disk or start on a bucket that is missing recent papers.
 After Terraform is applied and this change is merged, run from your machine:
 
 ```bash
-gcloud compute ssh neuro-d3-airflow --zone us-west1-a --tunnel-through-iap --command "sudo bash /opt/neuro-d3/deploy/gcp/staging/cutover-paper-cache.sh --wait --yes"
+gcloud compute ssh neuro-d3-airflow --zone us-west1-a --tunnel-through-iap --command "sudo bash /opt/neuro-d3/deploy/gcp/staging/cutover-paper-cache.sh"
 ```
 
-`cutover-paper-cache.sh` does steps 2–5 below in order: syncs the checkout to
-`origin/main`, copies the volume while Airflow runs, waits for any running or
-queued run of a DAG that touches the cache (the four `*_paper_mapping` DAGs,
-`paper_reuse_classification`, `reuse_classification_benchmark_test`,
-`stack_integration_test`), stops Airflow, makes the final copy, writes the
-marker, mounts the bucket, checks 25 random files on the mount, starts Airflow
-and waits for the API server to be healthy.
+`cutover-paper-cache.sh` syncs the checkout to `origin/main`, stops Airflow
+(any running DAG runs are killed; this is staging), copies the volume to the
+bucket, writes the marker, mounts the bucket, checks 25 random files on the
+mount, starts Airflow and waits for the API server to be healthy.
 
-- Without `--wait` it exits if such a run is in progress; without `--yes` it
-  asks before stopping Airflow (needs a terminal, so `--yes` over `--command`).
-- If the run-list lookup fails, it stops before touching Airflow rather than
-  assume nothing is running.
 - If the spot check fails, it removes the marker and leaves Airflow stopped.
 - It survives a dropped SSH session and logs to
   `/var/log/neuro-d3-paper-cache-cutover.log`. Re-running is safe: it picks up
@@ -228,9 +221,9 @@ Then do step 6 (verify) yourself.
    ```bash
    sudo gcloud storage rsync -r /var/lib/docker/volumes/neuro-d3_airflow-output/_data gs://neuro-d3-staging-paper-mapping/
    ```
-3. **Wait for any running paper-mapping DAG to finish** (the grid view, not the
-   clock: one heavily cited primary has taken three hours on its own). A task
-   killed mid-write leaves a truncated JSON in the fetcher cache.
+3. **Optional: let running paper-mapping DAGs finish.** Staging keeps no state
+   worth protecting, so killing them is fine. paper-text-fetcher writes its cache
+   atomically, and a truncated mapping-DAG text file reads as a cache miss.
 4. **Stop Airflow, final copy with nothing writing, mark the cutover done,
    pull main:**
    ```bash
