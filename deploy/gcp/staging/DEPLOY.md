@@ -200,10 +200,13 @@ gcloud compute ssh neuro-d3-airflow --zone us-west1-a --tunnel-through-iap --com
 bucket, writes the marker, mounts the bucket, checks 25 random files on the
 mount, starts Airflow and waits for the API server to be healthy.
 
-- If the spot check fails, it removes the marker and leaves Airflow stopped.
+- It writes the marker only after the spot check passes. If the check fails,
+  Airflow stays stopped and there is no marker, so a re-run copies again.
+- Once the marker exists it never copies the old volume again (the bucket is
+  newer from then on). Running it then only remounts the bucket and starts
+  Airflow, so it is also the recovery command if the mount or the stack is down.
 - It survives a dropped SSH session and logs to
-  `/var/log/neuro-d3-paper-cache-cutover.log`. Re-running is safe: it picks up
-  where it left off, or reports that the cutover is already done.
+  `/var/log/neuro-d3-paper-cache-cutover.log`.
 - It never deletes the old volume (step 7 stays manual).
 
 Then do step 6 (verify) yourself.
@@ -233,7 +236,9 @@ Then do step 6 (verify) yourself.
    sudo git -C /opt/neuro-d3 fetch origin main && sudo git -C /opt/neuro-d3 checkout -B main origin/main
    ```
    The marker is what lets `airflow-compose.sh up` proceed while the old volume
-   is still on disk. Only create it after a final rsync made with Airflow down.
+   is still on disk. Only create it after a final rsync made with Airflow down,
+   and **never rsync the old volume again once it exists**: from then on the
+   bucket is newer, and a copy would overwrite fresh papers with stale ones.
 5. **Mount the bucket and start Airflow:**
    ```bash
    sudo bash /opt/neuro-d3/deploy/gcp/staging/mount-output-bucket.sh

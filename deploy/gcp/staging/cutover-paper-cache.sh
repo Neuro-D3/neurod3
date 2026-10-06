@@ -6,14 +6,21 @@
 #   2. stop Airflow (running DAG runs are killed; this is staging)
 #   3. copy the volume to the bucket (incremental: only what changed since the
 #      last copy)
-#   4. mark the cutover done, mount the bucket, spot-check files on the mount
+#   4. mount the bucket, spot-check files on the mount, and only then write
+#      the cutover marker
 #   5. start Airflow and wait for the API server to be healthy
+#
+# The marker means "the old volume was copied and verified". Once it exists the
+# script never copies again: the bucket is then newer than the old volume, and a
+# second copy would overwrite fresh papers with stale ones. A run with the
+# marker present only remounts the bucket and starts Airflow, so it doubles as
+# the recovery command if the mount or the stack is ever down.
 #
 # From your machine:
 #   gcloud compute ssh neuro-d3-airflow --zone us-west1-a --tunnel-through-iap \
 #     --command "sudo bash /opt/neuro-d3/deploy/gcp/staging/cutover-paper-cache.sh"
 #
-# Safe to re-run after a failure. It keeps going if the SSH session drops
+# Safe to re-run, before or after the marker exists. It keeps going if the SSH session drops
 # (output is also in /var/log/neuro-d3-paper-cache-cutover.log). It never
 # deletes the old volume; that stays a manual step once you are confident.
 set -euo pipefail
@@ -75,24 +82,44 @@ fi
 git -C "$APP_DIR" log --oneline -1
 [[ -f "$MOUNT_SCRIPT" ]] || die "$MOUNT_SCRIPT is missing on main. Is the GCS cache PR merged?"
 
-# ─── Fresh VM / already done ─────────────────────────────────────────────────
-if ! docker volume inspect "$LEGACY_VOLUME" >/dev/null 2>&1; then
-  step "No $LEGACY_VOLUME volume: nothing to migrate, just mount and start"
+start_on_bucket() {
   bash "$MOUNT_SCRIPT" "$BUCKET"
+  mountpoint -q "$MOUNT_POINT" || die "$MOUNT_POINT is not mounted."
   bash "$WRAPPER" up -d
+  AIRFLOW_STOPPED=0
+
+  echo "Waiting for the API server to report healthy (up to 5 min)..."
+  local status=starting cid
+  for _ in $(seq 1 30); do
+    cid="$(bash "$WRAPPER" ps -q airflow-api-server 2>/dev/null || true)"
+    if [[ -n "$cid" ]]; then
+      status="$(docker inspect -f '{{ .State.Health.Status }}' "$cid" 2>/dev/null || echo starting)"
+    fi
+    [[ "$status" == "healthy" ]] && break
+    sleep 10
+  done
   bash "$WRAPPER" ps
+  [[ "$status" == "healthy" ]] || die "API server is not healthy yet (status: $status). Check: sudo bash $WRAPPER logs airflow-api-server"
+}
+
+# ─── Nothing to migrate: fresh VM, or old volume already removed ────────────
+if ! docker volume inspect "$LEGACY_VOLUME" >/dev/null 2>&1; then
+  step "No $LEGACY_VOLUME volume: nothing to migrate, mount and start"
+  start_on_bucket
   exit 0
 fi
-SRC="$(docker volume inspect -f '{{ .Mountpoint }}' "$LEGACY_VOLUME")"
-[[ -d "$SRC" ]] || die "Volume path $SRC does not exist."
 
-if [[ -f "$CUTOVER_MARKER" ]] && mountpoint -q "$MOUNT_POINT" \
-   && [[ -n "$(bash "$WRAPPER" ps -q --status running airflow-scheduler 2>/dev/null || true)" ]]; then
-  step "Cutover already done ($CUTOVER_MARKER exists, bucket mounted, Airflow up)"
-  bash "$WRAPPER" ps
+# ─── Already migrated: never copy the old volume again ──────────────────────
+if [[ -f "$CUTOVER_MARKER" ]]; then
+  step "Cutover already done ($CUTOVER_MARKER exists): mount and start only, no copy"
+  start_on_bucket
+  echo
   echo "Once you are confident: sudo docker volume rm $LEGACY_VOLUME"
   exit 0
 fi
+
+SRC="$(docker volume inspect -f '{{ .Mountpoint }}' "$LEGACY_VOLUME")"
+[[ -d "$SRC" ]] || die "Volume path $SRC does not exist."
 
 # ─── 2. Stop ─────────────────────────────────────────────────────────────────
 step "2/5 Stop Airflow"
@@ -104,11 +131,10 @@ AIRFLOW_STOPPED=1
 step "3/5 Copy the volume to gs://$BUCKET (incremental)"
 gcloud storage rsync -r --exclude='(^|.*/)\.tmp-[^/]*$' "$SRC" "gs://$BUCKET/"
 
-# ─── 4. Marker, mount, spot check ────────────────────────────────────────────
-step "4/5 Mark the cutover done and mount gs://$BUCKET at $MOUNT_POINT"
-touch "$CUTOVER_MARKER"
+# ─── 4. Mount, spot check, then marker ──────────────────────────────────────
+step "4/5 Mount gs://$BUCKET at $MOUNT_POINT and verify the copy"
 bash "$MOUNT_SCRIPT" "$BUCKET"
-mountpoint -q "$MOUNT_POINT" || { rm -f "$CUTOVER_MARKER"; die "$MOUNT_POINT is not mounted."; }
+mountpoint -q "$MOUNT_POINT" || die "$MOUNT_POINT is not mounted."
 
 echo "Spot-checking 25 random files from the volume on the mount..."
 missing=0
@@ -120,28 +146,15 @@ while IFS= read -r f; do
   fi
 done < <(find "$SRC" -type f ! -name '.tmp-*' | shuf -n 25)
 if [[ $missing -gt 0 ]]; then
-  rm -f "$CUTOVER_MARKER"
   die "$missing of 25 sampled files are missing or differ on the mount. Not starting Airflow."
 fi
 echo "All 25 present with matching sizes."
+touch "$CUTOVER_MARKER"
+echo "Wrote $CUTOVER_MARKER: from now on this script will not copy the old volume again."
 
 # ─── 5. Start ────────────────────────────────────────────────────────────────
 step "5/5 Start Airflow on the bucket"
-bash "$WRAPPER" up -d
-AIRFLOW_STOPPED=0
-
-echo "Waiting for the API server to report healthy (up to 5 min)..."
-status=starting
-for _ in $(seq 1 30); do
-  cid="$(bash "$WRAPPER" ps -q airflow-api-server 2>/dev/null || true)"
-  if [[ -n "$cid" ]]; then
-    status="$(docker inspect -f '{{ .State.Health.Status }}' "$cid" 2>/dev/null || echo starting)"
-  fi
-  [[ "$status" == "healthy" ]] && break
-  sleep 10
-done
-bash "$WRAPPER" ps
-[[ "$status" == "healthy" ]] || die "API server is not healthy yet (status: $status). Check: sudo bash $WRAPPER logs airflow-api-server"
+start_on_bucket
 
 step "Done"
 cat <<EOF
