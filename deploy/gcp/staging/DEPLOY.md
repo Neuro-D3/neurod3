@@ -187,31 +187,9 @@ the final copy was made. So merging this change, or rebooting the VM, before the
 cutover only makes the deploy or the boot fail loudly; neither can send the
 cache to the boot disk or start on a bucket that is missing recent papers.
 
-### The short way: one script
-
-After Terraform is applied and this change is merged, run from your machine:
-
-```bash
-gcloud compute ssh neuro-d3-airflow --zone us-west1-a --tunnel-through-iap --command "sudo bash /opt/neuro-d3/deploy/gcp/staging/cutover-paper-cache.sh"
-```
-
-`cutover-paper-cache.sh` syncs the checkout to `origin/main`, stops Airflow
-(any running DAG runs are killed; this is staging), copies the volume to the
-bucket, writes the marker, mounts the bucket, checks 25 random files on the
-mount, starts Airflow and waits for the API server to be healthy.
-
-- It writes the marker only after the spot check passes. If the check fails,
-  Airflow stays stopped and there is no marker, so a re-run copies again.
-- Once the marker exists it never copies the old volume again (the bucket is
-  newer from then on). Running it then only remounts the bucket and starts
-  Airflow, so it is also the recovery command if the mount or the stack is down.
-- It survives a dropped SSH session and logs to
-  `/var/log/neuro-d3-paper-cache-cutover.log`.
-- It never deletes the old volume (step 7 stays manual).
-
-Then do step 6 (verify) yourself.
-
-### The same steps by hand
+Staging's cutover is done once, with a one-off script kept out of the repo
+that runs steps 2–6 below in order. These steps are the record of what it
+does, and what to follow by hand on any other VM that still has the old volume:
 
 1. **Terraform apply** (lifecycle rule off, startup script). Safe while DAGs run:
    the startup-script change is a metadata update and does not reboot the VM.
@@ -259,6 +237,24 @@ paper takes to fetch. Reads are one GET, or a boot-disk hit once gcsfuse's file
 cache (4 GB cap, `/var/cache/gcsfuse`) has the object. gcsfuse caches "not
 found" for 5 s, so two parallel tasks can still fetch the same paper within a few
 seconds of each other, the same harmless double download the local volume had.
+
+### If the gcsfuse mount dies
+
+If gcsfuse exits, `/mnt/airflow-output` becomes a dead mount: reads fail with
+"Transport endpoint is not connected" and paper-mapping tasks fail. Either
+reboot the VM (fstab mounts the bucket before Docker starts, then the startup
+script brings Airflow up), or without a reboot:
+
+```bash
+sudo bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh down
+sudo bash /opt/neuro-d3/deploy/gcp/staging/mount-output-bucket.sh
+sudo bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh up -d
+```
+
+Stop Airflow first: running containers keep the dead mount until they are
+recreated. `mount-output-bucket.sh` detects a mount that no longer answers,
+detaches it and mounts again. Nothing is lost: everything written before the
+crash is already in the bucket.
 
 ---
 
