@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# One-time cutover of the staging Airflow VM from the old airflow-output Docker
+# volume to the paper-mapping bucket (gcsfuse). Every step of DEPLOY.md's
+# "Paper cache cutover" in one command:
+#
+#   1. sync the checkout to origin/main (re-runs itself if the script changed)
+#   2. copy the volume to the bucket while Airflow is still up (incremental)
+#   3. refuse, or with --wait wait, while a DAG that touches the cache is running
+#   4. stop Airflow, final copy with nothing writing
+#   5. mark the cutover done, mount the bucket, spot-check files on the mount
+#   6. start Airflow and wait for the API server to be healthy
+#
+# Run on the VM:
+#   sudo bash /opt/neuro-d3/deploy/gcp/staging/cutover-paper-cache.sh [--wait] [--yes]
+#
+# or in one go from your machine (--yes, since there is no terminal to confirm):
+#   gcloud compute ssh neuro-d3-airflow --zone us-west1-a --tunnel-through-iap \
+#     --command "sudo bash /opt/neuro-d3/deploy/gcp/staging/cutover-paper-cache.sh --wait --yes"
+#
+# Safe to re-run after a failure: copies are incremental and every step checks
+# its own state. It keeps going if the SSH session drops (output is also in
+# /var/log/neuro-d3-paper-cache-cutover.log). It never deletes the old volume;
+# that stays a manual step once you are confident.
+set -euo pipefail
+
+WAIT=0
+ASSUME_YES=0
+for arg in "$@"; do
+  case "$arg" in
+    --wait) WAIT=1 ;;
+    --yes|-y) ASSUME_YES=1 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    *) echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
+  esac
+done
+
+if [[ $EUID -ne 0 ]]; then
+  echo "Run as root: sudo bash $0 $*" >&2
+  exit 1
+fi
+
+APP_DIR="/opt/neuro-d3"
+ENV_FILE="/etc/neuro-d3/airflow.env"
+WRAPPER="$APP_DIR/deploy/gcp/staging/airflow-compose.sh"
+MOUNT_SCRIPT="$APP_DIR/deploy/gcp/staging/mount-output-bucket.sh"
+MOUNT_POINT="/mnt/airflow-output"
+LEGACY_VOLUME="neuro-d3_airflow-output"
+CUTOVER_MARKER="/etc/neuro-d3/paper-cache-cutover-done"
+LOG_FILE="/var/log/neuro-d3-paper-cache-cutover.log"
+# DAGs that read or write /opt/airflow/output (paper-text-fetcher cache,
+# *_paper_mapping dirs). A run of any of these must not be killed mid-write.
+CACHE_DAGS=(
+  crcns_paper_mapping dandi_paper_mapping openneuro_paper_mapping sparc_paper_mapping
+  paper_reuse_classification reuse_classification_benchmark_test stack_integration_test
+)
+WAIT_INTERVAL=120
+
+# Survive a dropped SSH session: ignore HUP (inherited by tee and every child),
+# and let tee keep writing the log if the terminal goes away.
+trap '' HUP
+if [[ -z "${CUTOVER_REEXEC:-}" ]]; then
+  exec > >(tee -a --output-error=warn "$LOG_FILE") 2>&1
+fi
+
+step() { echo; echo "=== [$(date -u +%H:%M:%S)] $* ==="; }
+die()  { echo "ERROR: $*" >&2; exit 1; }
+
+AIRFLOW_STOPPED=0
+on_exit() {
+  local rc=$?
+  if [[ $rc -ne 0 && $AIRFLOW_STOPPED -eq 1 ]]; then
+    echo >&2
+    echo "Airflow is STOPPED. Fix the error above and re-run this script; it picks up" >&2
+    echo "where it left off. Log: $LOG_FILE" >&2
+  fi
+}
+trap on_exit EXIT
+
+[[ -f "$ENV_FILE" ]] || die "$ENV_FILE not found (written by the VM startup script)."
+BUCKET="$(grep -m1 '^DATA_BUCKET=' "$ENV_FILE" | cut -d= -f2- || true)"
+[[ -n "$BUCKET" ]] || die "DATA_BUCKET is not set in $ENV_FILE."
+
+scheduler_running() {
+  [[ -n "$(bash "$WRAPPER" ps -q --status running airflow-scheduler 2>/dev/null || true)" ]]
+}
+
+# ─── 1. Checkout = origin/main ───────────────────────────────────────────────
+step "1/6 Sync $APP_DIR to origin/main"
+git -C "$APP_DIR" fetch --quiet origin main
+if [[ "$(git -C "$APP_DIR" rev-parse HEAD)" != "$(git -C "$APP_DIR" rev-parse FETCH_HEAD)" ]]; then
+  git -C "$APP_DIR" checkout -B main FETCH_HEAD
+  if [[ -z "${CUTOVER_REEXEC:-}" ]]; then
+    echo "Checkout updated; re-running the new copy of this script."
+    CUTOVER_REEXEC=1 exec bash "$APP_DIR/deploy/gcp/staging/cutover-paper-cache.sh" "$@"
+  fi
+fi
+git -C "$APP_DIR" log --oneline -1
+[[ -f "$MOUNT_SCRIPT" ]] || die "$MOUNT_SCRIPT is missing on main. Is the GCS cache PR merged?"
+
+# ─── Fresh VM / already done ─────────────────────────────────────────────────
+if ! docker volume inspect "$LEGACY_VOLUME" >/dev/null 2>&1; then
+  step "No $LEGACY_VOLUME volume: nothing to migrate, just mount and start"
+  bash "$MOUNT_SCRIPT" "$BUCKET"
+  bash "$WRAPPER" up -d
+  bash "$WRAPPER" ps
+  exit 0
+fi
+SRC="$(docker volume inspect -f '{{ .Mountpoint }}' "$LEGACY_VOLUME")"
+[[ -d "$SRC" ]] || die "Volume path $SRC does not exist."
+
+if [[ -f "$CUTOVER_MARKER" ]] && mountpoint -q "$MOUNT_POINT" && scheduler_running; then
+  step "Cutover already done ($CUTOVER_MARKER exists, bucket mounted, Airflow up)"
+  bash "$WRAPPER" ps
+  echo "Once you are confident: sudo docker volume rm $LEGACY_VOLUME"
+  exit 0
+fi
+
+# fetcher writes .tmp-*.json then renames; a leftover one is never read.
+RSYNC=(gcloud storage rsync -r --exclude='(^|.*/)\.tmp-[^/]*$' "$SRC" "gs://$BUCKET/")
+
+# ─── 2. Copy while Airflow runs ──────────────────────────────────────────────
+if scheduler_running; then
+  step "2/6 Copy the volume to gs://$BUCKET while Airflow is up (incremental)"
+  "${RSYNC[@]}"
+
+  # ─── 3. Nothing that touches the cache may be running ──────────────────────
+  step "3/6 Check for running DAGs that use the cache"
+  while true; do
+    busy=()
+    for dag in "${CACHE_DAGS[@]}"; do
+      # A failed lookup must stop the cutover, never read as "nothing running".
+      # The one exception: a DAG this deployment never registered has no runs.
+      errf="$(mktemp)"
+      if ! out="$(bash "$WRAPPER" exec -T airflow-scheduler airflow dags list-runs "$dag" -o json 2>"$errf")"; then
+        if grep -q "does not exist in 'dag' table" "$errf"; then
+          rm -f "$errf"
+          continue
+        fi
+        echo "--- stderr:"; tail -5 "$errf"; rm -f "$errf"
+        die "Could not list runs of $dag (airflow dags list-runs failed). Not stopping Airflow."
+      fi
+      rm -f "$errf"
+      # The CLI may log lines starting with "[" to stdout too; the run list is
+      # the one line that parses as a JSON list.
+      if ! n="$(printf '%s' "$out" | python3 -c '
+import json, re, sys
+for line in reversed(sys.stdin.read().splitlines()):
+    line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+    if not line.startswith("["):
+        continue
+    try:
+        runs = json.loads(line)
+    except ValueError:
+        continue
+    if isinstance(runs, list):
+        print(sum(1 for r in runs if r.get("state") in ("running", "queued")))
+        sys.exit(0)
+sys.exit(3)
+')"; then
+        die "Could not parse the run list of $dag. Not stopping Airflow. Output was: ${out:0:300}"
+      fi
+      if [[ "$n" -gt 0 ]]; then
+        busy+=("$dag ($n)")
+      fi
+    done
+    if [[ ${#busy[@]} -eq 0 ]]; then
+      echo "None running."
+      break
+    fi
+    echo "Running or queued: ${busy[*]}"
+    if [[ $WAIT -eq 0 ]]; then
+      die "Re-run when they finish, or add --wait to wait for them here."
+    fi
+    echo "Waiting ${WAIT_INTERVAL}s (--wait)..."
+    sleep "$WAIT_INTERVAL"
+  done
+
+  if [[ $ASSUME_YES -eq 0 ]]; then
+    [[ -t 0 ]] || die "No terminal to confirm on; pass --yes."
+    read -r -p "Stop Airflow for the cutover (a few minutes)? [y/N] " ans
+    [[ "$ans" =~ ^[Yy] ]] || die "Aborted; nothing was stopped."
+  fi
+
+  # ─── 4. Stop, final copy ───────────────────────────────────────────────────
+  step "4/6 Stop Airflow"
+  bash "$WRAPPER" down
+else
+  step "2-4/6 Airflow is not running; skipping the live copy and DAG check"
+  if [[ $ASSUME_YES -eq 0 && -t 0 ]]; then
+    read -r -p "Continue with the final copy and start Airflow on the bucket? [y/N] " ans
+    [[ "$ans" =~ ^[Yy] ]] || die "Aborted."
+  fi
+fi
+AIRFLOW_STOPPED=1
+
+step "4/6 Final copy, nothing writing"
+"${RSYNC[@]}"
+
+# ─── 5. Marker, mount, spot check ────────────────────────────────────────────
+step "5/6 Mark the cutover done and mount gs://$BUCKET at $MOUNT_POINT"
+touch "$CUTOVER_MARKER"
+bash "$MOUNT_SCRIPT" "$BUCKET"
+mountpoint -q "$MOUNT_POINT" || { rm -f "$CUTOVER_MARKER"; die "$MOUNT_POINT is not mounted."; }
+
+echo "Spot-checking 25 random files from the volume on the mount..."
+missing=0
+while IFS= read -r f; do
+  rel="${f#"$SRC"/}"
+  if [[ ! -f "$MOUNT_POINT/$rel" ]] || [[ "$(stat -c %s "$f")" != "$(stat -c %s "$MOUNT_POINT/$rel")" ]]; then
+    echo "  MISSING or different: $rel"
+    missing=$((missing + 1))
+  fi
+done < <(find "$SRC" -type f ! -name '.tmp-*' | shuf -n 25)
+if [[ $missing -gt 0 ]]; then
+  rm -f "$CUTOVER_MARKER"
+  die "$missing of 25 sampled files are missing or differ on the mount. Not starting Airflow."
+fi
+echo "All 25 present with matching sizes."
+
+# ─── 6. Start ────────────────────────────────────────────────────────────────
+step "6/6 Start Airflow on the bucket"
+bash "$WRAPPER" up -d
+AIRFLOW_STOPPED=0
+
+echo "Waiting for the API server to report healthy (up to 5 min)..."
+for _ in $(seq 1 30); do
+  cid="$(bash "$WRAPPER" ps -q airflow-api-server 2>/dev/null || true)"
+  status="$( [[ -n "$cid" ]] && docker inspect -f '{{ .State.Health.Status }}' "$cid" 2>/dev/null || echo starting)"
+  [[ "$status" == "healthy" ]] && break
+  sleep 10
+done
+bash "$WRAPPER" ps
+[[ "${status:-}" == "healthy" ]] || die "API server is not healthy yet (status: ${status:-unknown}). Check: sudo bash $WRAPPER logs airflow-api-server"
+
+step "Done"
+cat <<EOF
+Paper cache and run artifacts now live in gs://$BUCKET, mounted at $MOUNT_POINT.
+
+Verify: trigger one paper-mapping DAG on an already-mapped dataset and check its
+log shows cache hits, not refetches.
+
+Once you are confident, reclaim the boot disk (about 10 GB):
+  sudo docker volume rm $LEGACY_VOLUME
+EOF
