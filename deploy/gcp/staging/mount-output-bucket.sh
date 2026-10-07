@@ -45,6 +45,20 @@ if ! command -v gcsfuse >/dev/null 2>&1; then
   apt-get install -y --no-install-recommends fuse3 gcsfuse
 fi
 
+# ─── Detach a dead mount first ──────────────────────────────────────────────
+# If gcsfuse has exited, the kernel keeps a dead FUSE mount: every access fails
+# with "Transport endpoint is not connected" (mkdir -p below included, which
+# is why this runs first), and `mountpoint` may report it as
+# mounted or fail outright. Look in the mount table instead, probe that the
+# mount answers, and detach a dead one so it can be mounted again. Stop Airflow
+# first (airflow-compose.sh down): running containers keep the dead mount until
+# they are recreated.
+if awk -v m="$MOUNT_POINT" '$2 == m { found = 1 } END { exit !found }' /proc/mounts \
+   && ! timeout 20 ls "$MOUNT_POINT" >/dev/null 2>&1; then
+  echo "WARNING: ${MOUNT_POINT} is mounted but not answering (gcsfuse exited?); detaching it"
+  fusermount3 -uz "$MOUNT_POINT" 2>/dev/null || umount -l "$MOUNT_POINT"
+fi
+
 # ─── 2. fstab entry (mounted at boot, before docker.service) ─────────────────
 # Options are gcsfuse flags with underscores (the mount helper turns them into
 # --flags):
@@ -75,18 +89,6 @@ UNIT
 systemctl daemon-reload
 
 # ─── 3. Mount now ────────────────────────────────────────────────────────────
-# If gcsfuse has exited, the kernel keeps a dead FUSE mount: every access fails
-# with "Transport endpoint is not connected", and `mountpoint` may report it as
-# mounted or fail outright. Look in the mount table instead, probe that the
-# mount answers, and detach a dead one so it can be mounted again. Stop Airflow
-# first (airflow-compose.sh down): running containers keep the dead mount until
-# they are recreated.
-if awk -v m="$MOUNT_POINT" '$2 == m { found = 1 } END { exit !found }' /proc/mounts \
-   && ! timeout 20 ls "$MOUNT_POINT" >/dev/null 2>&1; then
-  echo "WARNING: ${MOUNT_POINT} is mounted but not answering (gcsfuse exited?); detaching it"
-  fusermount3 -uz "$MOUNT_POINT" 2>/dev/null || umount -l "$MOUNT_POINT"
-fi
-
 if mountpoint -q "$MOUNT_POINT"; then
   echo "gs://${BUCKET} already mounted at ${MOUNT_POINT}"
 else

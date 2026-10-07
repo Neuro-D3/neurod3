@@ -208,13 +208,12 @@ does, and what to follow by hand on any other VM that still has the old volume:
 4. **Stop Airflow, final copy with nothing writing, mark the cutover done,
    pull main:**
    ```bash
-   sudo bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh down
-   sudo gcloud storage rsync -r /var/lib/docker/volumes/neuro-d3_airflow-output/_data gs://neuro-d3-staging-paper-mapping/
-   sudo touch /etc/neuro-d3/paper-cache-cutover-done
+   sudo bash /opt/neuro-d3/deploy/gcp/staging/airflow-compose.sh down      && sudo gcloud storage rsync -r /var/lib/docker/volumes/neuro-d3_airflow-output/_data gs://neuro-d3-staging-paper-mapping/      && sudo touch /etc/neuro-d3/paper-cache-cutover-done
    sudo git -C /opt/neuro-d3 fetch origin main && sudo git -C /opt/neuro-d3 checkout -B main origin/main
    ```
-   The marker is what lets `airflow-compose.sh up` proceed while the old volume
-   is still on disk. Only create it after a final rsync made with Airflow down,
+   The three are chained so the marker is written only if the stop and the copy
+   both succeeded. The marker is what lets `airflow-compose.sh up` proceed while
+   the old volume is still on disk. Only create it after a final rsync made with Airflow down,
    and **never rsync the old volume again once it exists**: from then on the
    bucket is newer, and a copy would overwrite fresh papers with stale ones.
 5. **Mount the bucket and start Airflow:**
