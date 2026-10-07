@@ -82,10 +82,9 @@ x-airflow-common:
     #   AIRFLOW__CORE__FERNET_KEY            AIRFLOW__API__SECRET_KEY
     #   AIRFLOW__API_AUTH__JWT_SECRET        OPENROUTER_API_KEY
     #   AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER  DB_PASSWORD
-    # TODO(separate PR): write paper-mapping output to GCS via ObjectStoragePath.
-    # For now it's ephemeral on the VM (local named volume below) — these are lost
-    # if the VM is recreated. The neuro-d3-staging-paper-mapping bucket + VM
-    # objectAdmin IAM already exist, reserved for that conversion.
+    # These, and PAPER_FETCHER_CACHE_DIR above, sit under /opt/airflow/output,
+    # which is the paper-mapping bucket (bind mount below), so the cache and run
+    # artifacts survive a VM rebuild without the DAGs knowing about GCS.
     DANDI_PAPER_MAPPING_OUTPUT_DIR: ${DANDI_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/dandi_paper_mapping}
     OPENNEURO_PAPER_MAPPING_OUTPUT_DIR: ${OPENNEURO_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/openneuro_paper_mapping}
     CRCNS_PAPER_MAPPING_OUTPUT_DIR: ${CRCNS_PAPER_MAPPING_OUTPUT_DIR:-/opt/airflow/output/crcns_paper_mapping}
@@ -95,7 +94,11 @@ x-airflow-common:
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
     - ./airflow/config:/opt/airflow/config
-    - airflow-output:/opt/airflow/output # ephemeral; TODO move to GCS (separate PR)
+    # The paper-mapping bucket, mounted on the host with gcsfuse by
+    # mount-output-bucket.sh. airflow-compose.sh refuses to start the stack when
+    # it isn't mounted, since Docker would otherwise create a plain directory
+    # here and the DAGs would fill the boot disk without any error.
+    - /mnt/airflow-output:/opt/airflow/output
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -182,12 +185,13 @@ services:
         # admin user) before exec'ing the command.
         /entrypoint airflow version
         /entrypoint airflow config list >/dev/null
-        # Everything except the paper cache volume (output/), which holds thousands
-        # of files the airflow user already owns; walking them on every start
-        # stalls deploys. Own the output directory itself, not its contents
-        # (same approach as the local docker-compose.yml).
+        # Everything except the paper cache (output/), which holds thousands of
+        # files; walking them on every start stalls deploys. output/ is the
+        # gcsfuse mount, which already presents every object as the airflow
+        # user (uid/gid mount options) and may reject chown, hence the || true.
         find /opt/airflow -mindepth 1 -maxdepth 1 ! -name output -exec chown -R "${AIRFLOW_UID:-50000}:0" {} +
-        chown "${AIRFLOW_UID:-50000}:0" /opt/airflow /opt/airflow/output
+        chown "${AIRFLOW_UID:-50000}:0" /opt/airflow
+        chown "${AIRFLOW_UID:-50000}:0" /opt/airflow/output 2>/dev/null || true
 
         echo "Ensuring Airflow pool paper_mapping_api_pool exists:"
         PAPER_MAPPING_API_POOL_SLOTS="$${PAPER_MAPPING_API_POOL_SLOTS:-2}"
@@ -240,13 +244,12 @@ services:
         condition: service_healthy
 
 volumes:
-  airflow-output:
   caddy-data:
   caddy-config:
 
 # Persistence summary:
 #   - Run history / task state -> Cloud SQL metadata DB (survives VM rebuilds).
 #   - Task logs                -> GCS via Airflow native remote logging (above).
-#   - Paper-mapping artifacts  -> EPHEMERAL on the VM (airflow-output volume).
-#                                 TODO(separate PR): write to GCS via ObjectStoragePath.
+#   - Paper cache + artifacts  -> GCS paper-mapping bucket, gcsfuse-mounted at
+#                                 /mnt/airflow-output -> /opt/airflow/output.
 #   - DAG code                 -> git (cloned on boot).

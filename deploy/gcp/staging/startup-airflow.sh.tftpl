@@ -4,13 +4,13 @@
 #   1. install Docker + compose plugin + the Google Cloud CLI + git
 #   2. configure Docker auth for Artifact Registry (via the VM service account)
 #   3. fetch app secrets from Secret Manager into /etc/neuro-d3/airflow.env
-#   4. clone the repo (DAGs sync from GitHub) and bring up the Airflow-only
-#      compose stack (Cloud SQL proxy sidecar + Airflow services + Caddy)
+#   4. clone the repo (DAGs sync from GitHub), mount the paper-mapping bucket
+#      with gcsfuse, and bring up the Airflow-only compose stack (Cloud SQL
+#      proxy sidecar + Airflow services + Caddy)
 #
-# Persistence: run history -> Cloud SQL; task logs -> GCS (native remote logging).
-# Paper-mapping output is currently EPHEMERAL on the VM (local Airflow volume).
-# TODO(separate PR): write paper-mapping output to GCS via ObjectStoragePath; the
-# neuro-d3-staging-paper-mapping bucket + VM objectAdmin already exist for it.
+# Persistence: run history -> Cloud SQL; task logs -> GCS (native remote logging);
+# paper cache + run artifacts -> GCS (the paper-mapping bucket, mounted with
+# gcsfuse at /mnt/airflow-output; see mount-output-bucket.sh).
 #
 # Idempotent: safe to re-run. Logs to the serial console + /var/log/neuro-d3-startup.log.
 set -euo pipefail
@@ -97,13 +97,12 @@ DB_PASSWORD="$(fetch d3-staging-db-master-password)"
   # paper-text-fetcher identifies itself to NCBI, CrossRef and Unpaywall with this
   # address; Unpaywall (open-access PDFs) is skipped without one. Not a secret.
   echo "PAPER_FETCHER_CONTACT_EMAIL=nathaniel@duralabs.ai"
-  # Reserved for the future GCS paper-mapping PR (artifacts are local for now).
+  # Paper cache + run artifacts bucket; mount-output-bucket.sh mounts it.
   echo "DATA_BUCKET=$DATA_BUCKET"
   # Native GCS remote logging target (provider baked into the image).
   echo "AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER=gs://$${LOGS_BUCKET}/airflow-logs"
-  # Paper-mapping output dirs are left UNSET here -> the compose defaults to the
-  # local /opt/airflow/output/* paths (ephemeral). TODO(separate PR): point these
-  # at gs://$${DATA_BUCKET}/... once the DAGs use ObjectStoragePath.
+  # Paper-mapping output dirs are left UNSET here -> the compose defaults to
+  # /opt/airflow/output/*, which is the bucket (bind mount of /mnt/airflow-output).
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
@@ -118,7 +117,7 @@ ACCESS_TOKEN=$(curl -s -H "Metadata-Flavor: Google" \
 
 echo "$ACCESS_TOKEN" | docker login -u oauth2accesstoken --password-stdin https://us-west1-docker.pkg.dev
 
-# ─── 4. Clone repo + bring up the Airflow-only compose stack ────────────────
+# ─── 4. Clone repo, mount the paper bucket, bring up the compose stack ──────
 if [ ! -d "$APP_DIR/.git" ]; then
   git clone --depth 1 "$REPO_URL" "$APP_DIR"
 fi
@@ -131,10 +130,21 @@ else
   git -C "$APP_DIR" pull --ff-only 2>/dev/null || true
 fi
 
+# /opt/airflow/output in the containers is a bind mount of /mnt/airflow-output,
+# which must be the bucket before anything starts: an unmounted directory would
+# take the writes onto the boot disk without any error. The fstab entry the
+# script writes also makes docker.service wait for the mount on later boots.
+bash "$APP_DIR/deploy/gcp/staging/mount-output-bucket.sh" "$DATA_BUCKET"
+
+COMPOSE_WRAPPER="$APP_DIR/deploy/gcp/staging/airflow-compose.sh"
 if [ -f "$COMPOSE_FILE" ]; then
-  # --project-directory = repo root so ./airflow/dags, ./airflow/config, ./deploy/... resolve.
-  docker compose --project-directory "$APP_DIR" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull || true
-  docker compose --project-directory "$APP_DIR" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d
+  # The wrapper targets this compose file with the repo root as project
+  # directory, and refuses to start when the bucket is not mounted or the
+  # pre-GCS Docker volume is still present without the cutover marker
+  # (DEPLOY.md). A reboot mid-migration therefore leaves Airflow down with a
+  # message in this log rather than silently switching storage.
+  bash "$COMPOSE_WRAPPER" pull || true
+  bash "$COMPOSE_WRAPPER" up -d
 else
   echo "ERROR: $COMPOSE_FILE not found in the checkout. Host is provisioned"
   echo "       (docker, secrets at $ENV_FILE) — bring up compose manually."

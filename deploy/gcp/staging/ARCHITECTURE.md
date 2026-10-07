@@ -35,7 +35,7 @@ flowchart TB
       sm["Secret Manager<br/>d3-staging-*"]
       ar["Artifact Registry<br/>neuro-d3/*"]
       logs["GCS airflow-logs"]
-      pm["GCS paper-mapping<br/>(reserved)"]
+      pm["GCS paper-mapping<br/>(paper cache, gcsfuse)"]
     end
 
     user -->|"load SPA (HTTPS)"| fe
@@ -84,8 +84,8 @@ the connector.
 - **Secret Manager** `d3-staging-{db-master-password, airflow-fernet-key, airflow-jwt-secret,
   airflow-api-secret-key, airflow-admin-password, openrouter-api-key}`
 - **Artifact Registry** `us-west1-docker.pkg.dev/neuro-d3-staging/neuro-d3/{api,frontend,airflow}`
-- **GCS** `…-airflow-logs` (Airflow task logs, native remote logging — **in use**) ·
-  `…-paper-mapping` (**reserved**, unused — the GCS-cache TODO)
+- **GCS** `…-airflow-logs` (Airflow task logs, native remote logging) ·
+  `…-paper-mapping` (paper cache + run artifacts, gcsfuse-mounted on the VM; no expiry)
 - **IAM** — 3 least-privilege SAs: *api* (sql.client + db-password secret), *frontend* (minimal),
   *airflow-VM* (sql.client, secretAccessor, AR reader, GCS objectAdmin)
 
@@ -98,7 +98,7 @@ the connector.
 | Task logs | GCS `…-airflow-logs` | ✅ |
 | DAG code | git (re-cloned on VM boot) | ✅ |
 | Secrets | Secret Manager | ✅ |
-| Paper-mapping on-disk cache | local VM volume | ⚠️ ephemeral (→ GCS TODO) |
+| Paper cache + run artifacts | GCS `…-paper-mapping` via gcsfuse | ✅ |
 
 ## Reachability
 
