@@ -353,3 +353,154 @@ class TestD3PaperFetcher:
         pytest.importorskip("paper_text_fetcher")
         monkeypatch.setenv("PAPER_FETCHER_CACHE_DIR", str(tmp_path / "ptf"))
         assert P.get_paper_fetcher() is P.get_paper_fetcher()
+
+
+# ---------------------------------------------------------------------------
+# Threads: the citation step runs one fetcher per worker thread
+# (utils.citing_paper_text), so pacing and the browser limit must be shared.
+# ---------------------------------------------------------------------------
+
+import threading
+import time
+
+
+@pytest.fixture
+def fresh_pacing(monkeypatch):
+    monkeypatch.setattr(P, "_host_locks", {})
+    monkeypatch.setattr(P, "_host_next_allowed", {})
+
+
+class FakeClock:
+    """A clock that only moves when something sleeps (by ``overshoot`` more than asked)."""
+
+    def __init__(self, start=100.0, overshoot=0.0):
+        self.now = start
+        self.overshoot = overshoot
+        self.sleeps = []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds + self.overshoot
+
+
+def go(clock, host="www.ebi.ac.uk", interval=0.2):
+    """One call: returns the time it was let through."""
+    P._wait_for_host_slot(host, interval, clock=clock, sleep=clock.sleep)
+    return clock.now
+
+
+class TestHostPacingAcrossThreads:
+    def test_callers_to_one_host_are_spaced_by_the_interval(self, fresh_pacing):
+        clock = FakeClock()
+        sent = [go(clock) for _ in range(3)]
+        assert sent == pytest.approx([100.0, 100.2, 100.4])
+        assert clock.sleeps == pytest.approx([0.2, 0.2])
+
+    def test_a_late_wake_up_pushes_the_next_caller_back(self, fresh_pacing):
+        # The second caller wakes 0.5 s late. The third must still wait a full
+        # interval after that late start, not go out right behind it.
+        clock = FakeClock()
+        first = go(clock)
+        clock.overshoot = 0.5
+        second = go(clock)
+        clock.overshoot = 0.0
+        third = go(clock)
+        assert second - first >= 0.2
+        assert third - second == pytest.approx(0.2)
+
+    def test_other_hosts_are_not_held_up(self, fresh_pacing):
+        clock = FakeClock()
+        go(clock, "www.ebi.ac.uk")
+        go(clock, "api.crossref.org")
+        go(clock, "example.org", interval=0.0)
+        assert clock.sleeps == []
+
+    def test_a_sleeping_caller_does_not_block_another_host(self, fresh_pacing):
+        # One thread waits on EBI; a call to Crossref meanwhile goes straight through.
+        P._wait_for_host_slot("www.ebi.ac.uk", 0.5)
+        done = threading.Event()
+        t = threading.Thread(target=lambda: (P._wait_for_host_slot("www.ebi.ac.uk", 0.5), done.set()))
+        t.start()
+        started = time.monotonic()
+        P._wait_for_host_slot("api.crossref.org", 0.5)
+        assert time.monotonic() - started < 0.1
+        assert not done.is_set()          # the EBI caller is still waiting its turn
+        t.join()
+
+    def test_fetchers_on_different_threads_share_the_pacing(self, monkeypatch, tmp_path, fresh_pacing):
+        ptf = pytest.importorskip("paper_text_fetcher.fetcher")
+        monkeypatch.setitem(ptf.HOST_MIN_INTERVALS, "pace.test", 0.2)
+        monkeypatch.setenv("PAPER_FETCHER_CACHE_DIR", str(tmp_path / "ptf"))
+        sent = []
+        lock = threading.Lock()
+
+        def one_request():
+            fetcher = P.get_paper_fetcher()          # a separate instance per thread
+            def fake_get(url, **kwargs):
+                with lock:
+                    sent.append(time.monotonic())
+            monkeypatch.setattr(fetcher.session, "get", fake_get)
+            fetcher._polite_get("https://pace.test/x")
+
+        threads = [threading.Thread(target=one_request) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        sent.sort()
+        assert len(sent) == 4
+        # Three 0.2 s gaps. Per-instance pacing would send all four at once.
+        # (Tolerance for the ~15 ms clock granularity on Windows.)
+        assert sent[-1] - sent[0] >= 0.6 - 0.05, sent
+
+
+class TestBrowserSlots:
+    def test_at_most_the_slot_count_run_at_once_and_each_closes_its_browser(self, monkeypatch, tmp_path):
+        ptf = pytest.importorskip("paper_text_fetcher")
+        monkeypatch.setattr(P, "_browser_slots", threading.BoundedSemaphore(2))
+        monkeypatch.setenv("PAPER_FETCHER_CACHE_DIR", str(tmp_path / "ptf"))
+        state = {"now": 0, "max": 0, "closed": 0}
+        lock = threading.Lock()
+
+        def fake_browser_fetch(self, doi):
+            with lock:
+                state["now"] += 1
+                state["max"] = max(state["max"], state["now"])
+            time.sleep(0.05)
+            with lock:
+                state["now"] -= 1
+            return "text"
+
+        def fake_close(self):
+            with lock:
+                state["closed"] += 1
+
+        monkeypatch.setattr(ptf.PaperFetcher, "get_text_from_biorxiv_playwright", fake_browser_fetch)
+        monkeypatch.setattr(ptf.PaperFetcher, "_close_browser", fake_close)
+        # A thread's fetcher also closes its browser when it is garbage-collected;
+        # count only the closes the browser slot does.
+        monkeypatch.setattr(ptf.PaperFetcher, "__del__", lambda self: None)
+        results = []
+
+        def one_fetch():
+            results.append(P.get_paper_fetcher().get_text_from_biorxiv_playwright("10.1101/x"))
+
+        threads = [threading.Thread(target=one_fetch) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert results == ["text"] * 6
+        assert state["max"] == 2
+        assert state["closed"] == 6
+
+    def test_slot_count_comes_from_the_environment(self, monkeypatch):
+        monkeypatch.setenv("PAPER_FETCHER_BROWSER_SLOTS", "3")
+        assert P._browser_slot_count() == 3
+        monkeypatch.setenv("PAPER_FETCHER_BROWSER_SLOTS", "zero")
+        assert P._browser_slot_count() == P.DEFAULT_BROWSER_SLOTS
+        monkeypatch.setenv("PAPER_FETCHER_BROWSER_SLOTS", "0")
+        assert P._browser_slot_count() == 1

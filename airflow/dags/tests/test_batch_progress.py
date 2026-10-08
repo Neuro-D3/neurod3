@@ -154,7 +154,8 @@ def test_citation_batch_logs_each_primary_paper_and_the_finish(dag_module, monke
     monkeypatch.setattr(mod, "get_alternate_doi", lambda *a, **k: None)
     monkeypatch.setattr(mod, "get_citing_papers",
                         lambda *a, **k: [{"doi": "10.9/c1"}, {"doi": "10.9/c2"}, {"doi": "10.9/c3"}])
-    monkeypatch.setattr(mod, "_ensure_citing_paper_record", lambda **k: {"paper_upserted": True})
+    monkeypatch.setattr(mod, "ensure_citing_papers",
+                        lambda conn, cursor, papers, **k: ((p["doi"], {"paper_upserted": 1}) for p in papers))
 
     with caplog.at_level(logging.INFO):
         out = mod.fetch_and_persist_citations_batch(batch_index=7, dataset_ids=["ds1"], run_id="r",

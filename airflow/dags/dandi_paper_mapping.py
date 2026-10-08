@@ -61,6 +61,7 @@ from utils.paper_citations import (
     get_openalex_paper_data,
 )
 from utils.paper_fulltext import fetch_fulltext_oa
+from utils.citing_paper_text import citing_text_pool, ensure_citing_papers
 from utils.openalex_budget import check_openalex_budget, fetch_openalex_budget, format_budget
 from utils.batch_progress import BatchProgress
 from utils.titles import clean_title
@@ -1327,148 +1328,6 @@ def _load_cached_text(cache_key: Optional[str]) -> Optional[str]:
     return None
 
 
-def _ensure_citing_paper_record(
-    *,
-    cursor: Any,
-    paper: Dict[str, Any],
-    params: Dict[str, Any],
-    output_root: Path,
-) -> Dict[str, Any]:
-    doi = normalize_doi(paper.get("doi"))
-    if not doi:
-        return {
-            "paper_upserted": False,
-            "already_cached": 0,
-            "fulltext_fetched": 0,
-            "fulltext_unavailable": 1,
-            "cache_key": None,
-        }
-
-    paper_upsert = """
-    INSERT INTO papers (
-        paper_doi, openalex_id, title, authors, publication_date, publication_year,
-        fulltext_cache_key, fulltext_cached_at, fulltext_source, fulltext_available, fulltext_reason,
-        source, journal, senior_author_country, fetched_at
-    )
-    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-    ON CONFLICT (paper_doi) DO UPDATE SET
-        openalex_id = COALESCE(EXCLUDED.openalex_id, papers.openalex_id),
-        title = COALESCE(EXCLUDED.title, papers.title),
-        authors = COALESCE(EXCLUDED.authors, papers.authors),
-        publication_date = COALESCE(EXCLUDED.publication_date, papers.publication_date),
-        publication_year = COALESCE(EXCLUDED.publication_year, papers.publication_year),
-        fulltext_cache_key = COALESCE(EXCLUDED.fulltext_cache_key, papers.fulltext_cache_key),
-        fulltext_cached_at = COALESCE(EXCLUDED.fulltext_cached_at, papers.fulltext_cached_at),
-        fulltext_source = COALESCE(EXCLUDED.fulltext_source, papers.fulltext_source),
-        fulltext_available = COALESCE(EXCLUDED.fulltext_available, papers.fulltext_available),
-        fulltext_reason = COALESCE(EXCLUDED.fulltext_reason, papers.fulltext_reason),
-        source = COALESCE(EXCLUDED.source, papers.source),
-        journal = COALESCE(EXCLUDED.journal, papers.journal),
-        senior_author_country = COALESCE(EXCLUDED.senior_author_country, papers.senior_author_country),
-        fetched_at = NOW();
-    """
-
-    force_refresh_fulltext = bool(params.get("force_refresh_fulltext", False))
-    cursor.execute(
-        """
-        SELECT fulltext_cache_key
-        FROM papers
-        WHERE paper_doi = %s
-        """,
-        (doi,),
-    )
-    row = cursor.fetchone()
-    existing_cache_key = row[0] if row else None
-
-    cache_key = existing_cache_key
-    fulltext_cached_at = None
-    fulltext_source = None
-    fulltext_available = None
-    fulltext_reason = None
-    already_cached = 0
-    fulltext_fetched = 0
-    fulltext_unavailable = 0
-
-    if existing_cache_key and not force_refresh_fulltext:
-        already_cached = 1
-    else:
-        cache_key = paper_cache_key_for_doi(doi)
-        if not cache_key:
-            fulltext_available = False
-            fulltext_source = "none"
-            fulltext_reason = "invalid_doi"
-            fulltext_unavailable = 1
-        else:
-            tel = Telemetry()
-            session = requests.Session()
-            full_text, src, available, reason = fetch_fulltext_oa(
-                session,
-                doi,
-                telemetry=tel,
-                min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
-                max_retries=int(params.get("max_retries", 6)),
-                backoff_seconds=float(params.get("backoff_seconds", 2.0)),
-            )
-            fulltext_source = src
-            fulltext_available = bool(available)
-            fulltext_reason = reason
-            if available:
-                fulltext_fetched = 1
-            else:
-                fulltext_unavailable = 1
-
-            cache_path = output_root / cache_key
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "doi": doi,
-                        "title": paper.get("title"),
-                        "authors": paper.get("authors"),
-                        "canonical_url": f"https://doi.org/{doi}",
-                        "openalex_id": paper.get("openalex_id"),
-                        "publication_date": paper.get("publication_date"),
-                        "publication_year": paper.get("publication_year"),
-                        "full_text": full_text,
-                        "text": full_text,
-                        "full_text_source": src,
-                        "full_text_available": bool(available),
-                        "full_text_reason": reason,
-                        "cached_at": _utc_now_iso(),
-                    },
-                    f,
-                    ensure_ascii=False,
-                )
-            fulltext_cached_at = datetime.now(timezone.utc)
-
-    cursor.execute(
-        paper_upsert,
-        (
-            doi,
-            paper.get("openalex_id"),
-            clean_title(paper.get("title")),
-            json.dumps(paper.get("authors")) if paper.get("authors") is not None else None,
-            paper.get("publication_date"),
-            paper.get("publication_year"),
-            cache_key,
-            fulltext_cached_at,
-            fulltext_source,
-            fulltext_available,
-            fulltext_reason,
-            paper.get("source"),
-            paper.get("journal"),
-            paper.get("senior_author_country"),
-        ),
-    )
-    return {
-        "paper_upserted": True,
-        "already_cached": already_cached,
-        "fulltext_fetched": fulltext_fetched,
-        "fulltext_unavailable": fulltext_unavailable,
-        "cache_key": cache_key,
-    }
-
-
 def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str], run_id: str, **context) -> Dict[str, Any]:
     params = context.get("params", {}) if isinstance(context.get("params", {}), dict) else {}
     if not bool(params.get("enable_citation_enrichment", True)):
@@ -1569,7 +1428,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
     seen_datasets: set[str] = set()
     seen_edges: set[tuple[str, str, str]] = set()
 
-    with get_db_connection() as conn:
+    with citing_text_pool(params) as text_pool, get_db_connection() as conn:
         with conn.cursor() as cursor:
             progress = BatchProgress(f"Citations batch {batch_index}", len(dataset_rows), "primary papers",
                                      counters=metrics, telemetry=telemetry, log=logger)
@@ -1680,8 +1539,8 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                     )
                     progress.update(note=f"{dandi_id} {primary_doi}: {len(citing_papers)} citing papers from OpenAlex",
                                     force=True)
-                    for citing_index, citing in enumerate(citing_papers, 1):
-                        progress.update(note=f"{dandi_id} {primary_doi}: citing paper {citing_index}/{len(citing_papers)}")
+                    new_citing: List[Tuple[str, Dict[str, Any]]] = []
+                    for citing in citing_papers:
                         citing_doi = normalize_doi(citing.get("doi"))
                         if not citing_doi:
                             continue
@@ -1689,27 +1548,24 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                         if edge_key in seen_edges:
                             continue
                         seen_edges.add(edge_key)
+                        new_citing.append((citing_doi, citing))
+                    citing_by_doi = dict(new_citing)
 
-                        cache_metrics = _ensure_citing_paper_record(
-                            cursor=cursor,
-                            paper={
-                                "doi": citing_doi,
-                                "openalex_id": citing.get("openalex_id"),
-                                "title": citing.get("title"),
-                                "authors": citing.get("authors"),
-                                "publication_date": citing.get("publication_date"),
-                                "publication_year": citing.get("publication_year"),
-                                "source": "openalex_citation",
-                            },
-                            params=params,
-                            output_root=output_root,
-                        )
+                    # Cached papers are written first; the rest are fetched on the thread pool
+                    # and written here, on this thread, as each download finishes. As before,
+                    # each paper row is committed on its own (so parallel mapped batches do not
+                    # deadlock on shared DOIs) and its edge is committed separately below.
+                    for citing_index, (citing_doi, cache_metrics) in enumerate(
+                        ensure_citing_papers(conn, cursor, [c for _, c in new_citing], params=params,
+                                             output_root=output_root, pool=text_pool),
+                        1,
+                    ):
+                        progress.update(note=f"{dandi_id} {primary_doi}: citing paper {citing_index}/{len(new_citing)}")
+                        citing = citing_by_doi[citing_doi]
                         metrics["citing_papers_upserted"] += int(bool(cache_metrics.get("paper_upserted")))
                         metrics["already_cached"] += int(cache_metrics.get("already_cached", 0))
                         metrics["fulltext_fetched"] += int(cache_metrics.get("fulltext_fetched", 0))
                         metrics["fulltext_unavailable"] += int(cache_metrics.get("fulltext_unavailable", 0))
-                        # Commit each paper upsert so parallel mapped batches do not deadlock on shared DOIs.
-                        conn.commit()
 
                         cursor.execute(
                             citation_upsert,
@@ -2426,6 +2282,9 @@ dag = DAG(
         "backoff_seconds": 2.0,
         # If true, refetch OA full text even if already cached
         "force_refresh_fulltext": False,
+        # Citing papers whose full text is fetched at once in the citation step
+        # (utils.citing_paper_text). 1 = the old one-at-a-time behaviour.
+        "fulltext_workers": 8,
         # If true, write optional per-run/per-dandiset debug artifacts to disk.
         # Mappings always persist to Postgres; this is only for debugging.
         "write_run_artifacts": False,
