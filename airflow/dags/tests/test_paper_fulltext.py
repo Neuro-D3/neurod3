@@ -353,3 +353,108 @@ class TestD3PaperFetcher:
         pytest.importorskip("paper_text_fetcher")
         monkeypatch.setenv("PAPER_FETCHER_CACHE_DIR", str(tmp_path / "ptf"))
         assert P.get_paper_fetcher() is P.get_paper_fetcher()
+
+
+# ---------------------------------------------------------------------------
+# Threads: the citation step runs one fetcher per worker thread
+# (utils.citing_paper_text), so pacing and the browser limit must be shared.
+# ---------------------------------------------------------------------------
+
+import threading
+import time
+
+
+@pytest.fixture
+def fresh_pacing(monkeypatch):
+    monkeypatch.setattr(P, "_host_next_slot", {})
+
+
+class TestHostPacingAcrossThreads:
+    def test_callers_to_one_host_are_spaced_by_the_interval(self, fresh_pacing):
+        sleeps = []
+        for _ in range(3):
+            P._wait_for_host_slot("www.ebi.ac.uk", 0.2, clock=lambda: 100.0, sleep=sleeps.append)
+        # First goes now, the next two queue 0.2 s apart.
+        assert sleeps == pytest.approx([0.2, 0.4])
+
+    def test_other_hosts_are_not_held_up(self, fresh_pacing):
+        sleeps = []
+        P._wait_for_host_slot("www.ebi.ac.uk", 0.2, clock=lambda: 100.0, sleep=sleeps.append)
+        P._wait_for_host_slot("api.crossref.org", 0.2, clock=lambda: 100.0, sleep=sleeps.append)
+        P._wait_for_host_slot("example.org", 0.0, clock=lambda: 100.0, sleep=sleeps.append)
+        assert sleeps == []
+
+    def test_fetchers_on_different_threads_share_the_pacing(self, monkeypatch, tmp_path, fresh_pacing):
+        ptf = pytest.importorskip("paper_text_fetcher.fetcher")
+        monkeypatch.setitem(ptf.HOST_MIN_INTERVALS, "pace.test", 0.2)
+        monkeypatch.setenv("PAPER_FETCHER_CACHE_DIR", str(tmp_path / "ptf"))
+        sent = []
+        lock = threading.Lock()
+
+        def one_request():
+            fetcher = P.get_paper_fetcher()          # a separate instance per thread
+            def fake_get(url, **kwargs):
+                with lock:
+                    sent.append(time.monotonic())
+            monkeypatch.setattr(fetcher.session, "get", fake_get)
+            fetcher._polite_get("https://pace.test/x")
+
+        threads = [threading.Thread(target=one_request) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        sent.sort()
+        assert len(sent) == 4
+        # Three 0.2 s gaps. Per-instance pacing would send all four at once.
+        # (Tolerance for the ~15 ms clock granularity on Windows.)
+        assert sent[-1] - sent[0] >= 0.6 - 0.05, sent
+
+
+class TestBrowserSlots:
+    def test_at_most_the_slot_count_run_at_once_and_each_closes_its_browser(self, monkeypatch, tmp_path):
+        ptf = pytest.importorskip("paper_text_fetcher")
+        monkeypatch.setattr(P, "_browser_slots", threading.BoundedSemaphore(2))
+        monkeypatch.setenv("PAPER_FETCHER_CACHE_DIR", str(tmp_path / "ptf"))
+        state = {"now": 0, "max": 0, "closed": 0}
+        lock = threading.Lock()
+
+        def fake_browser_fetch(self, doi):
+            with lock:
+                state["now"] += 1
+                state["max"] = max(state["max"], state["now"])
+            time.sleep(0.05)
+            with lock:
+                state["now"] -= 1
+            return "text"
+
+        def fake_close(self):
+            with lock:
+                state["closed"] += 1
+
+        monkeypatch.setattr(ptf.PaperFetcher, "get_text_from_biorxiv_playwright", fake_browser_fetch)
+        monkeypatch.setattr(ptf.PaperFetcher, "_close_browser", fake_close)
+        # A thread's fetcher also closes its browser when it is garbage-collected;
+        # count only the closes the browser slot does.
+        monkeypatch.setattr(ptf.PaperFetcher, "__del__", lambda self: None)
+        results = []
+
+        def one_fetch():
+            results.append(P.get_paper_fetcher().get_text_from_biorxiv_playwright("10.1101/x"))
+
+        threads = [threading.Thread(target=one_fetch) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert results == ["text"] * 6
+        assert state["max"] == 2
+        assert state["closed"] == 6
+
+    def test_slot_count_comes_from_the_environment(self, monkeypatch):
+        monkeypatch.setenv("PAPER_FETCHER_BROWSER_SLOTS", "3")
+        assert P._browser_slot_count() == 3
+        monkeypatch.setenv("PAPER_FETCHER_BROWSER_SLOTS", "zero")
+        assert P._browser_slot_count() == P.DEFAULT_BROWSER_SLOTS
+        monkeypatch.setenv("PAPER_FETCHER_BROWSER_SLOTS", "0")
+        assert P._browser_slot_count() == 1

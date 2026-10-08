@@ -14,7 +14,7 @@ import logging
 import re
 import time
 from typing import Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 import xml.etree.ElementTree as ET
 
 import json
@@ -253,6 +253,46 @@ MAPPING_OUTPUT_ROOTS = (
 _fetcher_local = threading.local()
 _fetcher_import_warned = False
 
+# The citation step fetches papers on a thread pool (utils.citing_paper_text),
+# with one fetcher per thread. The package paces requests to each host per
+# fetcher instance, so N threads would hit NCBI N times faster than its limit.
+# D3PaperFetcher paces through these process-wide slots instead.
+_host_pacing_lock = threading.Lock()
+_host_next_slot: Dict[str, float] = {}
+
+# Each headless-Chrome fetch uses about a quarter of a core and a few hundred
+# MB. At most this many run at once per process; the rest wait their turn.
+DEFAULT_BROWSER_SLOTS = 2
+
+
+def _browser_slot_count() -> int:
+    try:
+        return max(1, int(os.getenv("PAPER_FETCHER_BROWSER_SLOTS", DEFAULT_BROWSER_SLOTS)))
+    except ValueError:
+        return DEFAULT_BROWSER_SLOTS
+
+
+_browser_slots = threading.BoundedSemaphore(_browser_slot_count())
+
+
+def _wait_for_host_slot(host: str, interval: float, *, clock=time.monotonic, sleep=time.sleep) -> None:
+    """
+    Block until ``host`` may be called again, keeping ``interval`` seconds
+    between calls across every thread of the process.
+
+    Each caller reserves the next free slot under the lock and sleeps outside
+    it, so N threads queued on one host go out ``interval`` apart instead of
+    all at once, and threads calling other hosts are never held up.
+    """
+    if interval <= 0:
+        return
+    with _host_pacing_lock:
+        now = clock()
+        slot = max(now, _host_next_slot.get(host, 0.0))
+        _host_next_slot[host] = slot + interval
+    if slot > now:
+        sleep(slot - now)
+
 
 def _dags_dir() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -313,20 +353,51 @@ def get_paper_fetcher(cache_dir: Optional[Path] = None):
             _fetcher_import_warned = True
         return None
 
+    try:
+        from paper_text_fetcher.fetcher import HOST_MIN_INTERVALS
+    except ImportError:  # older package layout; it then paces nothing itself either
+        HOST_MIN_INTERVALS = {}
+
     class D3PaperFetcher(PaperFetcher):
         """
-        paper-text-fetcher with D3's preprint-prefix fix.
+        paper-text-fetcher with D3's fixes.
 
-        The package routes only ``10.1101/`` DOIs to its bioRxiv/medRxiv
-        Chromium path. bioRxiv moved new deposits to the ``10.64898/`` prefix
-        in 2026; those DOIs otherwise fall through to the journal sources and
-        22 of 37 recent ones came back without a body. The page URL is built
-        from the DOI, so the same path works for both prefixes.
+        Preprint prefix: the package routes only ``10.1101/`` DOIs to its
+        bioRxiv/medRxiv Chromium path. bioRxiv moved new deposits to the
+        ``10.64898/`` prefix in 2026; those DOIs otherwise fall through to the
+        journal sources and 22 of 37 recent ones came back without a body. The
+        page URL is built from the DOI, so the same path works for both prefixes.
+
+        Threads: request pacing per host is shared by every fetcher in the
+        process (``_wait_for_host_slot``), and headless-Chrome fetches take one
+        of ``PAPER_FETCHER_BROWSER_SLOTS`` slots and close their browser
+        afterwards, so idle threads do not each keep a Chromium alive.
         """
 
         @staticmethod
         def is_preprint_doi(doi: str) -> bool:
             return doi.startswith(PREPRINT_DOI_PREFIXES)
+
+        def _polite_get(self, url: str, **kwargs):
+            host = urlparse(url).netloc
+            _wait_for_host_slot(host, HOST_MIN_INTERVALS.get(host, 0.0))
+            return self.session.get(url, **kwargs)
+
+        def _in_browser_slot(self, fetch, *args):
+            with _browser_slots:
+                try:
+                    return fetch(*args)
+                finally:
+                    self._close_browser()
+
+        def get_text_from_pmc_playwright(self, pmcid):
+            return self._in_browser_slot(super().get_text_from_pmc_playwright, pmcid)
+
+        def get_text_from_biorxiv_playwright(self, doi):
+            return self._in_browser_slot(super().get_text_from_biorxiv_playwright, doi)
+
+        def get_text_from_publisher_playwright(self, doi):
+            return self._in_browser_slot(super().get_text_from_publisher_playwright, doi)
 
     wanted = Path(cache_dir) if cache_dir else fetcher_cache_dir()
     fetcher = getattr(_fetcher_local, "fetcher", None)
