@@ -1552,9 +1552,9 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                     citing_by_doi = dict(new_citing)
 
                     # Cached papers are written first; the rest are fetched on the thread pool
-                    # and written here, on this thread, as each download finishes. Each paper
-                    # upsert is committed on its own so parallel mapped batches do not
-                    # deadlock on shared DOIs.
+                    # and written here, on this thread, as each download finishes. As before,
+                    # each paper row is committed on its own (so parallel mapped batches do not
+                    # deadlock on shared DOIs) and its edge is committed separately below.
                     for citing_index, (citing_doi, cache_metrics) in enumerate(
                         ensure_citing_papers(conn, cursor, [c for _, c in new_citing], params=params,
                                              output_root=output_root, pool=text_pool),

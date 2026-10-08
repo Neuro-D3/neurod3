@@ -120,6 +120,22 @@ class TestFetchedPapers:
         assert failed[6] is None                       # no cache key: the next run tries again
         assert not (tmp_path / paper_cache_key_for_doi("10.1/b")).exists()
 
+    def test_a_fetcher_error_is_not_cached_so_the_next_run_retries(self, monkeypatch, tmp_path):
+        # paper-text-fetcher raising is turned into an "unavailable: fetch_error"
+        # result by the real fetch_fulltext_oa; it must not become a cached miss.
+        from utils import paper_fulltext as P
+
+        class RaisingFetcher:
+            def get_paper_text_detailed(self, doi):
+                raise TimeoutError("publisher timed out")
+
+        monkeypatch.setattr(P, "get_paper_fetcher", lambda cache_dir=None: RaisingFetcher())
+        out, cursor, _ = run([citing("10.1/a")], params={"min_api_interval_seconds": 0},
+                             tmp_path=tmp_path, monkeypatch=monkeypatch)
+        assert out[0][1]["fulltext_unavailable"] == 1
+        assert cursor.upserts()[0][6] is None
+        assert not (tmp_path / paper_cache_key_for_doi("10.1/a")).exists()
+
     def test_a_failing_cache_write_is_treated_like_a_failed_fetch(self, monkeypatch, tmp_path):
         blocker = tmp_path / "papers"
         blocker.write_text("not a directory")          # mkdir under it fails

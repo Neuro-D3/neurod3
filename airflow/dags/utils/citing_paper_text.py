@@ -12,9 +12,10 @@ while the network sat idle.
 the ones whose text is already cached straight away, and fetches the rest on a
 thread pool. Each worker only does network and file work: it fetches the text
 and writes the same JSON cache file the DAGs always wrote. Every database write
-stays on the calling thread, one paper per commit as before, because a psycopg
-connection is not thread-safe and because committing each paper upsert is what
-keeps parallel mapped batches from deadlocking on shared DOIs.
+stays on the calling thread, because a psycopg connection is not thread-safe.
+The transactions are the same as before: each paper's row is committed on its
+own, which keeps parallel mapped batches from deadlocking on shared DOIs, and
+the caller commits that paper's citation edges separately.
 
 Per-host request pacing and the headless-Chrome limit live in
 ``utils.paper_fulltext`` (``D3PaperFetcher``), so they hold across the threads.
@@ -48,6 +49,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_FULLTEXT_WORKERS = 8
 MAX_FULLTEXT_WORKERS = 32
+
+# How fetch_fulltext_oa reports that paper-text-fetcher raised (a timeout, a
+# browser crash): "unavailable: fetch_error: <exception>". Unlike "no open text
+# found", that says nothing about the paper, so it is not cached.
+FETCH_ERROR_REASON_PREFIX = "unavailable: fetch_error"
 
 PAPER_UPSERT_SQL = """
 INSERT INTO papers (
@@ -122,8 +128,10 @@ def fetch_and_cache_text(doi: str, paper: Mapping[str, Any], *, output_root: Pat
     Fetch one paper's full text and write the DAGs' JSON cache file for it.
 
     Runs on a worker thread: no database access. Never raises, so one bad
-    paper cannot take down the batch. A fetch or cache write that errors is
-    not recorded (no cache key is returned), so the next run tries it again.
+    paper cannot take down the batch. A fetch or cache write that errors,
+    including paper-text-fetcher errors reported as ``fetch_error``, is not
+    recorded (no cache key is returned), so the next run tries it again. "No
+    open text found" is recorded, as before, so it is not refetched every run.
     """
     cache_key = paper_cache_key_for_doi(doi)
     if not cache_key:
@@ -133,8 +141,13 @@ def fetch_and_cache_text(doi: str, paper: Mapping[str, Any], *, output_root: Pat
         return _fetch_and_write(doi, paper, cache_key, output_root=output_root, params=params)
     except Exception as exc:
         logger.warning("Full-text fetch or cache write failed doi=%s err=%s", doi, exc)
-        return {"cache_key": None, "cached_at": None, "source": None, "available": None,
-                "reason": None, "fetched": False}
+        return _not_recorded()
+
+
+def _not_recorded() -> Dict[str, Any]:
+    """A fetch that failed: no cache key, so the paper is tried again next run."""
+    return {"cache_key": None, "cached_at": None, "source": None, "available": None,
+            "reason": None, "fetched": False}
 
 
 def _fetch_and_write(doi: str, paper: Mapping[str, Any], cache_key: str, *, output_root: Path,
@@ -150,6 +163,8 @@ def _fetch_and_write(doi: str, paper: Mapping[str, Any], cache_key: str, *, outp
             max_retries=int(params.get("max_retries", 6)),
             backoff_seconds=float(params.get("backoff_seconds", 2.0)),
         )
+    if not available and str(reason or "").startswith(FETCH_ERROR_REASON_PREFIX):
+        return _not_recorded()   # paper_fulltext already logged the error
 
     cache_path = Path(output_root) / cache_key
     cache_path.parent.mkdir(parents=True, exist_ok=True)
