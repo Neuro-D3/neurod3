@@ -9,11 +9,12 @@ import main as M
 
 
 class FakeCursor:
-    def __init__(self, tables=(), columns=None, funnel_row=None, reasons=()):
+    def __init__(self, tables=(), columns=None, funnel_row=None, reasons=(), status_row=None):
         self.tables = set(tables)
         self.columns = dict(columns or {})
         self.funnel_row = funnel_row
         self.reasons = list(reasons)
+        self.status_row = status_row
         self.queries = []
         self._rows = []
 
@@ -25,6 +26,8 @@ class FakeCursor:
             self._rows = [{"exists": params[0] in self.tables}]
         elif "information_schema.columns" in s:
             self._rows = [{"exists": params[1] in self.columns.get(params[0], set())}]
+        elif "WHERE dataset_id = %s" in s:
+            self._rows = [dict(self.status_row)] if self.status_row else []
         elif "dataset_status_reason" in s:
             self._rows = [{"reason": r, "n": n} for r, n in self.reasons]
         elif "AS ingested_total" in s:
@@ -90,3 +93,24 @@ class TestDatasetFunnel:
         assert out["junk_reasons"] == {}
         funnel_sql = next(s for s, _ in cur.queries if "AS ingested_total" in s)
         assert "NULL::int AS never_published_datasets" in funnel_sql
+
+
+class TestDatasetStatusRow:
+    def test_junk_dataset_carries_status_and_reason(self):
+        cur = FakeCursor(
+            tables={"dandi_dataset"},
+            columns={"dandi_dataset": {"dataset_status", "dataset_status_reason"}},
+            status_row={"dataset_status": "excluded", "dataset_status_reason": "find_reuse_test_id"},
+        )
+        out = M._dataset_status_row(cur, "DANDI", "000027")
+        assert out == {"dataset_status": "excluded", "dataset_status_reason": "find_reuse_test_id"}
+        lookup = next((s, p) for s, p in cur.queries if "WHERE dataset_id = %s" in s)
+        assert "FROM dandi_dataset" in lookup[0] and lookup[1] == ("000027",)
+
+    def test_old_schema_or_unknown_source_gives_nulls(self):
+        empty = {"dataset_status": None, "dataset_status_reason": None}
+        cur = FakeCursor(tables={"sparc_dataset"}, columns={"sparc_dataset": {"title"}})
+        assert M._dataset_status_row(cur, "SPARC", "133") == empty
+        assert not any("WHERE dataset_id" in s for s, _ in cur.queries)
+        assert M._dataset_status_row(FakeCursor(), "OpenNeuro", "ds000001") == empty
+        assert M._dataset_status_row(FakeCursor(), "Kaggle", "x") == empty

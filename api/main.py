@@ -1592,6 +1592,7 @@ async def get_dataset_detail(source: str, dataset_id: str):
 
                 dataset = dict(dataset)
                 source = dataset["source"]
+                dataset.update(_dataset_status_row(cursor, source, dataset["dataset_id"]))
 
                 # --- primary papers (best-effort; paper mapping tables may not exist) ---
                 primary_papers: list[dict] = []
@@ -1748,6 +1749,31 @@ _DATASET_FUNNEL_KEYS = (
     "ingested_total", "junk_datasets", "ingested_datasets",
     "no_paper_datasets", "pending_datasets", "never_published_datasets", "junk_reasons",
 )
+
+
+def _dataset_status_row(cursor, source: str, dataset_id: str) -> Dict[str, Optional[str]]:
+    """
+    One dataset's dataset_status and dataset_status_reason from {prefix}_dataset,
+    so the dataset page can label junk. Both None on an older schema.
+    """
+    out: Dict[str, Optional[str]] = {"dataset_status": None, "dataset_status_reason": None}
+    tables = _ARCHIVE_PAPER_TABLES.get(source)
+    if not tables:
+        return out
+    ds_tbl = f"{tables[0]}_dataset"
+    if not _paper_mapping_relation_exists(cursor, ds_tbl):
+        return out
+    if not _relation_has_column(cursor, ds_tbl, "dataset_status_reason"):
+        return out
+    cursor.execute(
+        f"SELECT dataset_status, dataset_status_reason FROM {ds_tbl} WHERE dataset_id = %s LIMIT 1;",
+        (dataset_id,),
+    )
+    row = cursor.fetchone()
+    if row:
+        out["dataset_status"] = row["dataset_status"]
+        out["dataset_status_reason"] = row["dataset_status_reason"]
+    return out
 
 
 def _dataset_funnel(cursor, source: str) -> Dict[str, Any]:

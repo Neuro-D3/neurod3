@@ -15,6 +15,21 @@ const SOURCE_COLORS: Record<string, string> = {
   SPARC: 'bg-amber-100 text-amber-800',
 };
 
+// Short label for each junk reason (utils/dataset_status.py); title_keyword:<word> shows the word.
+const JUNK_REASON_LABELS: Record<string, string> = {
+  empty: 'empty dandiset',
+  find_reuse_test_id: 'test ID',
+  placeholder_title: 'placeholder title',
+  description_phrase: 'test description',
+  title_is_id: 'title is ID',
+  no_title: 'no title',
+};
+
+const junkReasonLabel = (reason?: string | null): string =>
+  reason?.startsWith('title_keyword:')
+    ? `"${reason.slice('title_keyword:'.length)}" in title`
+    : JUNK_REASON_LABELS[reason ?? ''] ?? 'junk';
+
 const AUTHOR_COLORS: [string, string][] = [
   ['#818cf8', '#6366f1'], ['#38bdf8', '#0ea5e9'], ['#34d399', '#10b981'],
   ['#fbbf24', '#f59e0b'], ['#f87171', '#ef4444'], ['#a78bfa', '#8b5cf6'],
@@ -152,6 +167,14 @@ export default function DatasetDetailPage() {
                 >
                   {ds.source}
                 </span>
+                {ds.dataset_status === 'excluded' && (
+                  <span
+                    className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800 shadow-sm"
+                    title={`Excluded as junk (${ds.dataset_status_reason ?? 'unknown reason'}). Hidden from the dataset list and counts.`}
+                  >
+                    Junk · {junkReasonLabel(ds.dataset_status_reason)}
+                  </span>
+                )}
                 <span className="text-sm font-mono text-slate-600 tabular-nums">{ds.dataset_id}</span>
                 {routeIdDiffersFromApi && (
                   <span className="text-sm font-mono text-slate-400" title="URL id">

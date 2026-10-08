@@ -334,6 +334,9 @@ export interface DatasetDetailResponse {
     /** "year" when only the publication year is known (CRCNS): show the year alone. */
     created_at_precision?: string | null;
     updated_at?: string | null;
+    /** "excluded" marks junk (test / placeholder / empty upload); the reason says why. */
+    dataset_status?: string | null;
+    dataset_status_reason?: string | null;
   };
   primary_papers: DatasetDetailPaper[];
   citations: DatasetDetailCitation[];
