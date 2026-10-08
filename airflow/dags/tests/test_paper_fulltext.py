@@ -366,23 +366,69 @@ import time
 
 @pytest.fixture
 def fresh_pacing(monkeypatch):
-    monkeypatch.setattr(P, "_host_next_slot", {})
+    monkeypatch.setattr(P, "_host_locks", {})
+    monkeypatch.setattr(P, "_host_next_allowed", {})
+
+
+class FakeClock:
+    """A clock that only moves when something sleeps (by ``overshoot`` more than asked)."""
+
+    def __init__(self, start=100.0, overshoot=0.0):
+        self.now = start
+        self.overshoot = overshoot
+        self.sleeps = []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds + self.overshoot
+
+
+def go(clock, host="www.ebi.ac.uk", interval=0.2):
+    """One call: returns the time it was let through."""
+    P._wait_for_host_slot(host, interval, clock=clock, sleep=clock.sleep)
+    return clock.now
 
 
 class TestHostPacingAcrossThreads:
     def test_callers_to_one_host_are_spaced_by_the_interval(self, fresh_pacing):
-        sleeps = []
-        for _ in range(3):
-            P._wait_for_host_slot("www.ebi.ac.uk", 0.2, clock=lambda: 100.0, sleep=sleeps.append)
-        # First goes now, the next two queue 0.2 s apart.
-        assert sleeps == pytest.approx([0.2, 0.4])
+        clock = FakeClock()
+        sent = [go(clock) for _ in range(3)]
+        assert sent == pytest.approx([100.0, 100.2, 100.4])
+        assert clock.sleeps == pytest.approx([0.2, 0.2])
+
+    def test_a_late_wake_up_pushes_the_next_caller_back(self, fresh_pacing):
+        # The second caller wakes 0.5 s late. The third must still wait a full
+        # interval after that late start, not go out right behind it.
+        clock = FakeClock()
+        first = go(clock)
+        clock.overshoot = 0.5
+        second = go(clock)
+        clock.overshoot = 0.0
+        third = go(clock)
+        assert second - first >= 0.2
+        assert third - second == pytest.approx(0.2)
 
     def test_other_hosts_are_not_held_up(self, fresh_pacing):
-        sleeps = []
-        P._wait_for_host_slot("www.ebi.ac.uk", 0.2, clock=lambda: 100.0, sleep=sleeps.append)
-        P._wait_for_host_slot("api.crossref.org", 0.2, clock=lambda: 100.0, sleep=sleeps.append)
-        P._wait_for_host_slot("example.org", 0.0, clock=lambda: 100.0, sleep=sleeps.append)
-        assert sleeps == []
+        clock = FakeClock()
+        go(clock, "www.ebi.ac.uk")
+        go(clock, "api.crossref.org")
+        go(clock, "example.org", interval=0.0)
+        assert clock.sleeps == []
+
+    def test_a_sleeping_caller_does_not_block_another_host(self, fresh_pacing):
+        # One thread waits on EBI; a call to Crossref meanwhile goes straight through.
+        P._wait_for_host_slot("www.ebi.ac.uk", 0.5)
+        done = threading.Event()
+        t = threading.Thread(target=lambda: (P._wait_for_host_slot("www.ebi.ac.uk", 0.5), done.set()))
+        t.start()
+        started = time.monotonic()
+        P._wait_for_host_slot("api.crossref.org", 0.5)
+        assert time.monotonic() - started < 0.1
+        assert not done.is_set()          # the EBI caller is still waiting its turn
+        t.join()
 
     def test_fetchers_on_different_threads_share_the_pacing(self, monkeypatch, tmp_path, fresh_pacing):
         ptf = pytest.importorskip("paper_text_fetcher.fetcher")

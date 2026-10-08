@@ -256,9 +256,11 @@ _fetcher_import_warned = False
 # The citation step fetches papers on a thread pool (utils.citing_paper_text),
 # with one fetcher per thread. The package paces requests to each host per
 # fetcher instance, so N threads would hit NCBI N times faster than its limit.
-# D3PaperFetcher paces through these process-wide slots instead.
-_host_pacing_lock = threading.Lock()
-_host_next_slot: Dict[str, float] = {}
+# D3PaperFetcher paces through this process-wide state instead: one lock per
+# host, and the earliest time the next request to that host may go out.
+_host_locks_guard = threading.Lock()
+_host_locks: Dict[str, threading.Lock] = {}
+_host_next_allowed: Dict[str, float] = {}
 
 # Each headless-Chrome fetch uses about a quarter of a core and a few hundred
 # MB. At most this many run at once per process; the rest wait their turn.
@@ -275,23 +277,37 @@ def _browser_slot_count() -> int:
 _browser_slots = threading.BoundedSemaphore(_browser_slot_count())
 
 
+def _host_lock(host: str) -> threading.Lock:
+    with _host_locks_guard:
+        lock = _host_locks.get(host)
+        if lock is None:
+            lock = _host_locks[host] = threading.Lock()
+        return lock
+
+
 def _wait_for_host_slot(host: str, interval: float, *, clock=time.monotonic, sleep=time.sleep) -> None:
     """
     Block until ``host`` may be called again, keeping ``interval`` seconds
     between calls across every thread of the process.
 
-    Each caller reserves the next free slot under the lock and sleeps outside
-    it, so N threads queued on one host go out ``interval`` apart instead of
-    all at once, and threads calling other hosts are never held up.
+    Callers for one host go one at a time: each holds that host's lock while
+    it sleeps, and the next allowed time is set from when it actually woke up,
+    so a thread that oversleeps pushes the next one back instead of letting
+    two requests out together. Threads calling other hosts use other locks
+    and are never held up.
+
+    The lock is released just before the caller sends its request, so a
+    thread descheduled in that instant could still go out late. Holding the
+    lock for the whole request would close that, but would allow only one
+    request per host at a time and give back most of the threads' speed-up.
     """
     if interval <= 0:
         return
-    with _host_pacing_lock:
-        now = clock()
-        slot = max(now, _host_next_slot.get(host, 0.0))
-        _host_next_slot[host] = slot + interval
-    if slot > now:
-        sleep(slot - now)
+    with _host_lock(host):
+        wait = _host_next_allowed.get(host, 0.0) - clock()
+        if wait > 0:
+            sleep(wait)
+        _host_next_allowed[host] = clock() + interval
 
 
 def _dags_dir() -> Path:
