@@ -319,6 +319,15 @@ OPENALEX_HOST = "api.openalex.org"
 # covers real burst limits; a spent OpenAlex daily allowance asks for hours.
 MAX_RETRY_AFTER_SECONDS = 300.0
 
+# Statuses worth asking again. 500 is usually a one-off on the server's side
+# too: on 2026-10-08 api.biorxiv.org answered one preprint's published-version
+# lookup with a 500 and the same request worked minutes later, but the lookup
+# had already returned "no published version" and its 73 citing papers were
+# skipped. It gets fewer tries than the overload statuses, because a 500 that
+# keeps coming back is a real fault rather than a busy server.
+TRANSIENT_STATUSES = (429, 500, 502, 503, 504)
+SERVER_ERROR_MAX_RETRIES = 4   # retries after the first 500: waits of 2, 4, 8, 16 s by default
+
 
 # Resolution outcomes that mean the dataset has no linkable paper, as opposed
 # to a failed attempt. The paper-mapping DAGs record papers = 0 only for these,
@@ -350,10 +359,14 @@ class HttpFetchFailed(RuntimeError):
     (upstream find_reuse's OpenAlexError, src/indirect_pipeline/openalex.py).
     """
 
-    def __init__(self, url: str, reason: str, status: Optional[int] = None):
+    def __init__(self, url: str, reason: str, status: Optional[int] = None, *, transient: bool = False):
         self.url = url
         self.reason = reason
         self.status = status
+        # True when the source was busy or unreachable (429, 500, 502, 503, 504,
+        # a timeout, a dropped connection), so the same request may work later.
+        # False when it answered with something asking again will not change.
+        self.transient = transient
         super().__init__(f"{reason} (status={status}) url={url}")
 
 
@@ -481,19 +494,28 @@ def http_get_json(
     """
     Throttled + retried JSON GET with simple telemetry.
 
-    Retries transient statuses: 429, 502, 503, 504 and network errors.
+    Retries transient statuses (``TRANSIENT_STATUSES``: 429, 500, 502, 503,
+    504) and network errors, with exponential backoff, up to ``max_retries``
+    attempts in all; a 500 is retried at most ``SERVER_ERROR_MAX_RETRIES``
+    times. When the retries run out it logs a warning and returns None.
     OpenAlex URLs get a ``mailto`` parameter (see ``openalex_polite_url``).
 
     On failure it returns None, which callers cannot tell from "nothing found".
     With ``raise_on_failure=True`` only a 404 returns None; any other failure
     (retries spent, another HTTP error, a body that is not JSON) raises
-    ``HttpFetchFailed``.
+    ``HttpFetchFailed``, which carries the status and reason of the last
+    attempt and whether that failure was a transient one.
     """
     tel = telemetry or Telemetry()
     url = openalex_polite_url(url)
     headers = openalex_request_headers(url)
 
-    last_exc: Optional[Exception] = None
+    # What the last attempt came to; each failing attempt overwrites all three,
+    # so the error raised never mixes one attempt's status with another's reason.
+    last_status: Optional[int] = None
+    last_reason: Optional[str] = None
+    last_transient = False
+    server_error_retries = 0
     for attempt in range(1, max_retries + 1):
         _throttle(min_interval_seconds=min_interval_seconds, telemetry=tel)
         tel.total_requests += 1
@@ -501,7 +523,19 @@ def http_get_json(
             resp = session.get(url, timeout=timeout, headers=headers or None)
             status = resp.status_code
 
-            if status in (429, 502, 503, 504):
+            if status == 500:
+                if server_error_retries >= SERVER_ERROR_MAX_RETRIES:
+                    logger.warning(
+                        "HTTP 500 kept coming back; giving up after %d retries url=%s body=%s",
+                        server_error_retries, url, (resp.text[:500] if resp.text else ""),
+                    )
+                    tel.api_5xx_count += 1
+                    last_status, last_reason, last_transient = status, "HTTP 500", True
+                    break
+                server_error_retries += 1
+
+            if status in TRANSIENT_STATUSES:
+                last_status, last_reason, last_transient = status, f"HTTP {status}", True
                 if status == 429:
                     tel.api_429_count += 1
                 elif status >= 500:
@@ -545,10 +579,10 @@ def http_get_json(
                 return resp.json()
             except ValueError as e:
                 logger.warning("Non-JSON response url=%s status=%s body=%s", url, status, resp.text[:500])
-                last_exc = e
+                last_status, last_reason, last_transient = status, f"body is not JSON: {e}", False
                 break
         except (requests.Timeout, requests.ConnectionError) as e:
-            last_exc = e
+            last_status, last_reason, last_transient = None, f"{type(e).__name__}: {e}", True
             tel.api_retry_count += 1
             wait = min(backoff_seconds * (2 ** (attempt - 1)), 60.0)
             logger.warning(
@@ -562,18 +596,23 @@ def http_get_json(
             time.sleep(wait)
             continue
         except requests.RequestException as e:
-            last_exc = e
+            # raise_for_status on a status that is not retried (400, 403, 501, ...).
+            last_status = getattr(getattr(e, "response", None), "status_code", None)
+            last_reason, last_transient = f"{type(e).__name__}: {e}", False
             logger.warning("HTTP request error url=%s error=%s", url, e)
             break
 
-    if last_exc:
-        logger.debug("http_get_json failed url=%s last_exc=%s", url, last_exc)
+    else:
+        # The attempts ran out on transient failures: say so, rather than let
+        # callers read the None as "no results".
+        if last_status is not None:
+            logger.warning("HTTP %s on all %d attempts; giving up url=%s", last_status, max_retries, url)
+        else:
+            logger.warning("%s on all %d attempts; giving up url=%s", last_reason, max_retries, url)
+
     if raise_on_failure:
-        last_status = getattr(getattr(last_exc, "response", None), "status_code", None)
-        if last_status is None and "resp" in locals():
-            last_status = getattr(resp, "status_code", None)
-        reason = f"{type(last_exc).__name__}: {last_exc}" if last_exc else f"no answer after {max_retries} attempts"
-        raise HttpFetchFailed(url, reason, last_status)
+        raise HttpFetchFailed(url, last_reason or f"no answer after {max_retries} attempts", last_status,
+                              transient=last_transient)
     return None
 
 
