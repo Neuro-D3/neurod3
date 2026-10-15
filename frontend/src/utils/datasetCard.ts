@@ -1,6 +1,7 @@
 import type { DatasetDetailResponse, TrackedDatasetMetrics } from '../services/api';
 import { reuseTypeLabel } from './classification';
-import type { DatasetPaperItem } from './datasetPapers';
+import { PAPER_LABELS } from './datasetPapers';
+import type { DatasetPaperItem, PaperLabel } from './datasetPapers';
 import { plural } from './reuseMetrics';
 
 type DatasetRecord = DatasetDetailResponse['dataset'];
@@ -196,5 +197,64 @@ export function caveats(
   }
   out.push('Reuse and mention labels are assigned by a language model from each citing paper’s full text, with verified quotes.');
   out.push('Citing papers come from OpenAlex, which indexes most but not all of the literature.');
+  return out;
+}
+
+/** Counts `values` into `bins` equal-width buckets between its min and max, for a column's mini-histogram. */
+export function histogram(values: number[], bins = 6): number[] {
+  const nums = values.filter((v) => Number.isFinite(v));
+  if (!nums.length) return [];
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const counts = new Array(bins).fill(0);
+  nums.forEach((v) => {
+    const i = max === min ? 0 : Math.min(bins - 1, Math.floor(((v - min) / (max - min)) * bins));
+    counts[i] += 1;
+  });
+  return counts;
+}
+
+/** "2013 to 2018": the range a column spans; the value alone when there is one. */
+export function rangeLabel(values: number[]): string {
+  const nums = values.filter((v) => Number.isFinite(v));
+  if (!nums.length) return '—';
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  return min === max ? `${min}` : `${min} to ${max}`;
+}
+
+/** How the papers split by label, in the filter chips' order, labels with no papers left out. */
+export function roleShares(papers: DatasetPaperItem[]): Array<{ label: PaperLabel; share: number; count: number }> {
+  const total = papers.length || 1;
+  return PAPER_LABELS.map((label) => {
+    const count = papers.filter((p) => p.label === label).length;
+    return { label, count, share: count / total };
+  }).filter((r) => r.count > 0);
+}
+
+/**
+ * A reuse paper's lab: true for the dataset's own lab, false for a
+ * different lab, undefined when unknown (or not a reuse paper). The metrics'
+ * call (shared authors or the classifier) wins, so the tag agrees with the
+ * Independent count; without it only the classifier's "same lab" is trusted.
+ */
+export function paperLab(paper: DatasetPaperItem, sameLabByDoi: Map<string, boolean>): boolean | undefined {
+  if (paper.label !== 'REUSE') return undefined;
+  return sameLabByDoi.get(paper.doi) ?? (paper.citation?.same_lab === true ? true : undefined);
+}
+
+/** Reuse papers by lab, with the ones we can't place counted apart. */
+export function labSplit(
+  papers: DatasetPaperItem[],
+  sameLabByDoi: Map<string, boolean>,
+): { independent: number; sameLab: number; unknown: number } {
+  const out = { independent: 0, sameLab: 0, unknown: 0 };
+  papers.forEach((p) => {
+    if (p.label !== 'REUSE') return;
+    const lab = paperLab(p, sameLabByDoi);
+    if (lab === true) out.sameLab += 1;
+    else if (lab === false) out.independent += 1;
+    else out.unknown += 1;
+  });
   return out;
 }

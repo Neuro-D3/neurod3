@@ -264,7 +264,7 @@ function ImpactContent({ metrics }: { metrics: TrackedDatasetMetrics }) {
   return (
     <>
       <SubTitle letter="A">Reuse Metrics</SubTitle>
-      <StatGrid columns={4} className="max-[560px]:!grid-cols-2">
+      <StatGrid columns={2}>
         <StatTile first label="Reuse" value={reuse} valueClassName={reuse > 0 ? 'text-link' : 'text-muted'}>
           <span className="text-xs leading-snug text-muted">{reuse === 1 ? 'paper used the data' : 'papers used the data'}</span>
         </StatTile>
@@ -301,10 +301,11 @@ function ImpactContent({ metrics }: { metrics: TrackedDatasetMetrics }) {
           <span className="text-xs text-muted">different lab</span>
           {reuse > 0 && <span className="sr-only">{metrics.same_lab_reuse_count} by the dataset's lab.</span>}
         </StatTile>
-        <StatTile label="Mentions" value={metrics.mention_count.toLocaleString('en-US')}>
+        <StatTile first row2 label="Mentions" value={metrics.mention_count.toLocaleString('en-US')}>
           <span className="text-xs leading-snug text-muted">cited without reuse</span>
         </StatTile>
         <StatTile
+          row2
           label="Last reused"
           value={last ? lastDate ?? 'Date unknown' : 'Not yet'}
           valueClassName={cx('!text-[22px] !leading-[1.45]', last && lastDate ? '' : 'text-muted')}
@@ -387,11 +388,11 @@ export function DatasetImpactCard({
     <Card aria-labelledby="impact-h" aria-busy="true">
       {title}
       <SubTitle letter="A">Reuse Metrics</SubTitle>
-      <StatGrid columns={4}>
+      <StatGrid columns={2}>
         <StatTile first label="Reuse" loading />
         <StatTile label="Independent" loading />
-        <StatTile label="Mentions" loading />
-        <StatTile label="Last reused" loading />
+        <StatTile first row2 label="Mentions" loading />
+        <StatTile row2 label="Last reused" loading />
       </StatGrid>
       <SubTitle letter="B">Citing Papers per Year</SubTitle>
       <div className="h-[120px] animate-skeleton rounded bg-panel motion-reduce:animate-none" />

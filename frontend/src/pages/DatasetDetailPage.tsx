@@ -556,7 +556,7 @@ export default function DatasetDetailPage() {
       <div
         className={cx(
           'mx-auto grid max-w-[1440px] grid-cols-1 items-start gap-6 px-4 py-6 sm:px-6 lg:px-8',
-          'md:grid-cols-2 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)_minmax(0,5fr)]',
+          'md:grid-cols-2 xl:grid-cols-[minmax(0,7fr)_minmax(0,5fr)_minmax(0,5fr)]',
         )}
       >
         <div className="flex min-w-0 flex-col gap-6">

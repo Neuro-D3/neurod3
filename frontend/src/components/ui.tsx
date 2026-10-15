@@ -343,17 +343,24 @@ export function StatTile({
   valueClassName,
   children,
   first = false,
+  row2 = false,
   loading = false,
 }: {
   label: string;
   value?: React.ReactNode;
   valueClassName?: string;
   children?: React.ReactNode;
+  /** First in its row: no hairline on the left. */
   first?: boolean;
+  /** On the grid's second row: a hairline on top. */
+  row2?: boolean;
   loading?: boolean;
 }) {
   return (
-    <div className={cx('flex min-w-0 flex-col gap-[3px] p-3', !first && 'border-l border-line-2')} aria-busy={loading || undefined}>
+    <div
+      className={cx('flex min-w-0 flex-col gap-[3px] border-line-2 p-3', !first && 'border-l', row2 && 'border-t')}
+      aria-busy={loading || undefined}
+    >
       <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-muted">{label}</dt>
       <dd className="m-0 flex flex-col gap-0.5">
         {loading ? (

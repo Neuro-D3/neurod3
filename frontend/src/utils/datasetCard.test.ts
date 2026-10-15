@@ -5,7 +5,12 @@ import {
   citationText,
   contributorRoles,
   downloadCommand,
+  histogram,
+  labSplit,
+  paperLab,
+  rangeLabel,
   reuseTypeBreakdown,
+  roleShares,
   takeaways,
 } from './datasetCard';
 
@@ -157,5 +162,44 @@ describe('caveats', () => {
     const notes = caveats({ ...dataset, source: 'CRCNS', dataset_status: 'excluded' }, null, false, 0);
     expect(notes[0]).toMatch(/^Flagged as a test/);
     expect(notes[1]).toMatch(/not tracked for CRCNS/);
+  });
+});
+
+describe('histogram and rangeLabel', () => {
+  it('bins values between min and max', () => {
+    expect(histogram([1, 2, 3, 10], 3)).toEqual([3, 0, 1]);
+    expect(histogram([], 3)).toEqual([]);
+    expect(histogram([5, 5], 3)).toEqual([2, 0, 0]);
+  });
+  it('labels the range', () => {
+    expect(rangeLabel([2013, 2018, 2015])).toBe('2013 to 2018');
+    expect(rangeLabel([2013])).toBe('2013');
+    expect(rangeLabel([])).toBe('—');
+  });
+});
+
+describe('roleShares', () => {
+  it('splits by label in the chip order and leaves empty labels out', () => {
+    const shares = roleShares([paper('a', 'MENTION'), paper('b', 'PRIMARY'), paper('c', 'MENTION'), paper('d', 'MENTION')]);
+    expect(shares).toEqual([
+      { label: 'PRIMARY', count: 1, share: 0.25 },
+      { label: 'MENTION', count: 3, share: 0.75 },
+    ]);
+  });
+});
+
+describe('paperLab and labSplit', () => {
+  const papers = [paper('a', 'REUSE', 'X', false), paper('b', 'REUSE', 'X', true), paper('c', 'REUSE'), paper('d', 'MENTION')];
+  it("trusts the metrics' call first, then only the classifier's same lab", () => {
+    const metricsCall = new Map([['a', false]]);
+    expect(paperLab(papers[0], metricsCall)).toBe(false);
+    expect(paperLab(papers[1], metricsCall)).toBe(true);
+    // The classifier's "not same lab" alone isn't enough to call it independent.
+    expect(paperLab(papers[0], new Map())).toBeUndefined();
+    expect(paperLab(papers[3], metricsCall)).toBeUndefined();
+  });
+  it('counts reuse papers by lab, unknowns apart', () => {
+    expect(labSplit(papers, new Map([['a', false], ['c', false]]))).toEqual({ independent: 2, sameLab: 1, unknown: 0 });
+    expect(labSplit(papers, new Map())).toEqual({ independent: 0, sameLab: 1, unknown: 2 });
   });
 });
