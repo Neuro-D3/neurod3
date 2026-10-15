@@ -10,6 +10,7 @@ import {
   reuseTypeLabel,
   reusedModalities,
   statusBadgeClass,
+  statusFillClass,
   statusLabel,
 } from './classification';
 
@@ -55,28 +56,29 @@ describe('confidence on the 1–10 scale', () => {
 
 describe('statusBadgeClass', () => {
   it('colours the new labels and statuses distinctly', () => {
-    expect(statusBadgeClass('REUSE')).toContain('emerald');
-    expect(statusBadgeClass('MENTION')).toContain('sky');
-    expect(statusBadgeClass('PRIMARY')).toContain('blue');
-    expect(statusBadgeClass('NEITHER')).toContain('slate');
-    expect(statusBadgeClass('error')).toContain('rose');
-    expect(statusBadgeClass('no_full_text')).toContain('orange');
-    expect(statusBadgeClass('placeholder')).toContain('amber');
+    expect(statusBadgeClass('REUSE')).toContain('reuse');
+    expect(statusBadgeClass('MENTION')).toContain('mention');
+    expect(statusBadgeClass('PRIMARY')).toContain('primary');
+    expect(statusBadgeClass('NEITHER')).toContain('neither');
+    expect(statusBadgeClass('error')).toContain('danger');
+    expect(statusBadgeClass('no_full_text')).toContain('tan');
+    expect(statusBadgeClass('placeholder')).toContain('warn');
   });
   it('no longer special-cases the retired SECONDARY label', () => {
-    expect(statusBadgeClass('SECONDARY')).toContain('slate');
+    expect(statusBadgeClass('SECONDARY')).toContain('neither');
   });
   it('falls back to neutral for unknown buckets', () => {
-    expect(statusBadgeClass('something_new')).toContain('slate');
-    expect(statusBadgeClass(null)).toContain('slate');
+    expect(statusBadgeClass('something_new')).toContain('neither');
+    expect(statusBadgeClass(null)).toContain('neither');
   });
 });
 
 describe('LABEL_FILL', () => {
   it('fills charts in the same hue as each label badge', () => {
     (['REUSE', 'MENTION', 'PRIMARY'] as const).forEach((label) => {
-      const hue = LABEL_FILL[label].match(/bg-(\w+)-/)?.[1];
-      expect(statusBadgeClass(label)).toContain(`bg-${hue}-`);
+      const hue = LABEL_FILL[label].match(/^bg-(\w+)$/)?.[1];
+      expect(hue).toBeTruthy();
+      expect(statusBadgeClass(label)).toContain(`bg-${hue}-tint`);
     });
   });
 });
@@ -174,5 +176,15 @@ describe('classificationProgress', () => {
   it('handles no data', () => {
     const p = classificationProgress(0, {});
     expect(p).toEqual({ total: 0, attempted: 0, notYet: 0, attemptedShare: 0, outcomes: [] });
+  });
+});
+
+describe('statusFillClass', () => {
+  it('uses the label hues for the labels and neutral or warning fills for the rest', () => {
+    expect(statusFillClass('REUSE')).toBe(LABEL_FILL.REUSE);
+    expect(statusFillClass('MENTION')).toBe(LABEL_FILL.MENTION);
+    expect(statusFillClass('NEITHER')).toBe('bg-bar');
+    expect(statusFillClass('error')).toBe('bg-danger');
+    expect(statusFillClass(null)).toBe('bg-bar');
   });
 });

@@ -30,43 +30,71 @@ export const CONFIDENCE_TIERS: ConfidenceTier[] = ['high', 'medium', 'low'];
 
 export function confidenceLabel(value?: number | null): { tier: ConfidenceTier; text: string; color: string; bg: string } {
   const tier = confidenceTier(value);
-  if (tier === 'high') return { tier, text: 'High confidence', color: 'text-emerald-700', bg: 'bg-emerald-50 border-emerald-200' };
-  if (tier === 'medium') return { tier, text: 'Medium confidence', color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200' };
-  if (tier === 'low') return { tier, text: 'Low confidence', color: 'text-red-600', bg: 'bg-red-50 border-red-200' };
-  return { tier, text: '', color: 'text-slate-400', bg: 'bg-slate-50 border-slate-200' };
+  if (tier === 'high') return { tier, text: 'High confidence', color: 'text-reuse-ink', bg: 'bg-reuse-tint border-reuse-soft' };
+  if (tier === 'medium') return { tier, text: 'Medium confidence', color: 'text-warn-ink', bg: 'bg-warn-tint border-warn' };
+  if (tier === 'low') return { tier, text: 'Low confidence', color: 'text-danger-ink', bg: 'bg-danger-tint border-danger' };
+  return { tier, text: '', color: 'text-muted', bg: 'bg-panel border-line' };
 }
 
 export function confidenceShort(value?: number | null): { text: string; color: string } {
   const tier = confidenceTier(value);
-  if (tier === 'high') return { text: `High (${value}/10)`, color: 'text-emerald-600' };
-  if (tier === 'medium') return { text: `Medium (${value}/10)`, color: 'text-amber-600' };
-  if (tier === 'low') return { text: `Low (${value}/10)`, color: 'text-red-500' };
-  return { text: '—', color: 'text-slate-400' };
+  if (tier === 'high') return { text: `High (${value}/10)`, color: 'text-reuse-ink' };
+  if (tier === 'medium') return { text: `Medium (${value}/10)`, color: 'text-warn-ink' };
+  if (tier === 'low') return { text: `Low (${value}/10)`, color: 'text-danger-ink' };
+  return { text: '—', color: 'text-muted' };
 }
 
-/** Tailwind classes for a classification / row-status badge. */
+/**
+ * Tailwind classes for a classification / row-status badge: a solid tint with
+ * dark text of the same hue (tailwind.config.js). Reuse is blue, mention is
+ * orange and primary is navy, the chart hues; everything else is neutral or
+ * a warning tone.
+ */
 export function statusBadgeClass(status?: string | null): string {
   const s = (status || '').trim().toLowerCase();
-  if (s === 'reuse') return 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30';
-  if (s === 'primary') return 'bg-blue-500/15 text-blue-700 ring-blue-500/30';
-  if (s === 'mention') return 'bg-sky-500/15 text-sky-700 ring-sky-500/30';
-  if (s === 'neither') return 'bg-slate-500/10 text-slate-600 ring-slate-400/30';
-  if (s === 'error') return 'bg-rose-500/15 text-rose-700 ring-rose-500/30';
-  if (s === 'no_full_text') return 'bg-orange-500/15 text-orange-700 ring-orange-500/30';
-  if (s === 'placeholder' || s === 'unknown' || s === 'unclassified') return 'bg-amber-500/15 text-amber-700 ring-amber-500/30';
-  if (s.includes('reuse')) return 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30';
-  if (s.includes('mention')) return 'bg-sky-500/15 text-sky-700 ring-sky-500/30';
-  return 'bg-slate-500/10 text-slate-700 ring-slate-400/30';
+  if (s === 'reuse') return 'bg-reuse-tint text-reuse-ink ring-reuse-soft';
+  if (s === 'primary') return 'bg-primary-tint text-primary-ink ring-primary-soft';
+  if (s === 'mention') return 'bg-mention-tint text-mention-ink ring-mention-soft';
+  if (s === 'neither') return 'bg-neither-tint text-neither-ink ring-line';
+  if (s === 'error') return 'bg-danger-tint text-danger-ink ring-danger';
+  if (s === 'no_full_text') return 'bg-tan-tint text-tan-ink ring-line-rule';
+  if (s === 'placeholder' || s === 'unknown' || s === 'unclassified') return 'bg-warn-tint text-warn-ink ring-warn';
+  if (s.includes('reuse')) return 'bg-reuse-tint text-reuse-ink ring-reuse-soft';
+  if (s.includes('mention')) return 'bg-mention-tint text-mention-ink ring-mention-soft';
+  return 'bg-neither-tint text-neither-ink ring-line';
 }
 
 /**
  * Solid fills in the same hues as statusBadgeClass, for charts and dots: reuse
- * is dark enough to carry white text, mentions light enough for dark text.
+ * and primary are dark enough to carry white text, mentions carry dark text.
  */
 export const LABEL_FILL: Record<'REUSE' | 'MENTION' | 'PRIMARY', string> = {
-  REUSE: 'bg-emerald-700',
-  MENTION: 'bg-sky-300',
-  PRIMARY: 'bg-blue-500',
+  REUSE: 'bg-reuse',
+  MENTION: 'bg-mention',
+  PRIMARY: 'bg-primary',
+};
+
+/**
+ * Solid fill for any classification or status bucket, for chart segments and
+ * legend dots: the label hues above, neutral grey for Neither, the warning
+ * tones for the rest.
+ */
+export function statusFillClass(status?: string | null): string {
+  const s = (status || '').trim().toLowerCase();
+  if (s === 'reuse') return LABEL_FILL.REUSE;
+  if (s === 'primary') return LABEL_FILL.PRIMARY;
+  if (s === 'mention') return LABEL_FILL.MENTION;
+  if (s === 'error') return 'bg-danger';
+  if (s === 'no_full_text') return 'bg-tan-ink';
+  if (s === 'placeholder' || s === 'unknown' || s === 'unclassified') return 'bg-warn';
+  return 'bg-bar';
+}
+
+/** The same fills as hex, for inline styles and SVG. */
+export const LABEL_HEX: Record<'REUSE' | 'MENTION' | 'PRIMARY', string> = {
+  REUSE: '#2977D5',
+  MENTION: '#EA6733',
+  PRIMARY: '#021242',
 };
 
 /** Human-readable text for a classification or status bucket. */
@@ -102,6 +130,8 @@ export interface OutcomeSlice {
   label: string;
   /** Tailwind classes, from statusBadgeClass. */
   className: string;
+  /** Solid fill for the bar, from statusFillClass. */
+  fill: string;
   count: number;
   /** Share of attempted edges, 0–1. */
   share: number;
@@ -135,6 +165,7 @@ export function classificationProgress(
         key,
         label: statusLabel(key),
         className: statusBadgeClass(key),
+        fill: statusFillClass(key),
         count,
         share: attempted ? count / attempted : 0,
         order: i >= 0 ? i : OUTCOME_ORDER.length,

@@ -9,15 +9,36 @@ html {
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  background: #ecf0f4;
+  color: #16202a;
+  font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+code,
+kbd,
+pre {
+  font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
 }
 
+/* Keyboard focus: the poster's blue ring, outside the element. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #2977d5;
+  outline-offset: 2px;
+}
+
+.App {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The page's main content grows so the footer sits at the bottom of short pages. */
+.App > main {
+  flex: 1 0 auto;
+}

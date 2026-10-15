@@ -5,66 +5,12 @@ import { Skeleton, Spinner } from './Loading';
 import { datasetDetailPath, fetchDatasets, fetchDatasetStats } from '../services/api';
 import type { Dataset } from '../services/api';
 import { PopulationIcon } from './PopulationIcon';
-import { formatPublishedDate } from '../utils/reuseMetrics';
-
-// Git SHA baked into the image at build time (CI --build-arg GIT_SHA -> Dockerfile
-// ENV REACT_APP_GIT_SHA, inlined by CRA). Defaults to "dev" locally.
-const GIT_SHA = process.env.REACT_APP_GIT_SHA || 'dev';
+import { formatPublishedDate, plural } from '../utils/reuseMetrics';
+import { Button, Card, Chip, Eyebrow, INPUT_CLASS, Note, StatGrid, StatTile, Tag, cx } from './ui';
 
 type DatasetSort = 'published' | 'papers' | 'reuse' | 'title' | 'id' | 'source' | 'modality';
 // The list opens on the most reused datasets; the URL carries ?sort= only for other orders.
 const DEFAULT_SORT: DatasetSort = 'reuse';
-const REPO_URL = 'https://github.com/Neuro-D3/neurod3';
-
-// Lightweight icon stand-ins (avoid external deps in preview)
-const IconWrapper: React.FC<{ className?: string; children: React.ReactNode }> = ({
-  className,
-  children,
-}) => (
-  <span className={className} aria-hidden="true">
-    {children}
-  </span>
-);
-
-const ExternalLink: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>↗︎</IconWrapper>
-);
-
-const RefreshCw: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>⟳</IconWrapper>
-);
-
-const ArrowUpDown: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>⇅</IconWrapper>
-);
-
-const Info: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>ℹ︎</IconWrapper>
-);
-
-const Filter: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>☷</IconWrapper>
-);
-
-const Moon: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>☾</IconWrapper>
-);
-
-const Sun: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>☀︎</IconWrapper>
-);
-
-const Search: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>🔍</IconWrapper>
-);
-
-const ChevronUp: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>▴</IconWrapper>
-);
-
-const ChevronDown: React.FC<{ size?: number; className?: string }> = ({ className }) => (
-  <IconWrapper className={className}>▾</IconWrapper>
-);
 
 const SOURCE_OPTIONS = ['CRCNS', 'DANDI', 'OpenNeuro', 'SPARC'] as const;
 const SOURCE_CANONICAL_BY_PARAM = SOURCE_OPTIONS.reduce<Record<string, Dataset['source']>>((acc, s) => {
@@ -94,6 +40,14 @@ function looksLikeInstitution(authors: string[]): boolean {
   return INSTITUTION_KEYWORDS.test(authors[0]);
 }
 
+// Rotating placeholder examples (search matches title, description, id and authors).
+const PROMPT_EXAMPLES = [
+  'Search by title, description, dataset id or author',
+  'Try "hippocampus", "reaching" or "sleep"',
+  'Try an id: 000070, ds000001, pvc-1',
+  'Try an author or a lab',
+];
+
 export default function NeuroDatasetDiscovery() {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -111,19 +65,17 @@ export default function NeuroDatasetDiscovery() {
     unique: 0,
     bySources: {},
   });
-  // False until the first stats response (or failure): the cards pulse instead of reading 0.
+  // False until the first stats response (or failure): the tiles pulse instead of reading 0.
   const [statsLoaded, setStatsLoaded] = useState<boolean>(false);
-  // True while any stats request is pending; after the first, the cards dim instead.
+  // True while any stats request is pending; after the first, the tiles dim instead.
   const [statsLoading, setStatsLoading] = useState<boolean>(true);
   const [page, setPage] = useState<number>(1);
   const [pageSize] = useState<number>(25);
   const [totalCount, setTotalCount] = useState<number>(0);
-  const [darkMode, setDarkMode] = useState<boolean>(false);
   const [availableSources, setAvailableSources] = useState<Dataset['source'][]>([...SOURCE_OPTIONS]);
   const [availableModalities, setAvailableModalities] = useState<string[]>([]);
   const [modalityDropdownOpen, setModalityDropdownOpen] = useState<boolean>(false);
   const modalityDropdownRef = useRef<HTMLDivElement | null>(null);
-  const [expandedModalityRows, setExpandedModalityRows] = useState<Set<string>>(new Set());
 
   type PapersTooltipState = {
     dataset: Dataset;
@@ -224,13 +176,6 @@ export default function NeuroDatasetDiscovery() {
     };
   }, [papersTooltip, closePapersTooltip]);
 
-  // Rotating placeholder examples (search is still non-functional)
-  const promptExamples = [
-    'How many datasets include EEG modality and were generated after 2020?',
-    'Show intracranial EEG datasets associated with more than 3 papers.',
-    'Find sleep-related EEG datasets across all repositories.',
-    'List multimodal EEG + fMRI datasets with open licenses.',
-  ];
   const [placeholderIndex, setPlaceholderIndex] = useState<number>(0);
 
   // Initialize filters from URL (?source=...&modality=...) on first render.
@@ -281,7 +226,7 @@ export default function NeuroDatasetDiscovery() {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setPlaceholderIndex((prev) => (prev + 1) % promptExamples.length);
+      setPlaceholderIndex((prev) => (prev + 1) % PROMPT_EXAMPLES.length);
     }, 4000);
     return () => clearInterval(interval);
   }, []);
@@ -444,22 +389,6 @@ export default function NeuroDatasetDiscovery() {
     }
   }, [availableSources, sourceFilter]);
 
-  useEffect(() => {
-    if (selectedModalities.length === 0) return;
-    // Don't auto-remove selected modalities if they fall out of the
-    // current available list (e.g. facets are limited, or selection yields 0).
-  }, [availableModalities, selectedModalities]);
-
-  const handleSort = (column: typeof sortBy) => {
-    if (sortBy === column) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortBy(column);
-      setSortOrder('desc');
-    }
-    setPage(1);
-  };
-
   const filteredDatasets = datasets.filter((ds) => {
     // Server already filters by source/modality, but keep a defensive client-side filter too.
     if (sourceFilter !== 'all' && ds.source !== sourceFilter) return false;
@@ -478,14 +407,7 @@ export default function NeuroDatasetDiscovery() {
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase();
       const title = (ds.title || '').toLowerCase();
-      const description =
-        (typeof ds === 'object' &&
-        ds !== null &&
-        'description' in ds &&
-        typeof ds.description === 'string'
-          ? ds.description
-          : ''
-        ).toLowerCase();
+      const description = (typeof ds.description === 'string' ? ds.description : '').toLowerCase();
       const id = (ds.id || '').toLowerCase();
       const authors = (ds.authors || []).join(' ').toLowerCase();
       if (!title.includes(q) && !description.includes(q) && !id.includes(q) && !authors.includes(q)) return false;
@@ -497,15 +419,6 @@ export default function NeuroDatasetDiscovery() {
   const isSelectedModality = (token: string) => {
     const norm = normalizeModalityForCompare(token);
     return selectedModalities.some((m) => normalizeModalityForCompare(m) === norm);
-  };
-
-  const toggleRowModalities = (rowKey: string) => {
-    setExpandedModalityRows((prev) => {
-      const next = new Set(prev);
-      if (next.has(rowKey)) next.delete(rowKey);
-      else next.add(rowKey);
-      return next;
-    });
   };
 
   const toggleSelectedModality = (token: string) => {
@@ -522,11 +435,10 @@ export default function NeuroDatasetDiscovery() {
 
   // IMPORTANT: sorting is done server-side so pagination is correct.
   const sortedDatasets = filteredDatasets;
-  // Nothing on screen yet: placeholder cards instead of a spinner.
+  // Nothing on screen yet: placeholder rows instead of a spinner.
   const firstLoad = loading && datasets.length === 0;
 
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-  const pageOffset = (page - 1) * pageSize;
 
   useEffect(() => {
     if (page > totalPages) {
@@ -534,778 +446,455 @@ export default function NeuroDatasetDiscovery() {
     }
   }, [page, totalPages]);
 
-  const SortableHeader = ({
-    column,
-    children,
-    className,
-  }: {
-    column: typeof sortBy;
-    children: React.ReactNode;
-    className?: string;
-  }) => (
-    <th
-      className={`px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider cursor-pointer transition-all select-none ${
-        darkMode ? 'text-gray-300 hover:bg-white/10' : 'text-gray-700 hover:bg-white/60'
-      } ${className || ''}`}
-      onClick={() => handleSort(column)}
-    >
-      <div className="flex items-center justify-center gap-2">
-        {children}
-        <ArrowUpDown
-          size={14}
-          className={sortBy === column ? 'text-blue-500' : darkMode ? 'text-gray-500' : 'text-gray-400'}
-        />
-        {sortBy === column && (
-          <span className="text-blue-500 text-xs">{sortOrder === 'asc' ? '↑' : '↓'}</span>
-        )}
-      </div>
-    </th>
-  );
-
-  const getSourceBadgeColor = (source: Dataset['source']) => {
-    const colors: Record<Dataset['source'], string> = {
-      CRCNS: 'bg-cyan-100 text-cyan-800',
-      DANDI: 'bg-purple-100 text-purple-800',
-      OpenNeuro: 'bg-green-100 text-green-800',
-      SPARC: 'bg-amber-100 text-amber-800',
-    };
-    return colors[source] || 'bg-gray-100 text-gray-800';
-  };
-
   const handleRefresh = () => {
     fetchAllDatasets();
     fetchStats();
   };
 
+  const sourceChoices: Array<'all' | Dataset['source']> = ['all', ...availableSources];
+
   return (
-    <div
-      className={`min-h-screen py-12 px-4 transition-colors duration-200 ${
-        darkMode
-          ? 'bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900'
-          : 'bg-slate-100'
-      }`}
-    >
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="mb-8 text-center relative">
-          <button
-            onClick={() => setDarkMode(!darkMode)}
-            className={`absolute right-0 top-0 p-3 rounded-full transition-all backdrop-blur-xl ${
-              darkMode
-                ? 'bg-white/10 text-yellow-300 hover:bg-white/20 shadow-lg border border-white/10'
-                : 'bg-white/70 text-gray-700 hover:bg-white/90 shadow-lg border border-white/20'
-            }`}
-            title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-          >
-            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
-
-          <div
-            className={`inline-block backdrop-blur-xl rounded-3xl px-8 py-6 mb-6 ${
-              darkMode
-                ? 'bg-white/5 shadow-2xl border border-white/10'
-                : 'bg-white/70 shadow-xl border border-white/20'
-            }`}
-          >
-            <h1
-              className={`text-5xl font-bold leading-tight mb-3 bg-gradient-to-r bg-clip-text text-transparent ${
-                darkMode
-                  ? 'from-blue-400 via-purple-400 to-pink-400'
-                  : 'from-blue-600 via-purple-600 to-pink-600'
-              }`}
-            >
-              Dataset Reuse Hub
+    <div className="min-h-screen bg-canvas">
+      {/* Hero: continues the masthead's navy with the title and the search field. */}
+      <section className="bg-navy text-white">
+        <div className="mx-auto flex max-w-[1440px] flex-col gap-4 px-4 pb-7 pt-5 sm:px-6 lg:px-8">
+          <div className="flex flex-col gap-2">
+            <span className="font-mono text-xs uppercase tracking-[0.08em] text-navy-muted">NeuroD3 · Dataset Reuse Hub</span>
+            <h1 className="m-0 text-[28px] font-bold leading-[1.1] tracking-[-0.005em] sm:text-[36px]">
+              Neuroscience datasets and the papers that reuse them
             </h1>
-            <p className={darkMode ? 'text-lg text-gray-300' : 'text-lg text-gray-600'}>
-              Explore neuroscience datasets across multiple repositories
+            <p className="m-0 max-w-3xl text-[15px] leading-[1.45] text-navy-sub sm:text-[17px]">
+              Datasets from DANDI, OpenNeuro, CRCNS and SPARC, with every citing paper read and labelled as reuse or a
+              mention.
             </p>
           </div>
-
-          {/* Search Bar */}
-          <div className="max-w-3xl mx-auto mb-8">
-            <div
-              className={`relative backdrop-blur-xl rounded-2xl shadow-xl border transition-all ${
-                darkMode
-                  ? 'bg-white/5 border-white/10 focus-within:bg-white/10 focus-within:border-white/20'
-                  : 'bg-white/70 border-white/20 focus-within:bg-white/90 focus-within:border-blue-200'
-              }`}
-            >
-              <input
-                type="text"
-                placeholder={searchQuery ? '' : promptExamples[placeholderIndex]}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className={`w-full px-6 py-4 bg-transparent border-none outline-none text-base ${
-                  darkMode ? 'text-white placeholder-gray-400' : 'text-gray-900 placeholder-gray-500'
-                }`}
-              />
-              <div className="absolute right-4 top-1/2 -translate-y-1/2">
-                <Search className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={20} />
-              </div>
-            </div>
-          </div>
+          <label className="relative block max-w-3xl">
+            <span className="sr-only">Search datasets</span>
+            <input
+              type="search"
+              placeholder={searchQuery ? '' : PROMPT_EXAMPLES[placeholderIndex]}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-12 w-full rounded-[5px] border border-navy-tag bg-white pl-11 pr-4 text-[15px] text-ink placeholder:text-muted focus:border-focus focus:outline-none"
+            />
+            <SearchIcon className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted" />
+          </label>
         </div>
+      </section>
 
-        {/* Stats Cards */}
-        <div
-          className={`grid grid-cols-2 md:grid-cols-5 gap-4 mb-6 transition-opacity ${
-            statsLoading && statsLoaded ? 'opacity-50' : ''
-          }`}
-        >
-          <div
-            className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
-              darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
-            }`}
-          >
-            <div className={darkMode ? 'text-2xl font-bold text-white' : 'text-2xl font-bold text-gray-900'}>
-              {statsLoaded ? stats.total : <Skeleton darkMode={darkMode} className="rounded-lg h-8 w-16" />}
-            </div>
-            <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>Total Datasets</div>
+      {/* Filter band */}
+      <div className="sticky top-0 z-30 border-b border-line bg-white">
+        <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-5 gap-y-2.5 px-4 py-2.5 sm:px-6 lg:px-8">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Eyebrow className="mr-0.5">Source</Eyebrow>
+            {sourceChoices.map((s) => (
+              <Chip key={s} active={sourceFilter === s} onClick={() => setSourceFilter(s)}>
+                {s === 'all' ? 'All' : s}
+              </Chip>
+            ))}
           </div>
-          <div
-            className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
-              darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
-            }`}
-          >
-            <div className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-purple-400 bg-clip-text text-transparent">
-              {statsLoaded ? stats.bySources['DANDI'] || 0 : <Skeleton darkMode={darkMode} className="rounded-lg h-8 w-16" />}
-            </div>
-            <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>DANDI</div>
-          </div>
-          <div
-            className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
-              darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
-            }`}
-          >
-            <div className="text-2xl font-bold bg-gradient-to-r from-green-600 to-green-400 bg-clip-text text-transparent">
-              {statsLoaded ? stats.bySources['OpenNeuro'] || 0 : <Skeleton darkMode={darkMode} className="rounded-lg h-8 w-16" />}
-            </div>
-            <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>OpenNeuro</div>
-          </div>
-          <div
-            className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
-              darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
-            }`}
-          >
-            <div className="text-2xl font-bold bg-gradient-to-r from-cyan-600 to-cyan-400 bg-clip-text text-transparent">
-              {statsLoaded ? stats.bySources['CRCNS'] || 0 : <Skeleton darkMode={darkMode} className="rounded-lg h-8 w-16" />}
-            </div>
-            <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>CRCNS</div>
-          </div>
-          <div
-            className={`rounded-2xl p-4 backdrop-blur-xl transition-all hover:scale-105 ${
-              darkMode ? 'bg-white/5 shadow-xl border border-white/10' : 'bg-white/70 shadow-xl border border-white/20'
-            }`}
-          >
-            <div className="text-2xl font-bold bg-gradient-to-r from-amber-600 to-amber-400 bg-clip-text text-transparent">
-              {statsLoaded ? stats.bySources['SPARC'] || 0 : <Skeleton darkMode={darkMode} className="rounded-lg h-8 w-16" />}
-            </div>
-            <div className={darkMode ? 'text-sm text-gray-300' : 'text-sm text-gray-600'}>SPARC</div>
-          </div>
-        </div>
 
-        {/* Info Banner */}
-        <div
-          className={`rounded-2xl p-4 mb-6 flex items-start gap-3 backdrop-blur-xl ${
-            darkMode
-              ? 'bg-blue-500/10 border border-blue-400/20 shadow-xl'
-              : 'bg-blue-50/70 border border-blue-200/50 shadow-lg'
-          }`}
-        >
-          <Info
-            className={darkMode ? 'flex-shrink-0 mt-0.5 text-blue-400' : 'flex-shrink-0 mt-0.5 text-blue-600'}
-            size={20}
-          />
-          <div className={darkMode ? 'text-sm text-blue-100' : 'text-sm text-blue-800'}>
-            <p className="font-medium mb-1">About citation counts</p>
-            <p>
-              Citation counts are derived from peer-reviewed publications and Google Scholar metrics for each
-              dataset's primary publication. Datasets with similar titles may represent the same data on different
-              platforms—click the arrow to view alternate sources.
-            </p>
-          </div>
-        </div>
-
-        {/* Controls */}
-        <div
-          className={`relative z-10 rounded-2xl shadow-xl mb-6 p-4 backdrop-blur-xl ${
-            darkMode ? 'bg-white/5 border border-white/10' : 'bg-white/70 border border-white/20'
-          }`}
-        >
-          <div className="flex flex-col md:flex-row items-center justify-center md:justify-between gap-4">
-            <div className="flex items-center justify-center md:justify-start gap-4 flex-wrap">
-              <div className="flex items-center gap-2">
-                <Filter size={18} className={darkMode ? 'text-gray-300' : 'text-gray-600'} />
-                <span className={darkMode ? 'text-sm font-medium text-gray-200' : 'text-sm font-medium text-gray-700'}>
-                  Filters:
-                </span>
-              </div>
-
-              <select
-                value={sourceFilter}
-                onChange={(e) => setSourceFilter(e.target.value as any)}
-                className={`w-44 border rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 backdrop-blur-xl transition-all ${
-                  darkMode ? 'bg-white/10 border-white/20 text-white' : 'bg-white/80 border-gray-200 text-gray-900'
-                }`}
+          <div className="flex items-center gap-1.5" ref={modalityDropdownRef}>
+            <Eyebrow className="mr-0.5">Modality</Eyebrow>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setModalityDropdownOpen((v) => !v)}
+                aria-expanded={modalityDropdownOpen}
+                aria-haspopup="listbox"
+                className={cx(INPUT_CLASS, 'flex h-8 w-44 items-center justify-between gap-2 text-left text-[13px]')}
+                title={
+                  selectedModalities.length
+                    ? selectedModalities.map((m) => formatModalityToken(m)).join(', ')
+                    : 'All modalities'
+                }
               >
-                <option value="all">All Sources</option>
-                {availableSources.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-
-              <div className="relative" ref={modalityDropdownRef}>
-                <button
-                  type="button"
-                  onClick={() => setModalityDropdownOpen((v) => !v)}
-                  className={`w-44 border rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 backdrop-blur-xl transition-all text-left ${
-                    darkMode ? 'bg-white/10 border-white/20 text-white' : 'bg-white/80 border-gray-200 text-gray-900'
-                  }`}
-                  title={
-                    selectedModalities.length
-                      ? selectedModalities.map((m) => formatModalityToken(m)).join(', ')
-                      : 'All Modalities'
-                  }
-                >
+                <span className="truncate">
                   {selectedModalities.length === 0
-                    ? 'All Modalities'
+                    ? 'All modalities'
                     : selectedModalities.length === 1
                       ? formatModalityToken(selectedModalities[0])
                       : `${selectedModalities.length} selected`}
-                </button>
-
-                {modalityDropdownOpen && (
-                  <div
-                    className={`absolute z-50 mt-2 w-64 rounded-xl shadow-2xl border p-2 max-h-72 overflow-auto ${
-                      darkMode ? 'bg-gray-900/95 border-white/10 text-gray-100' : 'bg-white border-gray-200 text-gray-900'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setSelectedModalities([])}
-                      className={`w-full text-left px-2 py-2 rounded-lg text-sm font-medium ${
-                        darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-50'
-                      }`}
-                    >
-                      All Modalities
-                    </button>
-                    <div className={`my-2 h-px ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
-
-                    {availableModalities.length === 0 ? (
-                      <div className={`px-2 py-2 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                        No modalities available
-                      </div>
-                    ) : (
-                      availableModalities.map((modality) => {
-                        const checked = selectedModalities.includes(modality);
-                        return (
-                          <label
-                            key={modality}
-                            className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-sm ${
-                              darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-50'
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => {
-                                setSelectedModalities((prev) =>
-                                  prev.includes(modality)
-                                    ? prev.filter((m) => m !== modality)
-                                    : [...prev, modality],
-                                );
-                              }}
-                            />
-                            <span>{formatModalityToken(modality)}</span>
-                          </label>
-                        );
-                      })
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2">
-                <ArrowUpDown size={16} className={darkMode ? 'text-gray-300' : 'text-gray-600'} />
-                <select
-                  value={`${sortBy}-${sortOrder}`}
-                  onChange={(e) => {
-                    const [col, ord] = e.target.value.split('-') as [typeof sortBy, 'asc' | 'desc'];
-                    setSortBy(col);
-                    setSortOrder(ord);
-                    setPage(1);
-                  }}
-                  className={`border rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 backdrop-blur-xl transition-all ${
-                    darkMode ? 'bg-white/10 border-white/20 text-white' : 'bg-white/80 border-gray-200 text-gray-900'
-                  }`}
-                >
-                  <option value="published-desc">Newest first</option>
-                  <option value="published-asc">Oldest first</option>
-                  <option value="papers-desc">Most papers</option>
-                  <option value="papers-asc">Fewest papers</option>
-                  <option value="reuse-desc">Most reused</option>
-                  <option value="title-asc">Title A–Z</option>
-                  <option value="title-desc">Title Z–A</option>
-                </select>
-              </div>
-
-              <div
-                className={`flex items-center justify-center gap-2 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}
-                aria-live="polite"
-              >
-                {loading ? <Spinner darkMode={darkMode} /> : null}
-                <span>
-                {firstLoad ? 'Loading datasets…' : (
-                <>
-                Showing{' '}
-                <span className={darkMode ? 'font-semibold text-white' : 'font-semibold text-gray-900'}>
-                  {sortedDatasets.length}
-                </span>{' '}
-                of{' '}
-                <span className={darkMode ? 'font-semibold text-white' : 'font-semibold text-gray-900'}>
-                  {totalCount}
-                </span>{' '}
-                datasets
-                </>
-                )}
                 </span>
-              </div>
-            </div>
+                <span aria-hidden="true" className="text-muted">
+                  ▾
+                </span>
+              </button>
 
-            <button
-              onClick={handleRefresh}
-              disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-xl border border-white/10 shadow-xl hover:from-blue-500 hover:to-blue-400 disabled:from-gray-500 disabled:to-gray-400 disabled:opacity-60 disabled:cursor-not-allowed backdrop-blur-xl transition-all text-sm font-medium"
+              {modalityDropdownOpen && (
+                <div className="absolute left-0 z-50 mt-1.5 max-h-72 w-64 overflow-auto rounded-md border border-line bg-white p-1.5 shadow-pop">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedModalities([])}
+                    className="w-full rounded px-2 py-1.5 text-left text-sm font-bold text-ink hover:bg-panel"
+                  >
+                    All modalities
+                  </button>
+                  <div className="my-1.5 h-px bg-line-2" />
+
+                  {availableModalities.length === 0 ? (
+                    <div className="px-2 py-1.5 text-sm text-muted">No modalities available</div>
+                  ) : (
+                    availableModalities.map((modality) => {
+                      const checked = selectedModalities.includes(modality);
+                      return (
+                        <label
+                          key={modality}
+                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-ink hover:bg-panel"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            className="accent-navy"
+                            onChange={() => {
+                              setSelectedModalities((prev) =>
+                                prev.includes(modality)
+                                  ? prev.filter((m) => m !== modality)
+                                  : [...prev, modality],
+                              );
+                            }}
+                          />
+                          <span>{formatModalityToken(modality)}</span>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <Eyebrow className="mr-0.5">Sort</Eyebrow>
+            <select
+              value={`${sortBy}-${sortOrder}`}
+              onChange={(e) => {
+                const [col, ord] = e.target.value.split('-') as [typeof sortBy, 'asc' | 'desc'];
+                setSortBy(col);
+                setSortOrder(ord);
+                setPage(1);
+              }}
+              aria-label="Sort datasets"
+              className={cx(INPUT_CLASS, 'h-8 text-[13px]')}
             >
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-              {loading ? 'Loading...' : 'Refresh'}
-            </button>
+              <option value="reuse-desc">Most reused</option>
+              <option value="published-desc">Newest first</option>
+              <option value="published-asc">Oldest first</option>
+              <option value="papers-desc">Most papers</option>
+              <option value="papers-asc">Fewest papers</option>
+              <option value="title-asc">Title A–Z</option>
+              <option value="title-desc">Title Z–A</option>
+            </select>
+          </div>
+
+          <div className="ml-auto flex items-center gap-3">
+            <span className="flex items-center gap-2 text-[13px] text-muted" aria-live="polite">
+              {loading ? <Spinner /> : null}
+              <span>
+                {firstLoad ? (
+                  'Loading datasets…'
+                ) : (
+                  <>
+                    Showing <span className="font-bold text-ink">{sortedDatasets.length}</span> of{' '}
+                    <span className="font-bold text-ink">{totalCount.toLocaleString()}</span> datasets
+                  </>
+                )}
+              </span>
+            </span>
+            <Button size="sm" variant="ghost" onClick={handleRefresh} disabled={loading}>
+              <span aria-hidden="true" className={loading ? 'inline-block animate-spin' : ''}>
+                ⟳
+              </span>
+              Refresh
+            </Button>
           </div>
         </div>
+      </div>
 
-        {/* Table */}
+      <div className="mx-auto flex max-w-[1440px] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+        {/* Archive totals */}
+        <div className={cx('transition-opacity', statsLoading && statsLoaded ? 'opacity-50' : '')}>
+          <StatGrid columns={5} className="bg-white shadow-card max-[640px]:!grid-cols-2 max-[640px]:[&>*:nth-child(3)]:border-l-0 max-[640px]:[&>*:nth-child(5)]:border-l-0 max-[640px]:[&>*:nth-child(n+3)]:border-t">
+            <StatTile first label="Datasets" value={stats.total.toLocaleString()} valueClassName="text-link" loading={!statsLoaded}>
+              <span className="text-xs text-muted">{sourceFilter === 'all' && !selectedModalities.length && !searchQuery.trim() ? 'across four archives' : 'matching the filters'}</span>
+            </StatTile>
+            {SOURCE_OPTIONS.map((s) => (
+              <StatTile key={s} label={s} value={(stats.bySources[s] || 0).toLocaleString()} loading={!statsLoaded}>
+                <span className="text-xs text-muted">datasets</span>
+              </StatTile>
+            ))}
+          </StatGrid>
+        </div>
+
+        {/* Dataset list */}
         {error ? (
-          <div
-            className={
-              darkMode
-                ? 'rounded-2xl shadow-xl p-12 text-center backdrop-blur-xl bg-red-900/20 border border-red-500/30'
-                : 'rounded-2xl shadow-xl p-12 text-center backdrop-blur-xl bg-red-50 border border-red-200'
-            }
-          >
-            <div className="text-red-600 mb-4 text-5xl">⚠️</div>
-            <h3 className={darkMode ? 'text-red-400 font-semibold mb-2' : 'text-red-700 font-semibold mb-2'}>
-              Connection Error
-            </h3>
-            <p className={darkMode ? 'text-gray-300 mb-4' : 'text-gray-600 mb-4'}>
-              {error}
-            </p>
-            <button
-              onClick={handleRefresh}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Retry Connection
-            </button>
-          </div>
+          <Card className="items-center py-10 text-center">
+            <h2 className="m-0 text-lg font-bold text-danger-ink">Connection error</h2>
+            <p className="m-0 max-w-lg text-sm text-ink-2">{error}</p>
+            <Button variant="primary" onClick={handleRefresh}>
+              Retry connection
+            </Button>
+          </Card>
         ) : noDatasetsFound ? (
-          <div
-            className={
-              darkMode
-                ? 'rounded-2xl shadow-xl p-12 text-center backdrop-blur-xl bg-yellow-900/20 border border-yellow-500/30'
-                : 'rounded-2xl shadow-xl p-12 text-center backdrop-blur-xl bg-yellow-50 border border-yellow-200'
-            }
-          >
-            <div className="text-yellow-600 mb-4 text-5xl">📭</div>
-            <h3 className={darkMode ? 'text-yellow-400 font-semibold mb-2' : 'text-yellow-700 font-semibold mb-2'}>
-              No Datasets Found
-            </h3>
-            <p className={darkMode ? 'text-gray-300 mb-4' : 'text-gray-600 mb-4'}>
+          <Card className="items-center py-10 text-center">
+            <h2 className="m-0 text-lg font-bold text-ink">No datasets found</h2>
+            <p className="m-0 max-w-lg text-sm text-ink-2">
               No datasets match the current filters, or the database may be empty.
             </p>
-            <button
-              onClick={handleRefresh}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Retry Connection
-            </button>
-          </div>
-        ) : firstLoad ? (
-          <DatasetFeedSkeleton darkMode={darkMode} count={5} />
+            <Button variant="primary" onClick={handleRefresh}>
+              Retry
+            </Button>
+          </Card>
         ) : (
-          <>
-            {/* Dataset feed. Reloads (filter, sort, page) keep the old cards, dimmed. */}
+          <section aria-label="Datasets" className="overflow-hidden rounded-md border border-line bg-white shadow-card">
             <div
               aria-busy={loading}
-              className={`space-y-3 transition-opacity ${loading ? 'opacity-50' : ''}`}
+              className={cx('flex flex-col transition-opacity', loading && !firstLoad ? 'opacity-50' : '')}
             >
-              {sortedDatasets.map((ds, index) => {
-                const desc = (ds.description || '').trim();
-                const shortDesc = desc.length > 200 ? desc.slice(0, 200).replace(/\s+\S*$/, '') + '...' : desc;
-                const parts = (ds.modality || '').split(/[;,]/).map((p) => p.trim()).filter(Boolean);
-                const primaryPapers = ds.papers ?? 0;
-                const reusePapers = ds.reuse_count ?? 0;
-                const paperCount = primaryPapers + reusePapers;
+              {firstLoad ? (
+                <DatasetFeedSkeleton count={6} />
+              ) : (
+                sortedDatasets.map((ds, index) => {
+                  const desc = (ds.description || '').trim();
+                  const shortDesc = desc.length > 220 ? desc.slice(0, 220).replace(/\s+\S*$/, '') + '…' : desc;
+                  const parts = (ds.modality || '').split(/[;,]/).map((p) => p.trim()).filter(Boolean);
+                  const primaryPapers = ds.papers ?? 0;
+                  const reusePapers = ds.reuse_count ?? 0;
+                  const paperCount = primaryPapers + reusePapers;
+                  const canOpenPapers = ds.source === 'DANDI' || ds.source === 'OpenNeuro';
 
-                return (
-                  <div
-                    key={`${ds.source}-${ds.id}-${index}`}
-                    className={`rounded-2xl backdrop-blur-xl border transition-all hover:shadow-lg ${
-                      darkMode
-                        ? 'bg-white/5 border-white/10 hover:bg-white/[0.08]'
-                        : 'bg-white/70 border-white/20 hover:bg-white/90'
-                    }`}
-                  >
-                    <div className="flex flex-col sm:flex-row gap-4 p-5">
-                      {/* Left: main content */}
-                      <div className="flex-1 min-w-0">
-                        <Link
-                          to={datasetDetailPath(ds.source, ds.id)}
-                          className={`text-base font-semibold leading-snug hover:underline transition-colors ${
-                            darkMode ? 'text-white hover:text-blue-300' : 'text-gray-900 hover:text-blue-600'
-                          }`}
-                        >
-                          {ds.title}
-                        </Link>
+                  return (
+                    <article
+                      key={`${ds.source}-${ds.id}-${index}`}
+                      className="grid gap-x-6 gap-y-3 border-t border-line-3 px-5 py-4 first:border-t-0 hover:bg-panel-head sm:grid-cols-[minmax(0,1fr)_auto]"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+                          <Link
+                            to={datasetDetailPath(ds.source, ds.id)}
+                            className="text-[15.5px] font-bold leading-snug text-ink hover:text-link"
+                          >
+                            {ds.title}
+                          </Link>
+                          <span className="font-mono text-xs text-muted">
+                            {ds.source}:{ds.id}
+                          </span>
+                        </div>
 
                         {shortDesc && (
-                          <p className={`mt-1.5 text-sm leading-relaxed line-clamp-2 ${
-                            darkMode ? 'text-gray-400' : 'text-gray-500'
-                          }`}>
-                            {shortDesc}
-                          </p>
+                          <p className="m-0 mt-1 line-clamp-2 text-[13.5px] leading-[1.5] text-ink-3">{shortDesc}</p>
                         )}
 
-                        {/* Bottom meta row */}
-                        <div className="mt-3 flex flex-wrap items-center gap-2.5 text-xs">
-                          <button
-                            type="button"
+                        <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-xs text-muted">
+                          <Chip
+                            active={sourceFilter === ds.source}
                             onClick={() => setSourceFilter((prev) => (prev === ds.source ? 'all' : ds.source))}
-                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full font-medium transition-all ${
-                              sourceFilter !== 'all' && sourceFilter === ds.source ? 'ring-1 ring-blue-500/40 shadow-sm' : ''
-                            } ${getSourceBadgeColor(ds.source)}`}
                             title="Click to toggle filter"
                           >
                             {ds.source}
-                          </button>
-
-                          <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>·</span>
-
-                          <span className={`tabular-nums ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                            Published {formatPublishedDate(ds.created_at, ds.created_at_precision) ?? '—'}
+                          </Chip>
+                          <span className="tabular-nums">
+                            Released {formatPublishedDate(ds.created_at, ds.created_at_precision) ?? '—'}
                           </span>
-
                           {ds.authors && ds.authors.length > 0 && (
-                            <>
-                              <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>·</span>
-                              <span className={darkMode ? 'text-gray-400' : 'text-gray-500'}>
-                                {looksLikeInstitution(ds.authors)
-                                  ? ds.authors[0]
-                                  : `${ds.authors.length} author${ds.authors.length !== 1 ? 's' : ''}`}
-                              </span>
-                            </>
+                            <span>
+                              {looksLikeInstitution(ds.authors)
+                                ? ds.authors[0]
+                                : plural(ds.authors.length, 'author', 'authors')}
+                            </span>
                           )}
-
                           {parts.length > 0 && (
-                            <>
-                              <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>·</span>
-                              <div className="flex flex-wrap items-center gap-1">
-                                {parts.slice(0, 3).map((m) => (
-                                  <button
-                                    type="button"
-                                    key={m}
-                                    onClick={() => toggleSelectedModality(m)}
-                                    className={`px-2 py-0.5 rounded-full font-medium transition-all cursor-pointer ${
-                                      isSelectedModality(m)
-                                        ? 'text-sky-200 bg-gradient-to-r from-slate-950/80 via-blue-950/70 to-blue-900/60 shadow-md shadow-blue-900/40 ring-1 ring-blue-400/25'
-                                        : darkMode
-                                          ? 'bg-white/10 text-gray-300'
-                                          : 'bg-gray-100 text-gray-600'
-                                    }`}
-                                    title="Click to toggle filter"
-                                  >
-                                    {formatModalityToken(m)}
-                                  </button>
-                                ))}
-                                {parts.length > 3 && (
-                                  <span className={`px-1.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                                    +{parts.length - 3}
-                                  </span>
-                                )}
-                              </div>
-                            </>
+                            <span className="flex flex-wrap items-center gap-1">
+                              {parts.slice(0, 3).map((m) => (
+                                <Chip
+                                  key={m}
+                                  active={isSelectedModality(m)}
+                                  onClick={() => toggleSelectedModality(m)}
+                                  title="Click to toggle filter"
+                                >
+                                  {formatModalityToken(m)}
+                                </Chip>
+                              ))}
+                              {parts.length > 3 && <span className="px-1">+{parts.length - 3}</span>}
+                            </span>
                           )}
                         </div>
                       </div>
 
-                      {/* Right: metadata column */}
-                      <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-start gap-2 sm:gap-3 flex-shrink-0 sm:w-36 sm:pt-0.5">
-                        {ds.updated_at && (
-                          <span className={`text-xs tabular-nums ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                            Updated {new Date(ds.updated_at).toLocaleDateString()}
-                          </span>
+                      <div className="flex flex-row flex-wrap items-center gap-x-4 gap-y-2 sm:w-40 sm:flex-col sm:items-end sm:gap-2">
+                        {reusePapers > 0 ? (
+                          <Tag tone="reuse" title="Citing papers whose full text shows they used the data">
+                            {plural(reusePapers, 'reuse', 'reuses')}
+                          </Tag>
+                        ) : (
+                          <Tag tone="neutral" title="No citing paper has been found to use the data yet">
+                            no reuse yet
+                          </Tag>
                         )}
-
-                        {ds.num_subjects != null && ds.num_subjects > 0 && (
-                          <span
-                            className={`inline-flex items-center gap-1 text-xs tabular-nums ${
-                              darkMode ? 'text-gray-400' : 'text-gray-500'
-                            }`}
-                          >
-                            <PopulationIcon size={13} className={darkMode ? 'opacity-90' : 'opacity-80'} />
-                            {ds.num_subjects.toLocaleString()} participants
-                          </span>
-                        )}
-
                         <button
                           type="button"
-                          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition-all ${
-                            paperCount > 0
-                              ? darkMode
-                                ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/20'
-                                : 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
-                              : darkMode
-                                ? 'bg-white/5 text-gray-500 border border-white/10'
-                                : 'bg-gray-50 text-gray-400 border border-gray-200'
-                          } ${
-                            ds.source === 'DANDI' || ds.source === 'OpenNeuro' ? 'cursor-pointer' : 'cursor-default'
-                          }`}
+                          className={cx(
+                            'text-xs tabular-nums text-ink-2',
+                            canOpenPapers ? 'cursor-pointer hover:text-link hover:underline' : 'cursor-default',
+                          )}
                           onClick={(e) => {
                             e.preventDefault();
                             openPapersTooltip(ds, e.currentTarget);
                           }}
-                          disabled={ds.source !== 'DANDI' && ds.source !== 'OpenNeuro'}
+                          disabled={!canOpenPapers}
                           aria-label={`${paperCount} associated papers`}
                         >
-                          {paperCount} paper{paperCount !== 1 ? 's' : ''}
+                          {plural(paperCount, 'paper', 'papers')}
                         </button>
+                        {ds.num_subjects != null && ds.num_subjects > 0 && (
+                          <span className="inline-flex items-center gap-1 text-xs tabular-nums text-muted">
+                            <PopulationIcon size={13} />
+                            {ds.num_subjects.toLocaleString()} {ds.source === 'OpenNeuro' ? 'participants' : 'subjects'}
+                          </span>
+                        )}
+                        {ds.updated_at && (
+                          <span className="text-xs tabular-nums text-muted">
+                            Updated {new Date(ds.updated_at).toLocaleDateString()}
+                          </span>
+                        )}
                       </div>
-                    </div>
-                  </div>
-                );
-              })}
+                    </article>
+                  );
+                })
+              )}
             </div>
 
             {/* Pagination */}
-            <div
-              className={`flex items-center justify-between mt-6 rounded-2xl backdrop-blur-xl p-4 ${
-                darkMode ? 'bg-white/5 border border-white/10 text-gray-300' : 'bg-white/70 border border-white/20 text-gray-600'
-              }`}
-            >
-              <div className="text-sm">
-                Page{' '}
-                <span className={darkMode ? 'font-semibold text-white' : 'font-semibold text-gray-900'}>
-                  {page}
-                </span>{' '}
-                of{' '}
-                <span className={darkMode ? 'font-semibold text-white' : 'font-semibold text-gray-900'}>
-                  {totalPages}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-                  disabled={page <= 1 || loading}
-                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                    darkMode
-                      ? 'bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10 disabled:opacity-40'
-                      : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-40'
-                  }`}
-                >
+            <div className="flex items-center justify-between gap-3 border-t border-line-2 bg-panel-head px-5 py-3 text-sm text-ink-2">
+              <span>
+                Page <span className="font-bold text-ink">{page}</span> of{' '}
+                <span className="font-bold text-ink">{totalPages}</span>
+              </span>
+              <div className="flex gap-2">
+                <Button size="sm" variant="ghost" onClick={() => setPage((prev) => Math.max(1, prev - 1))} disabled={page <= 1 || loading}>
                   Previous
-                </button>
-                <button
-                  onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
-                  disabled={page >= totalPages || loading}
-                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                    darkMode
-                      ? 'bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10 disabled:opacity-40'
-                      : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-40'
-                  }`}
-                >
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))} disabled={page >= totalPages || loading}>
                   Next
-                </button>
+                </Button>
               </div>
             </div>
-          </>
+          </section>
         )}
 
-        {/* Footer */}
-        <div
-          className={`mt-6 text-center text-sm backdrop-blur-xl rounded-2xl p-4 ${
-            darkMode
-              ? 'text-gray-300 bg-white/5 border border-white/10'
-              : 'text-gray-600 bg-white/70 border border-white/20'
-          }`}
-        >
-          <p className="mb-2">
-            Citation data sourced from Google Scholar and published literature
-          </p>
-          <div className="flex justify-center gap-4 flex-wrap">
-            <a
-              href="https://dandiarchive.org"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              DANDI Archive
-            </a>
-            <a
-              href="https://openneuro.org"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              OpenNeuro
-            </a>
-            <a
-              href="https://crcns.org"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              CRCNS
-            </a>
-            <a
-              href="https://sparc.science"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400 transition-colors"
-            >
-              SPARC
-            </a>
-          </div>
-          <p className="mt-3 text-xs opacity-75">
-            Build:{' '}
-            {GIT_SHA === 'dev' ? (
-              '#dev'
-            ) : (
-              <a
-                href={`${REPO_URL}/commit/${GIT_SHA}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-500 hover:text-blue-400 transition-colors"
-              >
-                #{GIT_SHA.slice(0, 7)}
-              </a>
-            )}
-          </p>
-        </div>
-
-        {papersTooltip &&
-          createPortal(
-            <div
-              id={`papers-popover-${papersTooltip.dataset.source}-${papersTooltip.dataset.id}`}
-              ref={papersTooltipRef}
-              className={`fixed z-[9999] rounded-xl border p-3 text-left shadow-2xl transition-opacity transition-transform duration-150 ${
-                darkMode ? 'bg-slate-950/95 border-white/10 text-gray-100' : 'bg-white border-gray-200 text-gray-900'
-              } ${papersTooltip.closing ? 'opacity-0 -translate-y-1 scale-[0.98] pointer-events-none' : 'opacity-100 translate-y-0 scale-100 pointer-events-auto'}`}
-              style={{
-                left: papersTooltip.left,
-                top: papersTooltip.top,
-                width: papersTooltip.width,
-                maxHeight: papersTooltip.maxHeight,
-              }}
-              role="dialog"
-              aria-label="Associated papers"
-            >
-              <div className="text-xs font-semibold uppercase tracking-wide opacity-70 mb-2">Associated papers</div>
-
-              {papersTooltip.dataset.papers == null ? (
-                <div className={darkMode ? 'text-gray-300 text-sm' : 'text-gray-700 text-sm'}>
-                  Papers not computed yet.
-                </div>
-              ) : Array.isArray(papersTooltip.dataset.paper_dois) && papersTooltip.dataset.paper_dois.length > 0 ? (
-                (() => {
-                  const maxShow = 10;
-                  const dois = papersTooltip.dataset.paper_dois ?? [];
-                  const titles = Array.isArray(papersTooltip.dataset.paper_titles)
-                    ? papersTooltip.dataset.paper_titles
-                    : [];
-                  const visibleDois = dois.slice(0, maxShow);
-                  const remaining = dois.length - visibleDois.length;
-                  const canonicalizeDoiForLink = (doiRaw: string) => {
-                    const doi = String(doiRaw || '').trim();
-                    if (!doi) return doi;
-                    // bioRxiv / medRxiv appear with `vN` (and sometimes `.abstract`) in free text; doi.org often 404s on those.
-                    if (/^10\.1101\//i.test(doi)) {
-                      return doi
-                        .replace(/(v\d+)(\.(abstract|full|pdf))?$/i, '')
-                        .replace(/\.(abstract|full|pdf)$/i, '');
-                    }
-                    return doi;
-                  };
-                  const doiToHref = (doiRaw: string) => {
-                    const doi = canonicalizeDoiForLink(doiRaw);
-                    return `https://doi.org/${encodeURIComponent(doi).replace(/%2F/gi, '/')}`;
-                  };
-                  return (
-                    <div className="space-y-1 overflow-auto" style={{ maxHeight: papersTooltip.maxHeight - 40 }}>
-                      <div className="grid grid-cols-1 gap-1 text-sm">
-                        {visibleDois.map((doi, i) => {
-                          const title = titles[i];
-                          const doiCanon = canonicalizeDoiForLink(doi);
-                          const label = title && String(title).trim().length > 0 ? title : doiCanon;
-                          return (
-                            <a
-                              key={`${papersTooltip.dataset.source}-${papersTooltip.dataset.id}-paper-${i}`}
-                              href={doiToHref(doi)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className={`pointer-events-auto underline leading-snug ${
-                                darkMode ? 'text-sky-300' : 'text-blue-600'
-                              }`}
-                              title={doiCanon}
-                            >
-                              {label}
-                            </a>
-                          );
-                        })}
-                      </div>
-                      {remaining > 0 && (
-                        <div className={darkMode ? 'text-gray-300 text-xs' : 'text-gray-600 text-xs'}>
-                          +{remaining} more
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()
-              ) : (
-                <div className={darkMode ? 'text-gray-300 text-sm' : 'text-gray-700 text-sm'}>
-                  No paper titles found yet.
-                </div>
-              )}
-            </div>,
-            document.body,
-          )}
+        <Note>
+          Reuse counts are citing papers whose full text shows they used the data; a dataset's own papers are counted
+          separately. Datasets with similar titles may be the same data on different archives.
+        </Note>
       </div>
+
+      {papersTooltip &&
+        createPortal(
+          <div
+            id={`papers-popover-${papersTooltip.dataset.source}-${papersTooltip.dataset.id}`}
+            ref={papersTooltipRef}
+            className={cx(
+              'fixed z-[9999] rounded-md border border-line bg-white p-3.5 text-left text-ink shadow-pop transition-opacity transition-transform duration-150',
+              papersTooltip.closing
+                ? 'pointer-events-none -translate-y-1 scale-[0.98] opacity-0'
+                : 'pointer-events-auto translate-y-0 scale-100 opacity-100',
+            )}
+            style={{
+              left: papersTooltip.left,
+              top: papersTooltip.top,
+              width: papersTooltip.width,
+              maxHeight: papersTooltip.maxHeight,
+            }}
+            role="dialog"
+            aria-label="Associated papers"
+          >
+            <Eyebrow className="mb-2 block">Associated papers</Eyebrow>
+
+            {papersTooltip.dataset.papers == null ? (
+              <div className="text-sm text-ink-2">Papers not computed yet.</div>
+            ) : Array.isArray(papersTooltip.dataset.paper_dois) && papersTooltip.dataset.paper_dois.length > 0 ? (
+              (() => {
+                const maxShow = 10;
+                const dois = papersTooltip.dataset.paper_dois ?? [];
+                const titles = Array.isArray(papersTooltip.dataset.paper_titles)
+                  ? papersTooltip.dataset.paper_titles
+                  : [];
+                const visibleDois = dois.slice(0, maxShow);
+                const remaining = dois.length - visibleDois.length;
+                const canonicalizeDoiForLink = (doiRaw: string) => {
+                  const doi = String(doiRaw || '').trim();
+                  if (!doi) return doi;
+                  // bioRxiv / medRxiv appear with `vN` (and sometimes `.abstract`) in free text; doi.org often 404s on those.
+                  if (/^10\.1101\//i.test(doi)) {
+                    return doi
+                      .replace(/(v\d+)(\.(abstract|full|pdf))?$/i, '')
+                      .replace(/\.(abstract|full|pdf)$/i, '');
+                  }
+                  return doi;
+                };
+                const doiToHref = (doiRaw: string) => {
+                  const doi = canonicalizeDoiForLink(doiRaw);
+                  return `https://doi.org/${encodeURIComponent(doi).replace(/%2F/gi, '/')}`;
+                };
+                return (
+                  <div className="space-y-1 overflow-auto" style={{ maxHeight: papersTooltip.maxHeight - 40 }}>
+                    <div className="grid grid-cols-1 gap-1.5 text-[13.5px]">
+                      {visibleDois.map((doi, i) => {
+                        const title = titles[i];
+                        const doiCanon = canonicalizeDoiForLink(doi);
+                        const label = title && String(title).trim().length > 0 ? title : doiCanon;
+                        return (
+                          <a
+                            key={`${papersTooltip.dataset.source}-${papersTooltip.dataset.id}-paper-${i}`}
+                            href={doiToHref(doi)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="pointer-events-auto leading-snug"
+                            title={doiCanon}
+                          >
+                            {label}
+                          </a>
+                        );
+                      })}
+                    </div>
+                    {remaining > 0 && <div className="text-xs text-muted">+{remaining} more</div>}
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="text-sm text-ink-2">No paper titles found yet.</div>
+            )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
 
-
-/** Placeholder cards shaped like the dataset feed, shown until the first page arrives. */
-function DatasetFeedSkeleton({ darkMode, count }: { darkMode: boolean; count: number }) {
+function SearchIcon({ className }: { className?: string }) {
   return (
-    <div className="space-y-3" aria-busy="true" aria-label="Loading datasets">
+    <svg className={className} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
+}
+
+/** Placeholder rows shaped like the dataset list, shown until the first page arrives. */
+function DatasetFeedSkeleton({ count }: { count: number }) {
+  return (
+    <div aria-busy="true" aria-label="Loading datasets">
       {Array.from({ length: count }, (_, i) => (
-        <div
-          key={i}
-          className={`rounded-2xl backdrop-blur-xl border ${
-            darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-white/20'
-          }`}
-        >
-          <div className="flex flex-col sm:flex-row gap-4 p-5">
-            <div className="flex-1 min-w-0 space-y-3">
-              <Skeleton darkMode={darkMode} className="rounded-lg h-5 w-2/3" />
-              <Skeleton darkMode={darkMode} className="rounded-lg h-3 w-1/3" />
-              <Skeleton darkMode={darkMode} className="rounded-lg h-3 w-full" />
-              <Skeleton darkMode={darkMode} className="rounded-lg h-3 w-5/6" />
-            </div>
-            <div className="flex sm:flex-col items-start sm:items-end gap-2">
-              <Skeleton darkMode={darkMode} className="h-6 w-20 rounded-full" />
-              <Skeleton darkMode={darkMode} className="rounded-lg h-7 w-24" />
-            </div>
+        <div key={i} className="grid gap-x-6 gap-y-3 border-t border-line-3 px-5 py-4 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <div className="min-w-0 space-y-2.5">
+            <Skeleton className="h-4 w-2/3 rounded" />
+            <Skeleton className="h-3 w-full rounded" />
+            <Skeleton className="h-3 w-5/6 rounded" />
+            <Skeleton className="h-5 w-1/3 rounded" />
+          </div>
+          <div className="flex gap-2 sm:w-40 sm:flex-col sm:items-end">
+            <Skeleton className="h-[22px] w-20 rounded" />
+            <Skeleton className="h-3 w-16 rounded" />
           </div>
         </div>
       ))}
