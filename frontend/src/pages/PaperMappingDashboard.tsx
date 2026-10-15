@@ -4,6 +4,7 @@ import { Skeleton, Spinner } from '../components/Loading';
 import { Button, Eyebrow, INPUT_CLASS } from '../components/ui';
 import { formatDay } from '../utils/reuseMetrics';
 import {
+  ARCHIVE_SOURCES,
   datasetDetailPath,
   fetchPaperMappingCitations,
   fetchPaperMappingDatasetDetail,
@@ -261,7 +262,7 @@ export default function PaperMappingDashboard() {
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-5 gap-y-2.5 px-4 py-2.5 sm:px-6 lg:px-8">
           <div className="flex flex-wrap items-center gap-1.5">
             <Eyebrow className="mr-0.5">Source</Eyebrow>
-            {(['all', 'DANDI', 'OpenNeuro', 'CRCNS', 'SPARC'] as SourceFilter[]).map((option) => (
+            {(['all', ...ARCHIVE_SOURCES] as SourceFilter[]).map((option) => (
               <Button
                 key={option}
                 size="sm"

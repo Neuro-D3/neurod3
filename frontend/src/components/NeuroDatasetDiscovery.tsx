@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { Skeleton, Spinner } from './Loading';
-import { datasetDetailPath, fetchDatasets, fetchDatasetStats } from '../services/api';
+import { ARCHIVE_SOURCES, datasetDetailPath, fetchDatasets, fetchDatasetStats } from '../services/api';
 import type { Dataset } from '../services/api';
 import { PopulationIcon } from './PopulationIcon';
 import { formatDay, formatPublishedDate, plural } from '../utils/reuseMetrics';
@@ -12,7 +12,7 @@ type DatasetSort = 'published' | 'papers' | 'reuse' | 'title' | 'id' | 'source' 
 // The list opens on the most reused datasets; the URL carries ?sort= only for other orders.
 const DEFAULT_SORT: DatasetSort = 'reuse';
 
-const SOURCE_OPTIONS = ['CRCNS', 'DANDI', 'OpenNeuro', 'SPARC'] as const;
+const SOURCE_OPTIONS = ARCHIVE_SOURCES;
 const SOURCE_CANONICAL_BY_PARAM = SOURCE_OPTIONS.reduce<Record<string, Dataset['source']>>((acc, s) => {
   acc[s.toLowerCase()] = s;
   return acc;
