@@ -1,7 +1,7 @@
-import type { DatasetDetailCitation, DatasetDetailResponse, TrackedDatasetMetrics } from '../services/api';
+import type { DatasetDetailResponse, TrackedDatasetMetrics } from '../services/api';
 import { reuseTypeLabel } from './classification';
 import type { DatasetPaperItem } from './datasetPapers';
-import { plural, surname } from './reuseMetrics';
+import { plural } from './reuseMetrics';
 
 type DatasetRecord = DatasetDetailResponse['dataset'];
 
@@ -68,22 +68,29 @@ export function citationText(ds: DatasetRecord): string {
   return parts.join('. ').replace(/\.\./g, '.');
 }
 
-/** Contributors with a role other than author, as "Role: Name" pairs for the masthead. */
+/** "dcite:ContactPerson" -> "Contact Person". */
+export function roleLabel(raw: string): string {
+  return raw.replace(/^dcite:/, '').replace(/([a-z])([A-Z])/g, '$1 $2');
+}
+
+/**
+ * Contributors with a role other than author, grouped by role in the order
+ * the roles first appear, each name once per role (archives repeat roles,
+ * e.g. "Funder, Sponsor, Funder").
+ */
 export function contributorRoles(
   contributors: DatasetRecord['contributors'],
-  max = 4,
 ): Array<{ role: string; names: string[] }> {
   const byRole = new Map<string, string[]>();
   (contributors ?? []).forEach((c) => {
     (c.roles ?? []).forEach((raw) => {
-      const role = raw.replace(/^dcite:/, '').replace(/([a-z])([A-Z])/g, '$1 $2');
+      const role = roleLabel(raw);
       if (/^author$/i.test(role)) return;
-      byRole.set(role, [...(byRole.get(role) ?? []), c.name]);
+      const names = byRole.get(role) ?? [];
+      if (!names.includes(c.name)) byRole.set(role, [...names, c.name]);
     });
   });
-  return Array.from(byRole.entries())
-    .map(([role, names]) => ({ role, names }))
-    .slice(0, max);
+  return Array.from(byRole.entries()).map(([role, names]) => ({ role, names }));
 }
 
 export interface ReuseTypeRow {
@@ -119,29 +126,17 @@ export function reuseTypeBreakdown(
 }
 
 /**
- * Short, true statements derived from the metrics and the paper list, for
- * the Takeaways card. Empty when there is nothing to say yet.
+ * Short, true statements derived from the metrics, for
+ * the Takeaways part of the notes card. They add to the Impact tiles rather
+ * than repeat them, so the lab split and the latest reuse are left out.
+ * Empty when there is nothing to say yet.
  */
-export function takeaways(
-  ds: DatasetRecord,
-  metrics: TrackedDatasetMetrics | null,
-  papers: DatasetPaperItem[],
-): string[] {
+export function takeaways(ds: DatasetRecord, metrics: TrackedDatasetMetrics | null): string[] {
   const out: string[] = [];
   if (!metrics) return out;
   const reuse = metrics.reuse_count;
   const mentions = metrics.mention_count;
   const classified = metrics.coverage.classified;
-
-  if (reuse > 0) {
-    out.push(
-      `${plural(metrics.independent_reuse_count, 'different-lab reuse paper', 'different-lab reuse papers')} and ${plural(
-        metrics.same_lab_reuse_count,
-        'from the dataset’s own lab',
-        'from the dataset’s own lab',
-      )}.`,
-    );
-  }
 
   const firstReuseYear = metrics.per_year.find((y) => y.reuse > 0)?.year ?? null;
   const releaseYear = yearOf(metrics.published ?? ds.created_at);
@@ -154,29 +149,19 @@ export function takeaways(
     );
   }
 
-  if (classified > 0 && mentions > 0 && mentions >= reuse) {
-    out.push(`Most citing papers mention it without reusing it: ${mentions} of ${classified} classified.`);
-  } else if (classified > 0 && reuse > mentions) {
-    out.push(`Most classified citing papers reused the data: ${reuse} of ${classified}.`);
-  }
-
-  const last = metrics.last_reuse;
-  if (last) {
-    const who = surname(last.first_author);
-    const year = yearOf(last.first_date ?? last.publication_date);
-    if (who && year) out.push(`Most recently reused by ${who}${last.author_count > 1 ? ' et al.' : ''} in ${year}.`);
-  }
-
-  if (reuse === 0 && classified > 0) {
+  // "Most" only when it is more than half of the classified citing papers.
+  if (classified > 0 && reuse === 0) {
     out.push(`No reuse found yet among ${plural(classified, 'classified citing paper', 'classified citing papers')}.`);
+  } else if (classified > 0 && mentions * 2 > classified) {
+    out.push(`Most classified citing papers mention it without reusing it: ${mentions} of ${classified}.`);
+  } else if (classified > 0 && reuse * 2 > classified) {
+    out.push(`Most classified citing papers reused the data: ${reuse} of ${classified}.`);
+  } else if (classified > 0) {
+    out.push(`Of ${plural(classified, 'classified citing paper', 'classified citing papers')}, ${reuse} reused the data and ${mentions} mentioned it.`);
   }
-
-  const primary = papers.filter((p) => p.label === 'PRIMARY');
-  const citing = primary.reduce((n, p) => n + (p.citingCount ?? 0), 0);
-  if (primary.length > 0 && citing > 0) {
-    out.push(`${plural(primary.length, 'primary paper', 'primary papers')} with ${plural(citing, 'citing work', 'citing works')} between them.`);
-  }
-  return out.slice(0, 4);
+  // No "N primary papers with M citing works": summing each paper's count
+  // counts a paper that cites two of them twice (816 vs 553 on DANDI:000070).
+  return out;
 }
 
 /**
@@ -211,48 +196,5 @@ export function caveats(
   }
   out.push('Reuse and mention labels are assigned by a language model from each citing paper’s full text, with verified quotes.');
   out.push('Citing papers come from OpenAlex, which indexes most but not all of the literature.');
-  if (ds.num_subjects != null && ds.num_subjects > 0 && ds.num_subjects <= 3) {
-    out.push(`${plural(ds.num_subjects, 'subject limits', 'subjects limit')} cross-subject generalization.`);
-  }
   return out;
-}
-
-/** Counts `values` into `bins` equal-width buckets between its min and max, for a header mini-histogram. */
-export function histogram(values: number[], bins = 6): number[] {
-  const nums = values.filter((v) => Number.isFinite(v));
-  if (!nums.length) return [];
-  const min = Math.min(...nums);
-  const max = Math.max(...nums);
-  const counts = new Array(bins).fill(0);
-  nums.forEach((v) => {
-    const i = max === min ? 0 : Math.min(bins - 1, Math.floor(((v - min) / (max - min)) * bins));
-    counts[i] += 1;
-  });
-  return counts;
-}
-
-/** "66 to 97 characters", "2013 to 2018", "48 to 137": the range a column spans. */
-export function rangeLabel(values: number[], unit = ''): string {
-  const nums = values.filter((v) => Number.isFinite(v));
-  if (!nums.length) return '—';
-  const min = Math.min(...nums);
-  const max = Math.max(...nums);
-  const u = unit ? ` ${unit}` : '';
-  return min === max ? `${min}${u}` : `${min} to ${max}${u}`;
-}
-
-/** Per-paper role for the paper map: label counts in label order. */
-export function roleShares(papers: DatasetPaperItem[]): Array<{ label: DatasetPaperItem['label']; share: number; count: number }> {
-  const total = papers.length || 1;
-  return (['REUSE', 'PRIMARY', 'MENTION'] as const)
-    .map((label) => {
-      const count = papers.filter((p) => p.label === label).length;
-      return { label, count, share: count / total };
-    })
-    .filter((r) => r.count > 0);
-}
-
-/** The citations of the Reuse label only, for the reuse-type breakdown. */
-export function reuseCitations(citations: DatasetDetailCitation[]): DatasetDetailCitation[] {
-  return citations.filter((c) => (c.classification || '').toUpperCase() === 'REUSE');
 }

@@ -90,12 +90,6 @@ export function statusFillClass(status?: string | null): string {
   return 'bg-bar';
 }
 
-/** The same fills as hex, for inline styles and SVG. */
-export const LABEL_HEX: Record<'REUSE' | 'MENTION' | 'PRIMARY', string> = {
-  REUSE: '#2977D5',
-  MENTION: '#EA6733',
-  PRIMARY: '#021242',
-};
 
 /** Human-readable text for a classification or status bucket. */
 export function statusLabel(status?: string | null): string {

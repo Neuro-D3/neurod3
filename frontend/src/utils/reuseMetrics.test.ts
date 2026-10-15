@@ -1,6 +1,7 @@
 import {
   SEGMENT_MIN_PX,
   coverageSummary,
+  formatDay,
   formatMonthYear,
   formatPublishedDate,
   independenceSegments,
@@ -30,8 +31,8 @@ describe('formatPublishedDate', () => {
     expect(formatPublishedDate('2011-01-01T00:00:00', 'year')).toBe('2011');
   });
   it('shows a full date otherwise', () => {
-    expect(formatPublishedDate('2021-05-05T10:28:31', 'day')).toBe(new Date('2021-05-05T10:28:31').toLocaleDateString());
-    expect(formatPublishedDate('2021-05-05T10:28:31', null)).toBe(new Date('2021-05-05T10:28:31').toLocaleDateString());
+    expect(formatPublishedDate('2021-05-05T10:28:31', 'day')).toBe('May 5, 2021');
+    expect(formatPublishedDate('2021-05-05T10:28:31', null)).toBe('May 5, 2021');
   });
   it('handles missing or unreadable dates', () => {
     expect(formatPublishedDate(null)).toBeNull();
@@ -143,5 +144,17 @@ describe('coverageSummary', () => {
     expect(coverageSummary({ citing_papers: 0, classified: 0, no_full_text: 0, pending: 0 }).text).toBe(
       'No citing papers found yet.'
     );
+  });
+});
+
+describe('formatDay', () => {
+  it('writes "May 5, 2021" for timestamps and bare days', () => {
+    expect(formatDay('2026-05-28T09:19:00')).toBe('May 28, 2026');
+    // A bare day is a calendar day: never shifted to the day before by the time zone.
+    expect(formatDay('2021-01-01')).toBe('Jan 1, 2021');
+  });
+  it('passes unreadable text through and maps nothing to null', () => {
+    expect(formatDay('soon')).toBe('soon');
+    expect(formatDay(undefined)).toBeNull();
   });
 });

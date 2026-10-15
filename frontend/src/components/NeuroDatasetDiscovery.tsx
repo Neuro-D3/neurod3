@@ -5,7 +5,7 @@ import { Skeleton, Spinner } from './Loading';
 import { datasetDetailPath, fetchDatasets, fetchDatasetStats } from '../services/api';
 import type { Dataset } from '../services/api';
 import { PopulationIcon } from './PopulationIcon';
-import { formatPublishedDate, plural } from '../utils/reuseMetrics';
+import { formatDay, formatPublishedDate, plural } from '../utils/reuseMetrics';
 import { Button, Card, Chip, Eyebrow, INPUT_CLASS, Note, StatGrid, StatTile, Tag, cx } from './ui';
 
 type DatasetSort = 'published' | 'papers' | 'reuse' | 'title' | 'id' | 'source' | 'modality';
@@ -475,7 +475,7 @@ export default function NeuroDatasetDiscovery() {
               placeholder={searchQuery ? '' : PROMPT_EXAMPLES[placeholderIndex]}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-12 w-full rounded-[5px] border border-navy-tag bg-white pl-11 pr-4 text-[15px] text-ink placeholder:text-muted focus:border-focus focus:outline-none"
+              className="h-12 w-full rounded-[5px] border border-navy-tag bg-surface pl-11 pr-4 text-[15px] text-ink placeholder:text-muted focus:border-focus focus:outline-none"
             />
             <SearchIcon className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted" />
           </label>
@@ -483,7 +483,7 @@ export default function NeuroDatasetDiscovery() {
       </section>
 
       {/* Filter band */}
-      <div className="sticky top-0 z-30 border-b border-line bg-white">
+      <div className="sticky top-[49px] z-30 border-b border-line bg-surface">
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-5 gap-y-2.5 px-4 py-2.5 sm:px-6 lg:px-8">
           <div className="flex flex-wrap items-center gap-1.5">
             <Eyebrow className="mr-0.5">Source</Eyebrow>
@@ -522,7 +522,7 @@ export default function NeuroDatasetDiscovery() {
               </button>
 
               {modalityDropdownOpen && (
-                <div className="absolute left-0 z-50 mt-1.5 max-h-72 w-64 overflow-auto rounded-md border border-line bg-white p-1.5 shadow-pop">
+                <div className="absolute left-0 z-50 mt-1.5 max-h-72 w-64 overflow-auto rounded-md border border-line bg-surface p-1.5 shadow-pop">
                   <button
                     type="button"
                     onClick={() => setSelectedModalities([])}
@@ -614,7 +614,7 @@ export default function NeuroDatasetDiscovery() {
       <div className="mx-auto flex max-w-[1440px] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
         {/* Archive totals */}
         <div className={cx('transition-opacity', statsLoading && statsLoaded ? 'opacity-50' : '')}>
-          <StatGrid columns={5} className="bg-white shadow-card max-[640px]:!grid-cols-2 max-[640px]:[&>*:nth-child(3)]:border-l-0 max-[640px]:[&>*:nth-child(5)]:border-l-0 max-[640px]:[&>*:nth-child(n+3)]:border-t">
+          <StatGrid columns={5} className="bg-surface shadow-card max-[640px]:!grid-cols-2 max-[640px]:[&>*:nth-child(3)]:border-l-0 max-[640px]:[&>*:nth-child(5)]:border-l-0 max-[640px]:[&>*:nth-child(n+3)]:border-t">
             <StatTile first label="Datasets" value={stats.total.toLocaleString()} valueClassName="text-link" loading={!statsLoaded}>
               <span className="text-xs text-muted">{sourceFilter === 'all' && !selectedModalities.length && !searchQuery.trim() ? 'across four archives' : 'matching the filters'}</span>
             </StatTile>
@@ -646,7 +646,7 @@ export default function NeuroDatasetDiscovery() {
             </Button>
           </Card>
         ) : (
-          <section aria-label="Datasets" className="overflow-hidden rounded-md border border-line bg-white shadow-card">
+          <section aria-label="Datasets" className="overflow-hidden rounded-md border border-line bg-surface shadow-card">
             <div
               aria-busy={loading}
               className={cx('flex flex-col transition-opacity', loading && !firstLoad ? 'opacity-50' : '')}
@@ -754,7 +754,7 @@ export default function NeuroDatasetDiscovery() {
                         )}
                         {ds.updated_at && (
                           <span className="text-xs tabular-nums text-muted">
-                            Updated {new Date(ds.updated_at).toLocaleDateString()}
+                            Updated {formatDay(ds.updated_at)}
                           </span>
                         )}
                       </div>
@@ -794,7 +794,7 @@ export default function NeuroDatasetDiscovery() {
             id={`papers-popover-${papersTooltip.dataset.source}-${papersTooltip.dataset.id}`}
             ref={papersTooltipRef}
             className={cx(
-              'fixed z-[9999] rounded-md border border-line bg-white p-3.5 text-left text-ink shadow-pop transition-opacity transition-transform duration-150',
+              'fixed z-[9999] rounded-md border border-line bg-surface p-3.5 text-left text-ink shadow-pop transition-opacity transition-transform duration-150',
               papersTooltip.closing
                 ? 'pointer-events-none -translate-y-1 scale-[0.98] opacity-0'
                 : 'pointer-events-auto translate-y-0 scale-100 opacity-100',

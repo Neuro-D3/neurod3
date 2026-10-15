@@ -3,36 +3,46 @@
 // NeuroD3 design tokens. The palette is the SfN 2026 dataset-card poster's:
 // a navy masthead, a cool grey canvas, white cards with hairline borders, and
 // two data hues (blue = reuse, orange = mention). Everything else is neutral.
+//
+// Every colour except the masthead navy is a CSS variable (src/index.css), so
+// the `dark` class on <html> swaps the whole palette at once.
+const v = (name) => `rgb(var(--${name}) / <alpha-value>)`;
+
 module.exports = {
+  darkMode: 'class',
   content: [
     "./src/**/*.{js,jsx,ts,tsx}",
   ],
   theme: {
     extend: {
       colors: {
-        // Masthead
+        // Masthead: navy in both themes.
         navy: { DEFAULT: '#021242', 700: '#0B1F5C', 600: '#16306F', muted: '#A9B6D3', sub: '#C9D3E6', tag: '#6F80A8', line: '#1E2F63' },
         // Text
-        ink: { DEFAULT: '#16202A', 2: '#26313D', 3: '#33404D' },
-        muted: '#5A6573',
-        // Surfaces
-        canvas: '#ECF0F4',
-        panel: { DEFAULT: '#F4F6F9', head: '#F7F9FB' },
-        line: { DEFAULT: '#D7DDE4', 2: '#E0E5EB', 3: '#EDF0F3', rule: '#C9D0D8', inner: '#E3E7EC' },
+        ink: { DEFAULT: v('ink'), 2: v('ink-2'), 3: v('ink-3') },
+        muted: v('muted'),
+        // Surfaces: the page, cards and inputs, and the grey wells inside cards.
+        canvas: v('canvas'),
+        surface: v('surface'),
+        panel: { DEFAULT: v('panel'), head: v('panel-head') },
+        line: { DEFAULT: v('line'), 2: v('line-2'), 3: v('line-3'), rule: v('line-rule'), inner: v('line-inner') },
+        grid: v('grid'),
         // Links and focus
-        link: { DEFAULT: '#1C5DB0', hover: '#0F3F80' },
-        focus: '#2977D5',
+        link: { DEFAULT: v('link'), hover: v('link-hover') },
+        focus: v('focus'),
+        // Filled controls (primary buttons, active chips, section numbers): navy on light, pale blue on dark.
+        accent: { DEFAULT: v('accent'), fg: v('accent-fg'), hover: v('accent-hover') },
         // Data hues
-        reuse: { DEFAULT: '#2977D5', soft: '#86B3EA', tint: '#E3EEFB', ink: '#1C4E8F' },
-        mention: { DEFAULT: '#EA6733', soft: '#F5B394', tint: '#FDEBE3', ink: '#8A3A14' },
-        primary: { DEFAULT: '#021242', soft: '#8E9FC6', tint: '#E6EAF2', ink: '#021242' },
-        bar: { DEFAULT: '#B8C1CA', soft: '#D5DBE2', hist: '#9FB4CE' },
-        neither: { tint: '#EDF0F3', ink: '#33404D' },
-        tan: { tint: '#F3F1EC', ink: '#5B4A1F' },
-        warn: { DEFAULT: '#C98A0B', tint: '#FBF1DC', ink: '#6B4E0A' },
-        danger: { DEFAULT: '#C0392B', tint: '#FBE4E4', ink: '#8A1F1F' },
+        reuse: { DEFAULT: v('reuse'), soft: v('reuse-soft'), tint: v('reuse-tint'), ink: v('reuse-ink') },
+        mention: { DEFAULT: v('mention'), soft: v('mention-soft'), tint: v('mention-tint'), ink: v('mention-ink') },
+        primary: { DEFAULT: v('primary'), soft: v('primary-soft'), tint: v('primary-tint'), ink: v('primary-ink') },
+        bar: { DEFAULT: v('bar'), soft: v('bar-soft'), hist: v('bar-hist') },
+        neither: { tint: v('neither-tint'), ink: v('neither-ink') },
+        tan: { tint: v('tan-tint'), ink: v('tan-ink') },
+        warn: { DEFAULT: v('warn'), tint: v('warn-tint'), ink: v('warn-ink') },
+        danger: { DEFAULT: v('danger'), tint: v('danger-tint'), ink: v('danger-ink') },
         // Metadata chips
-        chip: { bg: '#EEF4FC', border: '#CFE0F5', text: '#1C4E8F' },
+        chip: { bg: v('chip-bg'), border: v('chip-border'), text: v('chip-text') },
       },
       fontFamily: {
         sans: ['Arial', '"Helvetica Neue"', 'Helvetica', 'sans-serif'],

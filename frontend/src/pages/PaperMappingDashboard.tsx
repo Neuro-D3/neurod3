@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom';
 import { Skeleton, Spinner } from '../components/Loading';
 import { Chip, Eyebrow, INPUT_CLASS } from '../components/ui';
+import { formatDay } from '../utils/reuseMetrics';
 import {
   datasetDetailPath,
   fetchPaperMappingCitations,
@@ -42,10 +43,7 @@ type SortKey =
   | 'source';
 
 function formatDate(value?: string | null): string {
-  if (!value) return '—';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString();
+  return formatDay(value) ?? '—';
 }
 
 function formatNumber(value?: number | null): string {
@@ -259,7 +257,7 @@ export default function PaperMappingDashboard() {
       </section>
 
       {/* Filter band */}
-      <div className="sticky top-0 z-30 border-b border-line bg-white">
+      <div className="sticky top-[49px] z-30 border-b border-line bg-surface">
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-5 gap-y-2.5 px-4 py-2.5 sm:px-6 lg:px-8">
           <div className="flex flex-wrap items-center gap-1.5">
             <Eyebrow className="mr-0.5">Source</Eyebrow>
@@ -328,7 +326,7 @@ export default function PaperMappingDashboard() {
             {/* Only the filtered archive: right after a click `summary` is still the
                 previous response (all four archives) until the new fetch lands. */}
             {(summary?.by_source || []).filter((entry) => entry.source === sourceFilter).map((entry) => (
-              <div key={entry.source} className={`rounded-md border border-line bg-white p-4 shadow-card ${reloadDim}`}>
+              <div key={entry.source} className={`rounded-md border border-line bg-surface p-4 shadow-card ${reloadDim}`}>
                 <div className="text-[17px] font-bold text-ink">{entry.source}</div>
                 <div className="mt-3 grid gap-x-8 gap-y-2 text-sm text-ink-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                   <div className="grid grid-cols-2 gap-2">
@@ -353,7 +351,7 @@ export default function PaperMappingDashboard() {
               loading || !summary ? (
                 <SourceCardSkeleton source={sourceFilter} />
               ) : (
-                <div className="rounded-md border border-line bg-white p-4 text-sm text-muted shadow-card">
+                <div className="rounded-md border border-line bg-surface p-4 text-sm text-muted shadow-card">
                   No paper-mapping tables for {sourceFilter} yet. Run its paper-mapping DAG.
                 </div>
               )
@@ -373,7 +371,7 @@ export default function PaperMappingDashboard() {
 
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
           {/* min-w-0: on phones the table scrolls inside this card instead of widening the page. */}
-          <section className="min-w-0 rounded-md border border-line bg-white shadow-card">
+          <section className="min-w-0 rounded-md border border-line bg-surface shadow-card">
             <div className="flex items-center justify-between border-b border-line-2 px-4 py-3">
               <div>
                 <h2 className="m-0 border-b-[3px] border-line-rule pb-2 text-[17px] font-bold text-ink">Mapped Datasets</h2>
@@ -487,7 +485,7 @@ export default function PaperMappingDashboard() {
                   type="button"
                   disabled={page <= 1}
                   onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-                  className="h-8 rounded-[5px] border border-line bg-white px-3 text-[13px] font-bold text-ink-2 hover:bg-panel disabled:cursor-not-allowed disabled:opacity-50"
+                  className="h-8 rounded-[5px] border border-line bg-surface px-3 text-[13px] font-bold text-ink-2 hover:bg-panel disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Previous
                 </button>
@@ -495,7 +493,7 @@ export default function PaperMappingDashboard() {
                   type="button"
                   disabled={page >= totalPages}
                   onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
-                  className="h-8 rounded-[5px] border border-line bg-white px-3 text-[13px] font-bold text-ink-2 hover:bg-panel disabled:cursor-not-allowed disabled:opacity-50"
+                  className="h-8 rounded-[5px] border border-line bg-surface px-3 text-[13px] font-bold text-ink-2 hover:bg-panel disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Next
                 </button>
@@ -507,7 +505,7 @@ export default function PaperMappingDashboard() {
               so the Snapshot (the filter) can sit above the table.
               Desktop: an ordinary sidebar. */}
           <aside className="contents lg:block lg:space-y-6">
-            <section className="order-first rounded-md border border-line bg-white p-4 shadow-card lg:order-none">
+            <section className="order-first rounded-md border border-line bg-surface p-4 shadow-card lg:order-none">
               <h2 className="m-0 border-b-[3px] border-line-rule pb-2 text-[17px] font-bold text-ink">Classification Snapshot</h2>
               <p className="mt-1 text-xs text-muted">
                 Click a row to show only datasets that have at least one edge in that bucket. Click again to clear.
@@ -557,7 +555,7 @@ export default function PaperMappingDashboard() {
             panelClosing ? 'animate-panel-out' : 'animate-panel-in'
           }`}
         >
-          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-line-2 bg-white px-4 py-3">
+          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-line-2 bg-surface px-4 py-3">
             <div>
               <h2 className="m-0 border-b-[3px] border-line-rule pb-2 text-[17px] font-bold text-ink">Dataset Drill-down</h2>
               <p className="text-sm text-muted">
@@ -582,7 +580,7 @@ export default function PaperMappingDashboard() {
             ) : null}
             {!detailLoading && datasetDetail ? (
               <div className="flex min-h-0 flex-1 flex-col gap-6">
-                <div className="shrink-0 rounded-[5px] border border-line-2 bg-white p-4">
+                <div className="shrink-0 rounded-[5px] border border-line-2 bg-surface p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <div className="text-[11px] font-bold uppercase tracking-[0.06em] text-muted">{datasetDetail.dataset.source}</div>
@@ -603,7 +601,7 @@ export default function PaperMappingDashboard() {
                         href={datasetDetail.dataset.url}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex h-[38px] items-center rounded-[5px] border border-navy bg-white px-4 text-sm font-bold text-navy no-underline hover:bg-panel hover:no-underline"
+                        className="inline-flex h-[38px] items-center rounded-[5px] border border-accent bg-surface px-4 text-sm font-bold text-ink no-underline hover:bg-panel hover:text-ink hover:no-underline"
                       >
                         Open dataset
                       </a>
@@ -625,7 +623,7 @@ export default function PaperMappingDashboard() {
                     {/* Own scroller, so a long list does not push Citing Papers out of view. */}
                     <div className="max-h-[20vh] space-y-3 overflow-y-auto overscroll-contain pr-1">
                       {datasetDetail.primary_papers.map((paper) => (
-                        <div key={paper.paper_doi} className="rounded-[5px] border border-line-2 bg-white p-4">
+                        <div key={paper.paper_doi} className="rounded-[5px] border border-line-2 bg-surface p-4">
                           <div className="flex flex-wrap items-start justify-between gap-2">
                             <div>
                               <div className="font-medium text-ink">{paper.paper_title || paper.paper_doi}</div>
@@ -669,7 +667,7 @@ export default function PaperMappingDashboard() {
                         const quote = primaryQuote(citation.evidence_quotes);
                         const hallucinated = (citation.hallucinated_quote_count ?? 0) > 0;
                         return (
-                          <div key={`${citation.primary_paper_doi}:${citation.citing_paper_doi}`} className="rounded-[5px] border border-line-2 bg-white p-4">
+                          <div key={`${citation.primary_paper_doi}:${citation.citing_paper_doi}`} className="rounded-[5px] border border-line-2 bg-surface p-4">
                             <div className="flex flex-wrap items-start justify-between gap-2">
                               <div>
                                 <div className="font-medium text-ink">{citation.citing_paper_title || citation.citing_paper_doi}</div>
@@ -794,7 +792,7 @@ function ClassificationDistribution({ progress }: { progress: ClassificationProg
   );
 
   return (
-    <section className="mt-4 rounded-md border border-line bg-white p-4 shadow-card">
+    <section className="mt-4 rounded-md border border-line bg-surface p-4 shadow-card">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="m-0 border-b-[3px] border-line-rule pb-2 text-[17px] font-bold text-ink">Classification Progress</h2>
         <p className="text-sm text-muted">
@@ -803,12 +801,12 @@ function ClassificationDistribution({ progress }: { progress: ClassificationProg
         </p>
       </div>
 
-      <div className="mt-3 flex h-3 w-full gap-[2px] overflow-hidden bg-white" aria-label="Attempted vs not yet classified">
-        {segment('attempted', attemptedShare, { color: '#021242' }, `Attempted: ${formatNumber(attempted)} (${percent(attemptedShare)})`)}
-        {segment('not_yet', 1 - attemptedShare, { color: '#D7DDE4' }, `Not yet classified: ${formatNumber(notYet)} (${percent(1 - attemptedShare)})`)}
+      <div className="mt-3 flex h-3 w-full gap-[2px] overflow-hidden bg-surface" aria-label="Attempted vs not yet classified">
+        {segment('attempted', attemptedShare, { className: 'bg-primary' }, `Attempted: ${formatNumber(attempted)} (${percent(attemptedShare)})`)}
+        {segment('not_yet', 1 - attemptedShare, { className: 'bg-line' }, `Not yet classified: ${formatNumber(notYet)} (${percent(1 - attemptedShare)})`)}
       </div>
 
-      <h3 className="mt-5 flex gap-2.5 text-[15.5px] font-bold text-ink"><span className="text-link">B</span>Outcome of attempted edges</h3>
+      <h3 className="mt-5 text-[15.5px] font-bold text-ink">Outcome of attempted edges</h3>
       {outcomes.length ? (
         <>
           <div className="mt-2 flex h-6 w-full gap-[2px] overflow-hidden" aria-label="Outcome of attempted edges">
@@ -841,7 +839,7 @@ function ClassificationDistribution({ progress }: { progress: ClassificationProg
 
 function SummaryCard({ title, value, hint, loading = false }: { title: string; value: string; hint?: string; loading?: boolean }) {
   return (
-    <div className="rounded-md border border-line bg-white p-4 shadow-card" aria-busy={loading}>
+    <div className="rounded-md border border-line bg-surface p-4 shadow-card" aria-busy={loading}>
       <div className="text-[11px] font-bold uppercase tracking-[0.06em] text-muted">{title}</div>
       {loading ? (
         <Skeleton className="mt-2 h-9 w-24 rounded" />
@@ -958,7 +956,7 @@ function SourceCardSkeleton({ source }: { source: string }) {
     </React.Fragment>
   );
   return (
-    <div className="rounded-md border border-line bg-white p-4 shadow-card" aria-busy="true">
+    <div className="rounded-md border border-line bg-surface p-4 shadow-card" aria-busy="true">
       <div className="text-[17px] font-bold text-ink">{source}</div>
       <div className="mt-3 grid gap-x-8 gap-y-2 text-sm md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <div className="grid grid-cols-2 gap-2">
@@ -977,13 +975,13 @@ function SourceCardSkeleton({ source }: { source: string }) {
 
 function ClassificationDistributionSkeleton() {
   return (
-    <section className="mt-4 rounded-md border border-line bg-white p-4 shadow-card" aria-busy="true">
+    <section className="mt-4 rounded-md border border-line bg-surface p-4 shadow-card" aria-busy="true">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="m-0 border-b-[3px] border-line-rule pb-2 text-[17px] font-bold text-ink">Classification Progress</h2>
         <Skeleton className="h-4 w-72 max-w-full rounded" />
       </div>
       <Skeleton className="mt-3 h-3 w-full rounded" />
-      <h3 className="mt-5 flex gap-2.5 text-[15.5px] font-bold text-ink"><span className="text-link">B</span>Outcome of attempted edges</h3>
+      <h3 className="mt-5 text-[15.5px] font-bold text-ink">Outcome of attempted edges</h3>
       <Skeleton className="mt-2 h-6 w-full rounded" />
     </section>
   );
@@ -991,7 +989,7 @@ function ClassificationDistributionSkeleton() {
 
 function MiniStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-[5px] border border-line-2 bg-white p-3">
+    <div className="rounded-[5px] border border-line-2 bg-surface p-3">
       <div className="text-[11px] font-bold uppercase tracking-[0.06em] text-muted">{label}</div>
       <div className="mt-2 text-sm font-bold text-ink">{value}</div>
     </div>

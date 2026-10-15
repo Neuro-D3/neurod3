@@ -2,10 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import { fetchDatasetDetail, fetchDatasetMetrics } from '../services/api';
-import type { DatasetDetailResponse, DatasetMetrics } from '../services/api';
+import type { DatasetDetailResponse, DatasetMetrics, TrackedDatasetMetrics } from '../services/api';
 import { DatasetImpactCard } from '../components/DatasetImpactCard';
 import { DatasetPaperList } from '../components/DatasetPaperList';
-import { PaperMap } from '../components/PaperMap';
 import {
   Button,
   ButtonLink,
@@ -19,11 +18,9 @@ import {
   MastTag,
   Note,
   SubTitle,
-  Tab,
-  Tabs,
   cx,
 } from '../components/ui';
-import { buildPaperList } from '../utils/datasetPapers';
+import { buildPaperList, countByLabel } from '../utils/datasetPapers';
 import type { DatasetPaperItem } from '../utils/datasetPapers';
 import {
   archiveLibraries,
@@ -35,7 +32,8 @@ import {
   reuseTypeBreakdown,
   takeaways,
 } from '../utils/datasetCard';
-import { formatPublishedDate, plural } from '../utils/reuseMetrics';
+import { licenseLinks } from '../utils/license';
+import { formatDay, formatPublishedDate, plural } from '../utils/reuseMetrics';
 
 // Short label for each junk reason (utils/dataset_status.py); title_keyword:<word> shows the word.
 const JUNK_REASON_LABELS: Record<string, string> = {
@@ -65,47 +63,98 @@ function formatModality(label: string): string {
   return /[A-Z]{2,}/.test(label) ? label : label.toLowerCase();
 }
 
-/** Paper-map order: reuse first, then the dataset's own papers, then mentions; newest first within each. */
-const MAP_ORDER = { REUSE: 0, PRIMARY: 1, MENTION: 2 } as const;
-function paperMapOrder(items: DatasetPaperItem[]): DatasetPaperItem[] {
-  return [...items].sort(
-    (a, b) => MAP_ORDER[a.label] - MAP_ORDER[b.label] || (b.date ?? '').localeCompare(a.date ?? ''),
-  );
-}
-
-type View = 'card' | 'papers';
+/** How many authors the masthead lists before "and N others". */
+const AUTHORS_SHOWN = 12;
 
 /* ───────────────────────── Masthead ───────────────────────── */
 
-function Masthead({ data, metricsTracked }: { data: DatasetDetailResponse; metricsTracked: boolean }) {
+/** Back to wherever the visitor came from (the filtered list), or the list itself when they arrived here directly. */
+function useGoBack() {
+  const navigate = useNavigate();
+  return () => {
+    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
+    if (idx > 0) navigate(-1);
+    else navigate('/');
+  };
+}
+
+function BackButton() {
+  const goBack = useGoBack();
+  return (
+    <button
+      type="button"
+      onClick={goBack}
+      className="inline-flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.08em] text-navy-muted hover:text-white"
+    >
+      <span aria-hidden="true">←</span> Datasets
+    </button>
+  );
+}
+
+function Masthead({
+  data,
+  metrics,
+  metricsTracked,
+  routeId,
+}: {
+  data: DatasetDetailResponse;
+  metrics: TrackedDatasetMetrics | null;
+  metricsTracked: boolean;
+  routeId: string;
+}) {
   const ds = data.dataset;
+  const [allAuthors, setAllAuthors] = useState(false);
   const roles = contributorRoles(ds.contributors);
   const authors = ds.authors ?? [];
+  const shownAuthors = allAuthors ? authors : authors.slice(0, AUTHORS_SHOWN);
+  const hiddenAuthors = authors.length - shownAuthors.length;
   const published = formatPublishedDate(ds.created_at, ds.created_at_precision);
-  const updated = ds.updated_at ? new Date(ds.updated_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : null;
+  const updated = formatDay(ds.updated_at);
+  const licenses = licenseLinks(ds.license);
+  const routeIdDiffersFromApi = Boolean(routeId && routeId !== ds.dataset_id);
+  const showReuseSummary = Boolean(metrics && metrics.reuse_count + metrics.mention_count > 0);
+  const toggleClass = 'text-navy-sub underline decoration-navy-tag underline-offset-2 hover:text-white';
 
   return (
     <header className="bg-navy text-white">
-      <div className="mx-auto grid max-w-[1440px] items-center gap-x-8 gap-y-5 px-4 pb-6 pt-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:px-8">
+      <div className="mx-auto grid max-w-[1440px] items-center gap-x-8 gap-y-5 px-4 pb-6 pt-5 sm:px-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:px-8">
         <div className="flex min-w-0 flex-col gap-2.5">
-          <span className="font-mono text-xs uppercase tracking-[0.08em] text-navy-muted">NeuroD3 · Dataset card</span>
-          <h1 className="m-0 text-[30px] font-bold leading-[1.1] tracking-[-0.005em] sm:text-[38px] lg:text-[46px]">{ds.title}</h1>
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <BackButton />
+            <span aria-hidden="true" className="text-navy-tag">/</span>
+            <span className="font-mono text-xs uppercase tracking-[0.08em] text-navy-muted">Dataset card</span>
+          </span>
+          <h1 className="m-0 break-words text-[30px] font-bold leading-[1.1] tracking-[-0.005em] sm:text-[38px] lg:text-[46px]">{ds.title}</h1>
           {authors.length > 0 && (
             <p className="m-0 mt-0.5 text-[17px] leading-[1.4] text-white sm:text-[19px]">
-              {authors.slice(0, 12).join(', ')}
-              {authors.length > 12 && ` and ${plural(authors.length - 12, 'other', 'others')}`}
+              {shownAuthors.join(', ')}
+              {hiddenAuthors > 0 && (
+                <>
+                  {' '}
+                  <button type="button" onClick={() => setAllAuthors(true)} aria-expanded={false} className={toggleClass}>
+                    and {plural(hiddenAuthors, 'other', 'others')}
+                  </button>
+                </>
+              )}
+              {allAuthors && authors.length > AUTHORS_SHOWN && (
+                <>
+                  {' '}
+                  <button type="button" onClick={() => setAllAuthors(false)} aria-expanded className={cx(toggleClass, 'text-sm')}>
+                    Show fewer
+                  </button>
+                </>
+              )}
             </p>
           )}
           <div className="flex flex-wrap gap-x-6 gap-y-1.5 text-sm text-navy-sub">
             {roles.map((r) => (
               <span key={r.role}>
-                {r.role}: {r.names.slice(0, 2).join(', ')}
-                {r.names.length > 2 && ` +${r.names.length - 2}`}
+                {r.role}: {r.names.join(', ')}
               </span>
             ))}
             {ds.num_subjects != null && ds.num_subjects > 0 && (
               <span>
-                {ds.num_subjects.toLocaleString()} {ds.source === 'OpenNeuro' ? 'participants' : 'subjects'}
+                {ds.num_subjects.toLocaleString('en-US')} {ds.source === 'OpenNeuro' ? 'participants' : 'subjects'}
               </span>
             )}
             {!metricsTracked && <span>Reuse tracking not yet available for {ds.source}</span>}
@@ -113,16 +162,32 @@ function Masthead({ data, metricsTracked }: { data: DatasetDetailResponse; metri
         </div>
         <div className="flex flex-col gap-1 lg:items-end lg:text-right">
           <span className="font-mono text-[26px] font-bold tracking-[0.01em] sm:text-[30px]">{qualifiedId(ds.source, ds.dataset_id)}</span>
+          {routeIdDiffersFromApi && (
+            <span className="font-mono text-xs text-navy-muted" title="The id in this page's address">
+              URL id: {routeId}
+            </span>
+          )}
           <span className="text-sm text-navy-sub">
             {published && `Released ${published}`}
             {published && updated && ' · '}
             {updated && `Updated ${updated}`}
           </span>
+          {metrics && showReuseSummary && (
+            <span className="text-sm text-navy-sub">
+              <strong className="font-bold text-white">{plural(metrics.reuse_count, 'reuse', 'reuses')}</strong>
+              {' · '}
+              {plural(metrics.mention_count, 'mention', 'mentions')}
+            </span>
+          )}
           <span className="mt-1.5 flex flex-wrap gap-1.5 lg:justify-end">
             <MastTag>{ds.source}</MastTag>
-            {ds.license && <MastTag title="License">{ds.license.replace(/^spdx:/i, '')}</MastTag>}
+            {licenses.map((l) => (
+              <MastTag key={l.title} href={l.url ?? undefined} title={`License: ${l.title}`}>
+                {l.label}
+              </MastTag>
+            ))}
             {ds.dataset_status === 'excluded' && (
-              <MastTag title={`Excluded as junk (${ds.dataset_status_reason ?? 'unknown reason'}). Hidden from the dataset list and counts.`}>
+              <MastTag tone="warn" title={`Excluded as junk (${ds.dataset_status_reason ?? 'unknown reason'}). Hidden from the dataset list and counts.`}>
                 Junk · {junkReasonLabel(ds.dataset_status_reason)}
               </MastTag>
             )}
@@ -137,7 +202,7 @@ function MastheadSkeleton() {
   return (
     <header className="bg-navy text-white" aria-busy="true">
       <div className="mx-auto flex max-w-[1440px] flex-col gap-3 px-4 pb-7 pt-6 sm:px-6 lg:px-8">
-        <span className="font-mono text-xs uppercase tracking-[0.08em] text-navy-muted">NeuroD3 · Dataset card</span>
+        <span className="font-mono text-xs uppercase tracking-[0.08em] text-navy-muted">Dataset card</span>
         <div className="h-10 w-2/3 animate-skeleton rounded bg-white/20 motion-reduce:animate-none" />
         <div className="h-5 w-1/2 animate-skeleton rounded bg-white/15 motion-reduce:animate-none" />
       </div>
@@ -147,17 +212,7 @@ function MastheadSkeleton() {
 
 /* ───────────────────────── Band under the masthead ───────────────────────── */
 
-function MetaBand({
-  data,
-  view,
-  onView,
-  paperCount,
-}: {
-  data: DatasetDetailResponse;
-  view: View;
-  onView: (v: View) => void;
-  paperCount: number;
-}) {
+function MetaBand({ data, primaryCount }: { data: DatasetDetailResponse; primaryCount: number }) {
   const ds = data.dataset;
   const modalities = (ds.modality || '')
     .split(/[;,]/)
@@ -181,8 +236,8 @@ function MetaBand({
   };
 
   return (
-    <div className="border-b border-line bg-white">
-      <div className="mx-auto flex max-w-[1440px] flex-col gap-2.5 px-4 pt-3.5 sm:px-6 lg:px-8">
+    <div className="border-b border-line bg-surface">
+      <div className="mx-auto flex max-w-[1440px] flex-col gap-2.5 px-4 py-3.5 sm:px-6 lg:px-8">
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
           <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
             {modalities.length > 0 && (
@@ -193,12 +248,10 @@ function MetaBand({
                 ))}
               </div>
             )}
-            {ds.papers != null && (
-              <div className="flex items-center gap-1.5">
-                <Eyebrow className="mr-0.5">Primary papers</Eyebrow>
-                <Chip>{ds.papers}</Chip>
-              </div>
-            )}
+            <div className="flex items-center gap-1.5">
+              <Eyebrow className="mr-0.5">Primary papers</Eyebrow>
+              <Chip>{primaryCount}</Chip>
+            </div>
             {libraries.length > 0 && (
               <div className="flex items-center gap-1.5">
                 <Eyebrow className="mr-0.5">Libraries</Eyebrow>
@@ -222,14 +275,6 @@ function MetaBand({
             )}
           </div>
         </div>
-        <Tabs label="Dataset views">
-          <Tab active={view === 'card'} onClick={() => onView('card')}>
-            Dataset card
-          </Tab>
-          <Tab active={view === 'papers'} onClick={() => onView('papers')} count={paperCount}>
-            Papers
-          </Tab>
-        </Tabs>
       </div>
     </div>
   );
@@ -237,25 +282,48 @@ function MetaBand({
 
 /* ───────────────────────── Cards ───────────────────────── */
 
-function AboutCard({ data, metrics }: { data: DatasetDetailResponse; metrics: DatasetMetrics | null }) {
+function AboutCard({
+  data,
+  metrics,
+  primaryCount,
+}: {
+  data: DatasetDetailResponse;
+  metrics: DatasetMetrics | null;
+  primaryCount: number;
+}) {
   const ds = data.dataset;
   const tracked = metrics?.tracked ? metrics : null;
-  const modalities = (ds.modality || '')
-    .split(/[;,]/)
-    .map((m) => m.trim())
-    .filter(Boolean);
   const description = ds.full_description || ds.description || '';
+  const licenses = licenseLinks(ds.license);
   const rows: Array<{ label: string; value: React.ReactNode }> = [];
   if (ds.num_subjects != null && ds.num_subjects > 0) {
-    rows.push({ label: ds.source === 'OpenNeuro' ? 'Participants' : 'Subjects', value: ds.num_subjects.toLocaleString() });
+    rows.push({ label: ds.source === 'OpenNeuro' ? 'Participants' : 'Subjects', value: ds.num_subjects.toLocaleString('en-US') });
   }
-  if (modalities.length) rows.push({ label: 'Modality', value: modalities.map(formatModality).join(', ') });
-  rows.push({ label: 'Primary papers', value: data.primary_papers.length.toLocaleString() });
+  rows.push({ label: 'Primary papers', value: primaryCount.toLocaleString('en-US') });
   if (tracked) {
-    rows.push({ label: 'Citing papers found', value: tracked.coverage.citing_papers.toLocaleString() });
-    rows.push({ label: 'Reuse papers', value: tracked.reuse_count.toLocaleString() });
+    rows.push({ label: 'Citing papers found', value: tracked.coverage.citing_papers.toLocaleString('en-US') });
+    rows.push({ label: 'Reuse papers', value: tracked.reuse_count.toLocaleString('en-US') });
   }
-  if (ds.license) rows.push({ label: 'License', value: ds.license.replace(/^spdx:/i, '') });
+  if (licenses.length) {
+    rows.push({
+      label: 'License',
+      value: (
+        <span className="inline-flex flex-wrap justify-end gap-x-2">
+          {licenses.map((l) =>
+            l.url ? (
+              <a key={l.title} href={l.url} target="_blank" rel="noopener noreferrer" title={l.title}>
+                {l.label}
+              </a>
+            ) : (
+              <span key={l.title} title={l.title}>
+                {l.label}
+              </span>
+            ),
+          )}
+        </span>
+      ),
+    });
+  }
   const published = formatPublishedDate(ds.created_at, ds.created_at_precision);
   if (published) rows.push({ label: 'Released', value: published });
 
@@ -263,7 +331,7 @@ function AboutCard({ data, metrics }: { data: DatasetDetailResponse; metrics: Da
     <Card aria-labelledby="about-h">
       <CardTitle id="about-h">About This Dataset</CardTitle>
       {description ? (
-        <div className="prose prose-sm max-w-none text-[15px] leading-[1.55] text-ink-2 prose-headings:text-ink prose-p:my-0 prose-p:text-ink-2 prose-a:text-link [&>*+*]:mt-3">
+        <div className="prose prose-sm max-w-none break-words text-[15px] leading-[1.55] text-ink-2 prose-headings:text-ink prose-p:my-0 prose-p:text-ink-2 prose-a:text-link prose-strong:text-ink prose-code:text-ink prose-li:text-ink-2 [&>*+*]:mt-3">
           <ReactMarkdown>{description}</ReactMarkdown>
         </div>
       ) : (
@@ -287,38 +355,37 @@ function UseCard({ data }: { data: DatasetDetailResponse }) {
       ) : null}
       <div className="flex flex-col gap-1.5">
         <Eyebrow>Cite as</Eyebrow>
-        <p className="m-0 rounded-[5px] bg-panel px-3.5 py-3 text-[13px] leading-[1.55] text-ink-2">{citationText(ds)}</p>
+        <p className="m-0 break-words rounded-[5px] bg-panel px-3.5 py-3 text-[13px] leading-[1.55] text-ink-2">{citationText(ds)}</p>
       </div>
     </Card>
   );
 }
 
-function CaveatsCard({ notes }: { notes: string[] }) {
-  return (
-    <Card aria-labelledby="cav-h">
-      <CardTitle id="cav-h">Data and Caveats</CardTitle>
-      <ul className="m-0 flex flex-col gap-2 pl-[18px] text-sm leading-normal text-ink-2">
-        {notes.map((n) => (
-          <li key={n}>{n}</li>
-        ))}
-      </ul>
-    </Card>
-  );
-}
+const NOTE_LIST = 'm-0 flex list-disc flex-col gap-2 pl-[18px] text-sm leading-normal text-ink-2 marker:text-muted';
 
-function TakeawaysCard({ items }: { items: string[] }) {
+/** What the numbers say, then what to keep in mind about them. */
+function NotesCard({ points, notes }: { points: string[]; notes: string[] }) {
   return (
-    <Card aria-labelledby="take-h">
-      <CardTitle id="take-h">Takeaways</CardTitle>
-      {items.length ? (
-        <ul className="m-0 flex flex-col gap-2 pl-[18px] text-sm leading-normal text-ink-2">
-          {items.map((t) => (
+    <Card aria-labelledby="notes-h">
+      <CardTitle id="notes-h">Takeaways and Caveats</CardTitle>
+      <SubTitle letter="A">Takeaways</SubTitle>
+      {points.length ? (
+        <ul className={NOTE_LIST}>
+          {points.map((t) => (
             <li key={t}>{t}</li>
           ))}
         </ul>
       ) : (
         <p className="m-0 text-sm italic text-muted">Nothing to say until citing papers have been classified.</p>
       )}
+      <SubTitle letter="B" className="mt-1.5">
+        Caveats
+      </SubTitle>
+      <ul className={NOTE_LIST}>
+        {notes.map((n) => (
+          <li key={n}>{n}</li>
+        ))}
+      </ul>
     </Card>
   );
 }
@@ -372,54 +439,19 @@ function ReuseTypesCard({ papers, sameLabByDoi, number }: { papers: DatasetPaper
   );
 }
 
-function PeopleCard({ data }: { data: DatasetDetailResponse }) {
-  const ds = data.dataset;
-  const contributors = ds.contributors ?? [];
-  const authors = ds.authors ?? [];
-  if (!contributors.length && !authors.length) return null;
-  return (
-    <Card aria-labelledby="people-h">
-      <CardTitle id="people-h">People</CardTitle>
-      {contributors.length > 0 ? (
-        <ul className="m-0 flex flex-col gap-1.5 p-0 text-sm">
-          {contributors.map((c, i) => (
-            <li key={`${c.name}-${i}`} className="flex items-baseline justify-between gap-3 border-t border-line-inner pt-1.5 first:border-t-0 first:pt-0">
-              <span className="text-ink">{c.name}</span>
-              {c.roles?.length > 0 && (
-                <span className="shrink-0 text-right text-xs text-muted">
-                  {c.roles.map((r) => r.replace('dcite:', '').replace(/([a-z])([A-Z])/g, '$1 $2')).join(', ')}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <>
-          <SubTitle>Authors</SubTitle>
-          <p className="m-0 text-sm leading-relaxed text-ink-2">{authors.join(', ')}</p>
-        </>
-      )}
-    </Card>
-  );
-}
-
 /* ───────────────────────── Page ───────────────────────── */
 
 export default function DatasetDetailPage() {
   const { source: sourceParam, datasetId: datasetIdParam } = useParams<{ source: string; datasetId: string }>();
   const source = decodedDatasetIdParam(sourceParam);
   const datasetId = decodedDatasetIdParam(datasetIdParam);
-  const navigate = useNavigate();
   const location = useLocation();
+  const goBack = useGoBack();
   const [data, setData] = useState<DatasetDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<DatasetMetrics | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
-
-  // The view lives in the hash (#papers) so a link can open the paper list.
-  const view: View = location.hash === '#papers' ? 'papers' : 'card';
-  const setView = (v: View) => navigate({ hash: v === 'papers' ? '#papers' : '' }, { replace: true });
 
   useEffect(() => {
     if (!source || !datasetId) return;
@@ -459,10 +491,17 @@ export default function DatasetDetailPage() {
     return () => { cancelled = true; };
   }, [source, datasetId]);
 
+  // Links made for the old Papers tab (#papers) open the card at the papers section.
+  const scrolledToPapers = useRef(false);
+  useEffect(() => {
+    if (loading || !data || location.hash !== '#papers' || scrolledToPapers.current) return;
+    scrolledToPapers.current = true;
+    document.getElementById('papers')?.scrollIntoView();
+  }, [loading, data, location.hash]);
+
   const trackedMetrics = metrics?.tracked ? metrics : null;
   const metricsTracked = metrics ? metrics.tracked : true;
   const papers = useMemo(() => (data ? buildPaperList(data.primary_papers, data.citations) : []), [data]);
-  const mapPapers = useMemo(() => paperMapOrder(papers), [papers]);
   const sameLabByDoi = useMemo(
     () => new Map((trackedMetrics?.reuse_papers ?? []).map((p) => [p.doi, p.same_lab])),
     [trackedMetrics],
@@ -472,10 +511,10 @@ export default function DatasetDetailPage() {
     return (
       <div className="min-h-screen bg-canvas">
         <MastheadSkeleton />
-        <div className="h-[92px] border-b border-line bg-white" />
-        <div className="mx-auto grid max-w-[1440px] gap-6 px-4 py-6 sm:px-6 lg:grid-cols-3 lg:px-8" aria-busy="true">
+        <div className="h-[68px] border-b border-line bg-surface" />
+        <div className="mx-auto grid max-w-[1440px] grid-cols-1 gap-6 px-4 py-6 sm:px-6 lg:grid-cols-3 lg:px-8" aria-busy="true">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="h-72 animate-skeleton rounded-md border border-line bg-white motion-reduce:animate-none" />
+            <div key={i} className="h-72 animate-skeleton rounded-md border border-line bg-surface motion-reduce:animate-none" />
           ))}
         </div>
       </div>
@@ -492,7 +531,7 @@ export default function DatasetDetailPage() {
             {notFound ? `No ${source.toUpperCase()} dataset with the id ${datasetId} is in the hub.` : error}
           </p>
           <div className="flex justify-center gap-2">
-            <Button variant="secondary" onClick={() => navigate(-1)}>
+            <Button variant="secondary" onClick={goBack}>
               Back
             </Button>
             <ButtonLink to="/">All datasets</ButtonLink>
@@ -504,56 +543,41 @@ export default function DatasetDetailPage() {
 
   const ds = data.dataset;
   const notes = caveats(ds, trackedMetrics, metricsTracked, data.citations.length);
-  const points = takeaways(ds, trackedMetrics, papers);
+  const points = takeaways(ds, trackedMetrics);
+  const primaryCount = countByLabel(papers).PRIMARY;
   const hasReuse = papers.some((p) => p.label === 'REUSE');
   const impactLoading = !metrics && !metricsError;
 
   return (
     <div className="min-h-screen bg-canvas">
-      <Masthead data={data} metricsTracked={metricsTracked} />
-      <MetaBand data={data} view={view} onView={setView} paperCount={papers.length} />
+      <Masthead data={data} metrics={trackedMetrics} metricsTracked={metricsTracked} routeId={datasetId} />
+      <MetaBand data={data} primaryCount={primaryCount} />
 
-      {view === 'papers' ? (
-        <div className="mx-auto grid max-w-[1440px] gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:px-8">
-          <DatasetPaperList items={papers} metrics={trackedMetrics} />
-          <div className="flex flex-col gap-6">
-            <DatasetImpactCard
-              metrics={trackedMetrics}
-              loading={impactLoading}
-              error={metricsError}
-              untrackedNote={`Reuse metrics are not tracked for ${ds.source} yet.`}
-            />
-            <CaveatsCard notes={notes} />
-          </div>
+      <div
+        className={cx(
+          'mx-auto grid max-w-[1440px] grid-cols-1 items-start gap-6 px-4 py-6 sm:px-6 lg:px-8',
+          'md:grid-cols-2 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)_minmax(0,5fr)]',
+        )}
+      >
+        <div className="flex min-w-0 flex-col gap-6">
+          <AboutCard data={data} metrics={metrics} primaryCount={primaryCount} />
+          <UseCard data={data} />
         </div>
-      ) : (
-        <div
-          className={cx(
-            'mx-auto grid max-w-[1440px] items-start gap-6 px-4 py-6 sm:px-6 lg:px-8',
-            'md:grid-cols-2 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)_minmax(0,5fr)]',
-          )}
-        >
-          <div className="flex flex-col gap-6">
-            <AboutCard data={data} metrics={metrics} />
-            <UseCard data={data} />
-            <CaveatsCard notes={notes} />
-          </div>
-          <div className="flex flex-col gap-6">
-            <PaperMap papers={mapPapers} sameLabByDoi={sameLabByDoi} totalLinked={papers.length} onShowAll={() => setView('papers')} />
-            <DatasetImpactCard
-              metrics={trackedMetrics}
-              loading={impactLoading}
-              error={metricsError}
-              untrackedNote={`Reuse metrics are not tracked for ${ds.source} yet: no citing papers have been mapped for this archive.`}
-            />
-          </div>
-          <div className="flex flex-col gap-6 md:col-span-2 md:grid md:grid-cols-2 md:gap-6 xl:col-span-1 xl:flex">
-            {hasReuse && <ReuseTypesCard papers={papers} sameLabByDoi={sameLabByDoi} number={3} />}
-            <TakeawaysCard items={points} />
-            <PeopleCard data={data} />
-          </div>
+        <div className="flex min-w-0 flex-col gap-6">
+          <DatasetImpactCard
+            number={1}
+            metrics={trackedMetrics}
+            loading={impactLoading}
+            error={metricsError}
+            untrackedNote={`Reuse metrics are not tracked for ${ds.source} yet: no citing papers have been mapped for this archive.`}
+          />
+          <DatasetPaperList number={2} items={papers} metrics={trackedMetrics} />
         </div>
-      )}
+        <div className="flex min-w-0 flex-col gap-6 md:col-span-2 md:grid md:grid-cols-2 md:gap-6 xl:col-span-1 xl:flex">
+          {hasReuse && <ReuseTypesCard papers={papers} sameLabByDoi={sameLabByDoi} number={3} />}
+          <NotesCard points={points} notes={notes} />
+        </div>
+      </div>
     </div>
   );
 }

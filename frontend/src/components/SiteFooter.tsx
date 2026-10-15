@@ -42,7 +42,7 @@ const ARCHIVES: Array<{ name: string; href: string }> = [
  */
 export function SiteFooter() {
   return (
-    <footer className="border-t border-line bg-white">
+    <footer className="border-t border-line bg-surface">
       <div className="mx-auto flex max-w-[1440px] flex-col gap-4 px-4 py-5 text-xs leading-normal text-muted sm:px-6 lg:px-8 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-col gap-1.5">
           <p className="m-0">
@@ -84,7 +84,7 @@ export function SiteFooter() {
                   rel="noopener noreferrer"
                   className="flex items-center gap-1 rounded opacity-70 grayscale transition hover:opacity-100 hover:grayscale-0 focus-visible:opacity-100 focus-visible:grayscale-0"
                 >
-                  <img src={partner.logo} alt={partner.showName ? '' : partner.name} className={`${partner.height} w-auto`} />
+                  <img src={partner.logo} alt={partner.showName ? '' : partner.name} className={`${partner.height} w-auto dark:brightness-0 dark:invert`} />
                   {partner.showName && (
                     <span className="text-[9px] font-semibold leading-none tracking-tight text-ink">{partner.name}</span>
                   )}

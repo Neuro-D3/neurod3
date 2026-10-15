@@ -73,35 +73,40 @@ function PaperRow({ paper, sameLab }: { paper: DatasetPaperItem; sameLab?: boole
   const preprint = paper.isPreprint ? undefined : paper.versions.find((v) => v.is_preprint);
 
   return (
-    <article className="border-t border-line-3 py-3 first:border-t-0 first:pt-0">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Tag tone={LABEL_TONE[paper.label]} title={PAPER_LABEL_HELP[paper.label]}>
-          {PAPER_LABEL_TEXT[paper.label]}
-        </Tag>
-        {paper.isPreprint && (
-          <Tag tone="neutral" title="Not published in a journal yet, as far as we know">
-            Preprint
+    <li className="rounded-[5px] border border-line-2 bg-surface p-3">
+      <div className="flex items-center gap-1.5">
+        <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <Tag tone={LABEL_TONE[paper.label]} title={PAPER_LABEL_HELP[paper.label]}>
+            {PAPER_LABEL_TEXT[paper.label]}
           </Tag>
-        )}
-        {typeLabel && <Tag tone="tan">{typeLabel}</Tag>}
-        {lab === true && (
-          <Tag tone="neutral" title="Shares an author with the dataset or its papers, or the classifier judged it the dataset's own lab">
-            Same lab
-          </Tag>
-        )}
-        {lab === false && (
-          <Tag tone="reuse" title="No authors in common with the dataset or its papers">
-            Independent
-          </Tag>
-        )}
-        {date && <span className="ml-auto font-mono text-xs tabular-nums text-muted">{date}</span>}
+          {paper.isPreprint && (
+            <Tag tone="neutral" title="Not published in a journal yet, as far as we know">
+              Preprint
+            </Tag>
+          )}
+          {typeLabel && <Tag tone="tan">{typeLabel}</Tag>}
+        </span>
+        {/* The lab call sits in the same place on every reuse row, so the list reads like a column. */}
+        <span className="ml-auto flex shrink-0 items-center gap-2.5">
+          {lab === true && (
+            <Tag tone="neutral" title="Shares an author with the dataset or its papers, or the classifier judged it the dataset's own lab">
+              Same lab
+            </Tag>
+          )}
+          {lab === false && (
+            <Tag tone="reuse" title="Independent: no authors in common with the dataset or its papers">
+              Different lab
+            </Tag>
+          )}
+          {date && <span className="w-[4.5rem] text-right font-mono text-xs tabular-nums text-muted">{date}</span>}
+        </span>
       </div>
 
       <a
         href={doiUrl(paper.doi)}
         target="_blank"
         rel="noopener noreferrer"
-        className="mt-1.5 line-clamp-2 block text-[14px] font-bold leading-snug text-ink hover:text-link"
+        className="mt-1.5 line-clamp-2 block text-[14px] font-bold leading-snug"
       >
         {paper.title || paper.doi}
       </a>
@@ -163,14 +168,15 @@ function PaperRow({ paper, sameLab }: { paper: DatasetPaperItem; sameLab?: boole
           {showEvidence && <Evidence c={c} />}
         </>
       )}
-    </article>
+    </li>
   );
 }
 
 /**
  * Every paper tied to the dataset in one list, each with its label: the
  * dataset's primary papers and the citing papers labelled Reuse or Mention.
- * Chips filter by label.
+ * Rounded chips with a count and a colour dot filter by label; the list
+ * scrolls inside the card.
  */
 export function DatasetPaperList({
   items,
@@ -197,7 +203,7 @@ export function DatasetPaperList({
   );
 
   return (
-    <Card aria-labelledby="dataset-papers-title">
+    <Card id="papers" aria-labelledby="dataset-papers-title" className="scroll-mt-16">
       <CardTitle number={number} id="dataset-papers-title" aside={<span className="text-muted">{plural(items.length, 'paper', 'papers')}</span>}>
         Papers
       </CardTitle>
@@ -206,7 +212,7 @@ export function DatasetPaperList({
         <p className="m-0 text-sm italic text-muted">No papers have been mapped to this dataset yet.</p>
       ) : (
         <>
-          <div role="group" aria-label="Show papers by label" className="flex flex-wrap gap-1.5">
+          <div role="group" aria-label="Show papers by label" className="flex flex-wrap gap-2">
             {(['ALL', ...PAPER_LABELS] as const).map((key) => {
               const active = filter === key;
               const count = key === 'ALL' ? items.length : counts[key];
@@ -218,23 +224,23 @@ export function DatasetPaperList({
                   disabled={count === 0}
                   onClick={() => setFilter(key)}
                   className={cx(
-                    'inline-flex h-8 items-center gap-1.5 rounded-[5px] border px-3 text-[13px] font-bold transition-colors disabled:cursor-default disabled:opacity-40',
-                    active ? 'border-navy bg-navy text-white' : 'border-line bg-white text-ink-2 hover:bg-panel',
+                    'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] font-bold transition-colors disabled:cursor-default disabled:opacity-40',
+                    active ? 'border-accent bg-accent text-accent-fg' : 'border-line bg-surface text-ink-2 hover:bg-panel',
                   )}
                 >
-                  {key !== 'ALL' && <span className={cx('h-2.5 w-2.5', LABEL_FILL[key])} aria-hidden="true" />}
+                  {key !== 'ALL' && <span className={cx('h-2 w-2 rounded-full', LABEL_FILL[key])} aria-hidden="true" />}
                   {key === 'ALL' ? 'All' : PAPER_LABEL_TEXT[key]}
-                  <span className={cx('font-normal tabular-nums', active ? 'text-navy-sub' : 'text-muted')}>{count}</span>
+                  <span className={cx('font-normal tabular-nums', active ? 'opacity-80' : 'text-muted')}>{count}</span>
                 </button>
               );
             })}
           </div>
 
-          <div className="flex flex-col">
+          <ul className="m-0 flex max-h-[70vh] list-none flex-col gap-2.5 overflow-y-auto p-0 pr-1">
             {shown.map((paper) => (
               <PaperRow key={paper.doi} paper={paper} sameLab={sameLabByDoi.get(paper.doi)} />
             ))}
-          </div>
+          </ul>
 
           {cut.map((label) => (
             <p key={label} className="m-0 text-xs text-muted">

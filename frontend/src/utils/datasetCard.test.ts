@@ -5,8 +5,6 @@ import {
   citationText,
   contributorRoles,
   downloadCommand,
-  histogram,
-  rangeLabel,
   reuseTypeBreakdown,
   takeaways,
 } from './datasetCard';
@@ -88,6 +86,24 @@ describe('contributorRoles', () => {
       { role: 'Maintainer', names: ['Sharda, Saksham'] },
     ]);
   });
+  it('lists each name once per role and keeps every role', () => {
+    const roles = contributorRoles([
+      { name: 'Simons Foundation', roles: ['dcite:Funder', 'dcite:Sponsor', 'dcite:Funder'] },
+      { name: 'EPSRC', roles: ['dcite:Funder'] },
+      { name: 'A', roles: ['dcite:ContactPerson'] },
+      { name: 'B', roles: ['dcite:DataCurator'] },
+      { name: 'C', roles: ['dcite:Methodology'] },
+      { name: 'D', roles: ['dcite:Software'] },
+    ]);
+    expect(roles).toEqual([
+      { role: 'Funder', names: ['Simons Foundation', 'EPSRC'] },
+      { role: 'Sponsor', names: ['Simons Foundation'] },
+      { role: 'Contact Person', names: ['A'] },
+      { role: 'Data Curator', names: ['B'] },
+      { role: 'Methodology', names: ['C'] },
+      { role: 'Software', names: ['D'] },
+    ]);
+  });
 });
 
 describe('reuseTypeBreakdown', () => {
@@ -108,20 +124,25 @@ describe('reuseTypeBreakdown', () => {
 });
 
 describe('takeaways', () => {
-  it('derives lab split, first reuse, mention share and the latest reuse', () => {
-    expect(takeaways(dataset, metrics, [])).toEqual([
-      '2 different-lab reuse papers and 1 from the dataset’s own lab.',
+  it('adds first reuse and the mention majority, not what the Impact tiles already show', () => {
+    expect(takeaways(dataset, metrics)).toEqual([
       'First reuse came in 2022, 1 year after release.',
-      'Most citing papers mention it without reusing it: 11 of 14 classified.',
-      'Most recently reused by Farashi et al. in 2023.',
+      'Most classified citing papers mention it without reusing it: 11 of 14.',
     ]);
+  });
+  it('only says "most" for more than half of the classified papers', () => {
+    // 6 mentions and 3 reuses of 14 classified: neither is a majority.
+    const split = { ...metrics, mention_count: 6, coverage: { ...metrics.coverage, classified: 14 } };
+    expect(takeaways(dataset, split)).toContain('Of 14 classified citing papers, 3 reused the data and 6 mentioned it.');
+    const reuseHeavy = { ...metrics, reuse_count: 9, mention_count: 2 };
+    expect(takeaways(dataset, reuseHeavy)).toContain('Most classified citing papers reused the data: 9 of 14.');
   });
   it('says so when nothing has been reused', () => {
     const none = { ...metrics, reuse_count: 0, independent_reuse_count: 0, same_lab_reuse_count: 0, last_reuse: null, per_year: [] };
-    expect(takeaways(dataset, none, [])).toContain('No reuse found yet among 14 classified citing papers.');
+    expect(takeaways(dataset, none)).toEqual(['No reuse found yet among 14 classified citing papers.']);
   });
   it('is empty without metrics', () => {
-    expect(takeaways(dataset, null, [])).toEqual([]);
+    expect(takeaways(dataset, null)).toEqual([]);
   });
 });
 
@@ -129,25 +150,12 @@ describe('caveats', () => {
   it('names the coverage gap and the fixed notes', () => {
     const notes = caveats(dataset, metrics, true, 20);
     expect(notes[0]).toBe('Impact counts are lower bounds: of 20 citing papers, 6 had no full text to classify.');
-    expect(notes).toContain('Citing papers come from OpenAlex, which indexes most but not all of the literature.');
-    expect(notes[notes.length - 1]).toBe('2 subjects limit cross-subject generalization.');
+    expect(notes[notes.length - 1]).toBe('Citing papers come from OpenAlex, which indexes most but not all of the literature.');
+    expect(notes.some((n) => /subject/.test(n))).toBe(false);
   });
   it('explains untracked archives and junk status first', () => {
     const notes = caveats({ ...dataset, source: 'CRCNS', dataset_status: 'excluded' }, null, false, 0);
     expect(notes[0]).toMatch(/^Flagged as a test/);
     expect(notes[1]).toMatch(/not tracked for CRCNS/);
-  });
-});
-
-describe('histogram and rangeLabel', () => {
-  it('bins values between min and max', () => {
-    expect(histogram([1, 2, 3, 10], 3)).toEqual([3, 0, 1]);
-    expect(histogram([], 3)).toEqual([]);
-    expect(histogram([5, 5], 3)).toEqual([2, 0, 0]);
-  });
-  it('labels the range', () => {
-    expect(rangeLabel([66, 97, 70], 'characters')).toBe('66 to 97 characters');
-    expect(rangeLabel([2013])).toBe('2013');
-    expect(rangeLabel([])).toBe('—');
   });
 });

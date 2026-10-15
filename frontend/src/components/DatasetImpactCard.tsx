@@ -73,7 +73,7 @@ export function PerYearChart({ perYear }: { perYear: DatasetMetricsYear[] }) {
             ...grid,
             height: plotHeight,
             marginTop: 4,
-            backgroundImage: 'linear-gradient(#E8ECF0, #E8ECF0)',
+            backgroundImage: 'linear-gradient(rgb(var(--grid)), rgb(var(--grid)))',
             backgroundSize: '100% 1px',
             backgroundPosition: `0 ${plotHeight / 2}px`,
             backgroundRepeat: 'no-repeat',
@@ -96,7 +96,7 @@ export function PerYearChart({ perYear }: { perYear: DatasetMetricsYear[] }) {
                     {col.mentions > 0 && (
                       <div
                         title={`${col.year}: ${plural(col.mentions, 'mention', 'mentions')}`}
-                        className={cx('flex items-center justify-center text-[13px] font-bold tabular-nums text-ink', LABEL_FILL.MENTION)}
+                        className={cx('flex items-center justify-center text-[13px] font-bold tabular-nums text-navy', LABEL_FILL.MENTION)}
                         style={{ height: col.mentionHeight }}
                       >
                         {col.showMentionCount ? col.mentions : null}
@@ -132,9 +132,10 @@ const HOW_WE_COUNT_ID = 'dataset-how-we-count';
 const HOW_WE_COUNT_CLOSE_MS = 150;
 
 /**
- * "How we count": a link that opens the definitions on hover, click or tap
- * (Enter from the keyboard); they close when the pointer leaves, on a click
- * outside, Escape, or focus moving elsewhere.
+ * "How we count" with an ⓘ bubble: the bubble (not the words) opens the
+ * definitions on hover, click or tap (Enter from the keyboard); they close
+ * when the pointer leaves, on a click outside, Escape, or focus moving
+ * elsewhere.
  */
 function HowWeCount() {
   const [open, setOpen] = useState(false);
@@ -174,67 +175,77 @@ function HowWeCount() {
   }, [open]);
 
   return (
-    <div
-      ref={wrap}
-      className="relative"
-      onMouseEnter={() => {
-        cancelClose();
-        setOpen(true);
-      }}
-      onMouseLeave={closeSoon}
-      onBlur={(e) => {
-        if (!wrap.current?.contains(e.relatedTarget as Node | null)) setOpen(false);
-      }}
-    >
-      <button
-        ref={button}
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-controls={HOW_WE_COUNT_ID}
-        className="text-[13.5px] font-normal text-link hover:text-link-hover hover:underline"
+    <div className="flex items-center gap-0.5">
+      <span className="text-[13.5px] text-muted">How we count</span>
+      <div
+        ref={wrap}
+        className="relative"
+        onMouseEnter={() => {
+          cancelClose();
+          setOpen(true);
+        }}
+        onMouseLeave={closeSoon}
+        onBlur={(e) => {
+          if (!wrap.current?.contains(e.relatedTarget as Node | null)) setOpen(false);
+        }}
       >
-        How we count
-      </button>
-      {open && (
-        // Focusable so a click inside it keeps focus within the popover.
-        <div
-          id={HOW_WE_COUNT_ID}
-          role="region"
+        <button
+          ref={button}
+          type="button"
+          onClick={() => setOpen(true)}
           aria-label="How we count"
-          tabIndex={-1}
-          className="absolute right-0 top-full z-20 mt-2 w-[min(340px,calc(100vw-4rem))] rounded-md border border-line bg-white p-4 text-left shadow-pop outline-none"
+          aria-expanded={open}
+          aria-controls={HOW_WE_COUNT_ID}
+          className="flex h-7 w-7 items-center justify-center rounded-full text-muted transition-colors hover:bg-panel hover:text-link"
         >
-          <dl className="m-0 flex flex-col gap-2 text-xs leading-snug text-ink-2">
-            <div>
-              <dt className="font-bold text-ink">Reuse</dt>
-              <dd className="m-0">The citing paper's full text shows it used this dataset's data.</dd>
-            </div>
-            <div>
-              <dt className="font-bold text-ink">Independent</dt>
-              <dd className="m-0">
-                None of its authors are authors of the dataset or its papers, and the classifier didn't judge it the
-                dataset's own lab.
-              </dd>
-            </div>
-            <div>
-              <dt className="font-bold text-ink">Mention</dt>
-              <dd className="m-0">Cites the dataset or its paper without using the data.</dd>
-            </div>
-            <div>
-              <dt className="font-bold text-ink">Per year</dt>
-              <dd className="m-0">By the citing paper's publication year, from the dataset's release to now.</dd>
-            </div>
-            <div>
-              <dt className="font-bold text-ink">Coverage</dt>
-              <dd className="m-0">
-                Papers are labelled from their full text. Citing papers without full text, or not reached yet, aren't
-                counted until they are.
-              </dd>
-            </div>
-          </dl>
-        </div>
-      )}
+          <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+            <path
+              fillRule="evenodd"
+              d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-7-4a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM9 9a.75.75 0 0 0 0 1.5h.253a.25.25 0 0 1 .244.304l-.459 2.066A1.75 1.75 0 0 0 10.747 15H11a.75.75 0 0 0 0-1.5h-.253a.25.25 0 0 1-.244-.304l.459-2.066A1.75 1.75 0 0 0 9.253 9H9Z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </button>
+        {open && (
+          // Focusable so a click inside it keeps focus within the popover.
+          <div
+            id={HOW_WE_COUNT_ID}
+            role="region"
+            aria-label="How we count"
+            tabIndex={-1}
+            className="absolute right-0 top-full z-20 mt-2 w-[min(340px,calc(100vw-4rem))] rounded-md border border-line bg-surface p-4 text-left shadow-pop outline-none"
+          >
+            <dl className="m-0 flex flex-col gap-2 text-xs leading-snug text-ink-2">
+              <div>
+                <dt className="font-bold text-ink">Reuse</dt>
+                <dd className="m-0">The citing paper's full text shows it used this dataset's data.</dd>
+              </div>
+              <div>
+                <dt className="font-bold text-ink">Independent</dt>
+                <dd className="m-0">
+                  None of its authors are authors of the dataset or its papers, and the classifier didn't judge it the
+                  dataset's own lab.
+                </dd>
+              </div>
+              <div>
+                <dt className="font-bold text-ink">Mention</dt>
+                <dd className="m-0">Cites the dataset or its paper without using the data.</dd>
+              </div>
+              <div>
+                <dt className="font-bold text-ink">Per year</dt>
+                <dd className="m-0">By the citing paper's publication year, from the dataset's release to now.</dd>
+              </div>
+              <div>
+                <dt className="font-bold text-ink">Coverage</dt>
+                <dd className="m-0">
+                  Papers are labelled from their full text. Citing papers without full text, or not reached yet, aren't
+                  counted until they are.
+                </dd>
+              </div>
+            </dl>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -332,7 +343,7 @@ export function DatasetImpactCard({
   metrics,
   loading = false,
   error = null,
-  number = 2,
+  number = 1,
   untrackedNote,
 }: {
   metrics: TrackedDatasetMetrics | null;

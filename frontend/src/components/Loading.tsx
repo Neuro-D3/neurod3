@@ -1,23 +1,16 @@
 /** Loading indicators shared by the home and Paper Mapping tabs. */
 
 /** The small spinning circle shown next to "Loading…" text. */
-export function Spinner({ darkMode = false }: { darkMode?: boolean }) {
+export function Spinner() {
   return (
     <span
       aria-hidden="true"
-      className={`inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 motion-reduce:animate-none ${
-        darkMode ? 'border-white/25 border-t-white' : 'border-line-rule border-t-navy'
-      }`}
+      className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-line-rule border-t-accent motion-reduce:animate-none"
     />
   );
 }
 
 /** A pulsing placeholder block; `className` sets its size and rounding. */
-export function Skeleton({ className, darkMode = false }: { className: string; darkMode?: boolean }) {
-  return (
-    <div
-      aria-hidden="true"
-      className={`animate-skeleton motion-reduce:animate-none ${darkMode ? 'bg-white/20' : 'bg-line-2'} ${className}`}
-    />
-  );
+export function Skeleton({ className }: { className: string }) {
+  return <div aria-hidden="true" className={`animate-skeleton bg-line-2 motion-reduce:animate-none ${className}`} />;
 }

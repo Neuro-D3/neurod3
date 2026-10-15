@@ -14,7 +14,7 @@ export function cx(...parts: Array<string | false | null | undefined>): string {
 
 /* ───────────────────────── Cards and headings ───────────────────────── */
 
-export const CARD_CLASS = 'rounded-md border border-line bg-white shadow-card';
+export const CARD_CLASS = 'rounded-md border border-line bg-surface shadow-card';
 
 export function Card({
   className,
@@ -52,7 +52,7 @@ export function CardTitle({
       {number !== undefined && (
         <span
           aria-hidden="true"
-          className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[5px] bg-navy text-base font-bold text-white"
+          className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[5px] bg-accent text-base font-bold text-accent-fg"
         >
           {number}
         </span>
@@ -121,7 +121,7 @@ export function Chip({
   const base = cx(
     'inline-flex items-center rounded border px-[9px] py-1 leading-none',
     mono ? 'font-mono text-xs' : 'text-[13px]',
-    active ? 'border-navy bg-navy text-white' : 'border-chip-border bg-chip-bg text-chip-text',
+    active ? 'border-accent bg-accent text-accent-fg' : 'border-chip-border bg-chip-bg text-chip-text',
     onClick && !active && 'hover:border-reuse-soft hover:bg-reuse-tint',
     className,
   );
@@ -139,11 +139,36 @@ export function Chip({
   );
 }
 
-/** Outlined tag on the navy masthead (license, format). */
-export function MastTag({ children, title }: { children: React.ReactNode; title?: string }) {
+/**
+ * Outlined tag on the navy masthead (archive, license). `warn` is the amber
+ * junk flag; `href` makes it a link that opens in a new tab.
+ */
+export function MastTag({
+  children,
+  title,
+  tone = 'plain',
+  href,
+}: {
+  children: React.ReactNode;
+  title?: string;
+  tone?: 'plain' | 'warn';
+  href?: string;
+}) {
+  const classes = cx(
+    'inline-flex max-w-[22rem] items-center gap-1 rounded border px-2 py-[3px] text-[12.5px] font-bold leading-none',
+    tone === 'warn' ? 'border-[#F2C14E] bg-[#F2C14E] text-navy' : 'border-navy-tag text-white',
+  );
+  if (href) {
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer" title={title} className={cx(classes, 'hover:border-white hover:text-white')}>
+        <span className="truncate">{children}</span>
+        <ExternalIcon className="shrink-0" />
+      </a>
+    );
+  }
   return (
-    <span title={title} className="rounded border border-navy-tag px-2 py-[3px] text-[12.5px] font-bold leading-none text-white">
-      {children}
+    <span title={title} className={classes}>
+      <span className="truncate">{children}</span>
     </span>
   );
 }
@@ -187,9 +212,9 @@ export function Tag({
 type ButtonVariant = 'primary' | 'secondary' | 'ghost';
 
 const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
-  primary: 'border border-navy bg-navy text-white hover:bg-navy-700 hover:border-navy-700',
-  secondary: 'border border-navy bg-white text-navy hover:bg-panel',
-  ghost: 'border border-line bg-white text-ink-2 hover:bg-panel',
+  primary: 'border border-accent bg-accent text-accent-fg hover:border-accent-hover hover:bg-accent-hover hover:text-accent-fg',
+  secondary: 'border border-accent bg-surface text-ink hover:bg-panel hover:text-ink',
+  ghost: 'border border-line bg-surface text-ink-2 hover:bg-panel hover:text-ink-2',
 };
 
 const BUTTON_BASE =
@@ -268,7 +293,7 @@ export function Tab({
 }) {
   const classes = cx(
     'flex h-10 shrink-0 items-center gap-[7px] border-b-[3px] px-3.5 text-[14.5px] no-underline hover:no-underline',
-    active ? 'border-navy font-bold text-ink' : 'border-transparent text-muted hover:text-ink',
+    active ? 'border-accent font-bold text-ink hover:text-ink' : 'border-transparent text-muted hover:text-ink',
   );
   const badge =
     count !== undefined ? (
@@ -365,8 +390,8 @@ export function FactTable({
       <tbody>
         {rows.map((row, i) => (
           <tr key={row.key ?? i} className="border-t border-line-inner">
-            <td className="py-[7px] pr-3 text-ink-2">{row.label}</td>
-            <td className="py-[7px] text-right font-bold text-ink">{row.value}</td>
+            <td className="whitespace-nowrap py-[7px] pr-3 align-top text-ink-2">{row.label}</td>
+            <td className="break-words py-[7px] text-right font-bold text-ink">{row.value}</td>
           </tr>
         ))}
       </tbody>
@@ -377,7 +402,7 @@ export function FactTable({
 /* ───────────────────────── Inputs ───────────────────────── */
 
 export const INPUT_CLASS =
-  'h-[38px] rounded-[5px] border border-line bg-white px-3 text-sm text-ink placeholder:text-muted focus:border-focus focus:outline-none';
+  'h-[38px] rounded-[5px] border border-line bg-surface px-3 text-sm text-ink placeholder:text-muted focus:border-focus focus:outline-none';
 
 /** A read-only command with a copy button; says "Copied" for a moment after. */
 export function CopyField({ value, label }: { value: string; label: string }) {

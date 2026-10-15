@@ -21,14 +21,32 @@ export function formatMonthYear(date: string | null | undefined): string | null 
 }
 
 /**
+ * A date the way every page writes it: "May 5, 2021". A bare "2021-05-05" is
+ * a calendar day, so it is read in UTC and never shifts to the day before;
+ * a timestamp is shown in the viewer's time zone. Unparseable text is
+ * returned as is.
+ */
+export function formatDay(date: string | null | undefined): string | null {
+  if (!date) return null;
+  const dayOnly = /^\d{4}-\d{2}-\d{2}$/.test(date);
+  const parsed = new Date(date);
+  if (Number.isNaN(parsed.getTime())) return date;
+  return parsed.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    ...(dayOnly ? { timeZone: 'UTC' } : {}),
+  });
+}
+
+/**
  * A dataset's publication date as a page shows it: the full date, or the year
  * alone when only the year is known (precision "year", e.g. most of CRCNS).
  */
 export function formatPublishedDate(date: string | null | undefined, precision?: string | null): string | null {
   if (!date) return null;
   if (precision === 'year') return date.slice(0, 4);
-  const parsed = new Date(date);
-  return Number.isNaN(parsed.getTime()) ? date : parsed.toLocaleDateString();
+  return formatDay(date);
 }
 
 /** Surname from "First M. Last" or "Last, First"; invisible formatting characters are dropped. */
