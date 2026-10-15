@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Skeleton, Spinner } from '../components/Loading';
-import { Chip, Eyebrow, INPUT_CLASS } from '../components/ui';
+import { Button, Eyebrow, INPUT_CLASS } from '../components/ui';
 import { formatDay } from '../utils/reuseMetrics';
 import {
   datasetDetailPath,
@@ -262,9 +262,15 @@ export default function PaperMappingDashboard() {
           <div className="flex flex-wrap items-center gap-1.5">
             <Eyebrow className="mr-0.5">Source</Eyebrow>
             {(['all', 'DANDI', 'OpenNeuro', 'CRCNS', 'SPARC'] as SourceFilter[]).map((option) => (
-              <Chip key={option} active={sourceFilter === option} onClick={() => setSourceFilter(option)}>
+              <Button
+                key={option}
+                size="sm"
+                variant={sourceFilter === option ? 'primary' : 'ghost'}
+                aria-pressed={sourceFilter === option}
+                onClick={() => setSourceFilter(option)}
+              >
                 {option === 'all' ? 'All' : option}
-              </Chip>
+              </Button>
             ))}
           </div>
           <label className="relative ml-auto block w-full max-w-md">

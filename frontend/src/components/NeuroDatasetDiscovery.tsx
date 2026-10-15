@@ -488,9 +488,15 @@ export default function NeuroDatasetDiscovery() {
           <div className="flex flex-wrap items-center gap-1.5">
             <Eyebrow className="mr-0.5">Source</Eyebrow>
             {sourceChoices.map((s) => (
-              <Chip key={s} active={sourceFilter === s} onClick={() => setSourceFilter(s)}>
+              <Button
+                key={s}
+                size="sm"
+                variant={sourceFilter === s ? 'primary' : 'ghost'}
+                aria-pressed={sourceFilter === s}
+                onClick={() => setSourceFilter(s)}
+              >
                 {s === 'all' ? 'All' : s}
-              </Chip>
+              </Button>
             ))}
           </div>
 
