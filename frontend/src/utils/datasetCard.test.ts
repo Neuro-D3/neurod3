@@ -165,6 +165,11 @@ describe('caveats', () => {
     expect(notes[notes.length - 1]).toBe('Citing papers come from OpenAlex, which indexes most but not all of the literature.');
     expect(notes.some((n) => /subject/.test(n))).toBe(false);
   });
+  it('says the list is cut at 250 citation links, not papers', () => {
+    const notes = caveats(dataset, metrics, true, 250);
+    expect(notes.some((n) => /first 250 citation links/.test(n) && !/citing papers;/.test(n))).toBe(true);
+    expect(caveats(dataset, metrics, true, 249).some((n) => /250/.test(n))).toBe(false);
+  });
   it('explains untracked archives and junk status first', () => {
     const notes = caveats({ ...dataset, source: 'CRCNS', dataset_status: 'excluded' }, null, false, 0);
     expect(notes[0]).toMatch(/^Flagged as a test/);

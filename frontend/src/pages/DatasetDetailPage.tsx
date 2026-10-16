@@ -23,6 +23,7 @@ import {
 import { buildPaperList, countByLabel } from '../utils/datasetPapers';
 import type { DatasetPaperItem } from '../utils/datasetPapers';
 import {
+  CITATION_LINKS_LOADED,
   archiveLibraries,
   caveats,
   citationText,
@@ -390,8 +391,20 @@ function NotesCard({ points, notes }: { points: string[]; notes: string[] }) {
   );
 }
 
-function ReuseTypesCard({ papers, sameLabByDoi, number }: { papers: DatasetPaperItem[]; sameLabByDoi: Map<string, boolean>; number: number }) {
+function ReuseTypesCard({
+  papers,
+  sameLabByDoi,
+  reuseTotal,
+  number,
+}: {
+  papers: DatasetPaperItem[];
+  sameLabByDoi: Map<string, boolean>;
+  /** Every reuse paper per /metrics, when loaded; the chart only sees the papers the page loaded. */
+  reuseTotal: number | null;
+  number: number;
+}) {
   const rows = reuseTypeBreakdown(papers, sameLabByDoi);
+  const shown = papers.filter((p) => p.label === 'REUSE').length;
   const max = Math.max(1, ...rows.map((r) => Math.max(r.independent, r.sameLab, r.unknown)));
   const independent = rows.reduce((n, r) => n + r.independent, 0);
   const sameLab = rows.reduce((n, r) => n + r.sameLab, 0);
@@ -446,6 +459,13 @@ function ReuseTypesCard({ papers, sameLabByDoi, number }: { papers: DatasetPaper
       <Note>
         Reuse papers by what they did with the data, as labelled from their full text. One paper counts once, by its
         strongest label.
+        {reuseTotal !== null && reuseTotal > shown && (
+          <>
+            {' '}
+            Showing {shown.toLocaleString('en-US')} of {plural(reuseTotal, 'reuse paper', 'reuse papers')}: the page loads
+            the first {CITATION_LINKS_LOADED} citation links.
+          </>
+        )}
       </Note>
     </Card>
   );
@@ -586,7 +606,9 @@ export default function DatasetDetailPage() {
           <DatasetPaperList number={2} items={papers} metrics={trackedMetrics} sameLabByDoi={sameLabByDoi} />
         </div>
         <div className="flex min-w-0 flex-col gap-6 md:col-span-2 md:grid md:grid-cols-2 md:gap-6 xl:col-span-1 xl:flex">
-          {hasReuse && <ReuseTypesCard papers={papers} sameLabByDoi={sameLabByDoi} number={3} />}
+          {hasReuse && (
+            <ReuseTypesCard papers={papers} sameLabByDoi={sameLabByDoi} reuseTotal={trackedMetrics?.reuse_count ?? null} number={3} />
+          )}
           <NotesCard points={points} notes={notes} />
         </div>
       </div>

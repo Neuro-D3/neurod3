@@ -6,6 +6,9 @@ import { plural } from './reuseMetrics';
 
 type DatasetRecord = DatasetDetailResponse['dataset'];
 
+/** Citation rows the dataset detail endpoint returns at most (its LIMIT in api/main.py). */
+export const CITATION_LINKS_LOADED = 250;
+
 /** "DANDI:000070", "OpenNeuro:ds000001": the archive-qualified identifier. */
 export function qualifiedId(source: string, datasetId: string): string {
   return `${source}:${datasetId}`;
@@ -195,7 +198,13 @@ export function caveats(
     }
     const undated = metrics.undated.reuse + metrics.undated.mentions;
     if (undated > 0) out.push(`${plural(undated, 'labelled paper has', 'labelled papers have')} no publication date and are not in the per-year chart.`);
-    if (citationsShown >= 250) out.push('The paper list shows the first 250 citing papers; the counts above include all of them.');
+    // The detail endpoint returns at most CITATION_LINKS_LOADED rows (api/main.py), one per
+    // primary paper and citing paper pair, so a citing paper can take several of them.
+    if (citationsShown >= CITATION_LINKS_LOADED) {
+      out.push(
+        `The paper list and How It Is Reused come from the first ${CITATION_LINKS_LOADED} citation links, one per citing paper and primary paper it cites, so they can hold fewer papers than that. The counts above include every link.`,
+      );
+    }
   }
   out.push('Reuse and mention labels are assigned by a language model from each citing paper’s full text, with verified quotes.');
   out.push('Citing papers come from OpenAlex, which indexes most but not all of the literature.');
