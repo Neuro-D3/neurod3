@@ -67,25 +67,31 @@ function formatModality(label: string): string {
 
 /* ───────────────────────── Masthead ───────────────────────── */
 
-/** Back to wherever the visitor came from (the filtered list), or the list itself when they arrived here directly. */
-function useGoBack() {
+/**
+ * Back to the page the visitor came from inside the app (the filtered list,
+ * Paper Mapping), or to the dataset list when they arrived here directly.
+ * React Router gives an entry pushed inside the app a key other than
+ * "default"; that is its public way to tell the two apart.
+ */
+function useGoBack(): { goBack: () => void; label: string } {
   const navigate = useNavigate();
-  return () => {
-    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
-    if (idx > 0) navigate(-1);
-    else navigate('/');
+  const location = useLocation();
+  const cameFromApp = location.key !== 'default';
+  return {
+    goBack: () => (cameFromApp ? navigate(-1) : navigate('/')),
+    label: cameFromApp ? 'Back' : 'Datasets',
   };
 }
 
 function BackButton() {
-  const goBack = useGoBack();
+  const { goBack, label } = useGoBack();
   return (
     <button
       type="button"
       onClick={goBack}
       className="inline-flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.08em] text-navy-muted hover:text-white"
     >
-      <span aria-hidden="true">←</span> Datasets
+      <span aria-hidden="true">←</span> {label}
     </button>
   );
 }
@@ -471,7 +477,7 @@ export default function DatasetDetailPage() {
   const source = decodedDatasetIdParam(sourceParam);
   const datasetId = decodedDatasetIdParam(datasetIdParam);
   const location = useLocation();
-  const goBack = useGoBack();
+  const { goBack } = useGoBack();
   const [data, setData] = useState<DatasetDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
