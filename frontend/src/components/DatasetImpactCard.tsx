@@ -11,77 +11,92 @@ import {
   splitBarColumns,
   splitBarSummary,
 } from '../utils/reuseMetrics';
+import { Card, CardTitle, Note, StatGrid, StatTile, SubTitle, cx } from './ui';
 
 /** Height (px) of the busiest year's bar; the plot area leaves room above it. */
 const BAR_MAX_PX = 80;
 /** Past this many years the empty current year no longer says "none yet". */
 const NONE_YET_UP_TO = 8;
 
-const CARD_CLASS =
-  'relative flex aspect-square w-full flex-col justify-between rounded-2xl border border-slate-200 bg-white p-[22px] shadow-xl';
-const LABEL_CLASS = 'text-[11px] font-semibold uppercase tracking-wider text-slate-500';
-
-function Stat({
-  label,
-  value,
-  valueClassName = 'text-[28px] text-slate-900',
-  children,
-}: {
-  label: string;
-  value: React.ReactNode;
-  valueClassName?: string;
-  children?: React.ReactNode;
-}) {
+function Legend() {
   return (
-    <div className="flex min-w-0 flex-col gap-1 rounded-[10px] bg-slate-50 px-3.5 py-3">
-      <div className={LABEL_CLASS}>{label}</div>
-      <div className={`font-bold leading-tight tabular-nums ${valueClassName}`}>{value}</div>
-      {children}
-    </div>
+    <span className="flex items-center gap-3.5 text-[13px] text-ink">
+      <span className="flex items-center gap-1.5">
+        <span className={cx('h-2.5 w-3.5', LABEL_FILL.REUSE)} aria-hidden="true" />
+        Reuse
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className={cx('h-2.5 w-3.5', LABEL_FILL.MENTION)} aria-hidden="true" />
+        Mention
+      </span>
+    </span>
   );
 }
 
-function PerYearChart({ perYear }: { perYear: DatasetMetricsYear[] }) {
+/**
+ * Citing papers per year as stacked columns: mentions (orange) over reuse
+ * (blue), each segment labelled with its count when tall enough, a y-axis
+ * with three ticks and one gridline at the midpoint.
+ */
+export function PerYearChart({ perYear }: { perYear: DatasetMetricsYear[] }) {
   const columns = splitBarColumns(perYear, BAR_MAX_PX);
   const grid = { gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` };
   const lastIndex = columns.length - 1;
   const nothingYet = columns.every((col) => col.reuse + col.mentions === 0);
+  const maxCount = Math.max(1, ...perYear.map((y) => y.reuse + y.mentions));
+  const topTick = maxCount % 2 === 0 ? maxCount : maxCount + 1;
+  const plotHeight = (BAR_MAX_PX * topTick) / maxCount;
+
+  if (columns.length === 0) {
+    return <p className="py-6 text-center text-xs text-muted">No dated papers yet.</p>;
+  }
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between">
-        <span className={LABEL_CLASS}>Per year</span>
-        <span className="flex gap-3 text-xs text-slate-600">
-          <span className="flex items-center gap-1.5">
-            <span className={`h-2.5 w-2.5 rounded-sm ${LABEL_FILL.REUSE}`} aria-hidden="true" />
-            Reuse
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className={`h-2.5 w-2.5 rounded-sm ${LABEL_FILL.MENTION}`} aria-hidden="true" />
-            Mention
-          </span>
-        </span>
+    <div
+      role="img"
+      aria-label={`Citing papers per year. ${splitBarSummary(perYear)}.`}
+      className="grid gap-2"
+      style={{ gridTemplateColumns: '28px minmax(0, 1fr)' }}
+    >
+      <div
+        aria-hidden="true"
+        className="flex flex-col items-end justify-between text-xs leading-none text-muted"
+        style={{ height: plotHeight + 4 }}
+      >
+        <span>{topTick}</span>
+        <span>{topTick / 2}</span>
+        <span>0</span>
       </div>
-      {columns.length === 0 ? (
-        <p className="py-6 text-center text-xs text-slate-500">No dated papers yet.</p>
-      ) : (
-        <div role="img" aria-label={`Reuse and mentions per year. ${splitBarSummary(perYear)}.`} className="flex flex-col gap-1">
-          <div className="relative grid h-[88px] items-end gap-1.5 border-b border-slate-300" style={grid}>
-            {nothingYet && (
-              <span className="absolute inset-0 flex items-center justify-center text-xs text-slate-500">
-                No reuse or mentions yet
-              </span>
-            )}
-            {!nothingYet && columns.map((col, i) => (
+      <div className="flex flex-col gap-1.5">
+        <div
+          className="relative grid items-end border-b border-ink-3"
+          style={{
+            ...grid,
+            height: plotHeight,
+            marginTop: 4,
+            backgroundImage: 'linear-gradient(rgb(var(--grid)), rgb(var(--grid)))',
+            backgroundSize: '100% 1px',
+            backgroundPosition: `0 ${plotHeight / 2}px`,
+            backgroundRepeat: 'no-repeat',
+          }}
+        >
+          {nothingYet && (
+            <span className="absolute inset-0 flex items-center justify-center text-xs text-muted">
+              No reuse or mentions yet
+            </span>
+          )}
+          {!nothingYet &&
+            columns.map((col, i) => (
               <div key={col.year} className="flex h-full items-end justify-center">
                 {col.reuse + col.mentions === 0 ? (
                   i === lastIndex && columns.length <= NONE_YET_UP_TO ? (
-                    <span className="pb-1 text-[10px] text-slate-500">none yet</span>
+                    <span className="whitespace-nowrap pb-1.5 text-xs text-muted">none yet</span>
                   ) : null
                 ) : (
-                  <div className="flex w-7 max-w-full flex-col gap-[2px]">
+                  <div className="flex w-10 max-w-full flex-col gap-[2px]">
                     {col.mentions > 0 && (
                       <div
-                        className={`flex items-center justify-center rounded-t-[3px] ${LABEL_FILL.MENTION} text-[10px] font-semibold tabular-nums text-sky-900`}
+                        title={`${col.year}: ${plural(col.mentions, 'mention', 'mentions')}`}
+                        className={cx('flex items-center justify-center text-[13px] font-bold tabular-nums text-navy', LABEL_FILL.MENTION)}
                         style={{ height: col.mentionHeight }}
                       >
                         {col.showMentionCount ? col.mentions : null}
@@ -89,9 +104,8 @@ function PerYearChart({ perYear }: { perYear: DatasetMetricsYear[] }) {
                     )}
                     {col.reuse > 0 && (
                       <div
-                        className={`flex items-center justify-center ${LABEL_FILL.REUSE} text-[10px] font-semibold tabular-nums text-white ${
-                          col.mentions > 0 ? '' : 'rounded-t-[3px]'
-                        }`}
+                        title={`${col.year}: ${plural(col.reuse, 'reuse', 'reuses')}`}
+                        className={cx('flex items-center justify-center text-[13px] font-bold tabular-nums text-white', LABEL_FILL.REUSE)}
                         style={{ height: col.reuseHeight }}
                       >
                         {col.showReuseCount ? col.reuse : null}
@@ -101,14 +115,13 @@ function PerYearChart({ perYear }: { perYear: DatasetMetricsYear[] }) {
                 )}
               </div>
             ))}
-          </div>
-          <div className="grid gap-1.5 text-center text-[11px] tabular-nums text-slate-600" style={grid}>
-            {columns.map((col) => (
-              <span key={col.year}>{col.label}</span>
-            ))}
-          </div>
         </div>
-      )}
+        <div aria-hidden="true" className="grid text-center text-[13px] tabular-nums text-ink-2" style={grid}>
+          {columns.map((col) => (
+            <span key={col.year}>{col.label}</span>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -119,9 +132,10 @@ const HOW_WE_COUNT_ID = 'dataset-how-we-count';
 const HOW_WE_COUNT_CLOSE_MS = 150;
 
 /**
- * "How we count" with an info bubble: the bubble opens the definitions on
- * hover, click or tap (Enter from the keyboard), and they close when the
- * pointer leaves, on a click outside, Escape, or focus moving elsewhere.
+ * "How we count" with an ⓘ bubble: the bubble (not the words) opens the
+ * definitions on hover, click or tap (Enter from the keyboard); they close
+ * when the pointer leaves, on a click outside, Escape, or focus moving
+ * elsewhere.
  */
 function HowWeCount() {
   const [open, setOpen] = useState(false);
@@ -162,7 +176,7 @@ function HowWeCount() {
 
   return (
     <div className="flex items-center gap-0.5">
-      <span className="text-[13px] text-slate-500">How we count</span>
+      <span className="text-[13.5px] text-muted">How we count</span>
       <div
         ref={wrap}
         className="relative"
@@ -182,7 +196,7 @@ function HowWeCount() {
           aria-label="How we count"
           aria-expanded={open}
           aria-controls={HOW_WE_COUNT_ID}
-          className="flex h-7 w-7 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          className="flex h-7 w-7 items-center justify-center rounded-full text-muted transition-colors hover:bg-panel hover:text-link"
         >
           <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
             <path
@@ -199,31 +213,31 @@ function HowWeCount() {
             role="region"
             aria-label="How we count"
             tabIndex={-1}
-            className="absolute right-0 top-full z-20 mt-2 w-[min(320px,calc(100vw-4rem))] rounded-xl border border-slate-200 bg-white p-4 text-left shadow-lg outline-none"
+            className="absolute right-0 top-full z-20 mt-2 w-[min(340px,calc(100vw-4rem))] rounded-md border border-line bg-surface p-4 text-left shadow-pop outline-none"
           >
-            <dl className="flex flex-col gap-2 text-xs leading-snug text-slate-600">
+            <dl className="m-0 flex flex-col gap-2 text-xs leading-snug text-ink-2">
               <div>
-                <dt className="font-semibold text-slate-900">Reuse</dt>
-                <dd>The citing paper's full text shows it used this dataset's data.</dd>
+                <dt className="font-bold text-ink">Reuse</dt>
+                <dd className="m-0">The citing paper's full text shows it used this dataset's data.</dd>
               </div>
               <div>
-                <dt className="font-semibold text-slate-900">Independent</dt>
-                <dd>
+                <dt className="font-bold text-ink">Independent</dt>
+                <dd className="m-0">
                   None of its authors are authors of the dataset or its papers, and the classifier didn't judge it the
                   dataset's own lab.
                 </dd>
               </div>
               <div>
-                <dt className="font-semibold text-slate-900">Mention</dt>
-                <dd>Cites the dataset or its paper without using the data.</dd>
+                <dt className="font-bold text-ink">Mention</dt>
+                <dd className="m-0">Cites the dataset or its paper without using the data.</dd>
               </div>
               <div>
-                <dt className="font-semibold text-slate-900">Per year</dt>
-                <dd>By the citing paper's publication year, from the dataset's release to now.</dd>
+                <dt className="font-bold text-ink">Per year</dt>
+                <dd className="m-0">By the citing paper's publication year, from the dataset's release to now.</dd>
               </div>
               <div>
-                <dt className="font-semibold text-slate-900">Coverage</dt>
-                <dd>
+                <dt className="font-bold text-ink">Coverage</dt>
+                <dd className="m-0">
                   Papers are labelled from their full text. Citing papers without full text, or not reached yet, aren't
                   counted until they are.
                 </dd>
@@ -245,34 +259,31 @@ function ImpactContent({ metrics }: { metrics: TrackedDatasetMetrics }) {
   const byline = last ? paperByline(last.first_author, last.author_count) : null;
   const published =
     metrics.published_precision === 'year' ? metrics.published?.slice(0, 4) : formatMonthYear(metrics.published);
+  const lastDate = last ? formatMonthYear(last.first_date ?? last.publication_date) : null;
 
   return (
     <>
-      <div className="flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Dataset impact</h2>
-        <HowWeCount />
-      </div>
-
-      <div className="grid grid-cols-2 gap-2.5">
-        <Stat label="Reuse" value={reuse} valueClassName={`text-[28px] ${reuse > 0 ? 'text-emerald-700' : 'text-slate-600'}`}>
-          <div className="text-xs text-slate-600">{reuse === 1 ? 'paper used the data' : 'papers used the data'}</div>
-        </Stat>
-        <Stat
+      <SubTitle letter="A">Reuse Metrics</SubTitle>
+      <StatGrid columns={2}>
+        <StatTile first label="Reuse" value={reuse} valueClassName={reuse > 0 ? 'text-link' : 'text-muted'}>
+          <span className="text-xs leading-snug text-muted">{reuse === 1 ? 'paper used the data' : 'papers used the data'}</span>
+        </StatTile>
+        <StatTile
           label="Independent"
           value={
             reuse > 0 ? (
-              <>
-                {metrics.independent_reuse_count}{' '}
-                <span className="text-[13px] font-medium text-slate-500">of {reuse}</span>
-              </>
+              <span className="flex items-baseline gap-1.5">
+                {metrics.independent_reuse_count}
+                <span className="text-[13px] font-normal text-muted">of {reuse}</span>
+              </span>
             ) : (
-              '–'
+              <span className="text-muted">–</span>
             )
           }
-          valueClassName={`text-[28px] ${reuse > 0 ? 'text-slate-900' : 'text-slate-600'}`}
         >
-          <div
-            className="mt-1.5 flex h-1.5 gap-[2px]"
+          <span
+            aria-hidden="true"
+            className="mt-1 flex gap-[2px]"
             title={
               reuse > 0
                 ? `${plural(metrics.independent_reuse_count, 'independent reuse', 'independent reuses')}, ${metrics.same_lab_reuse_count} by the dataset's lab`
@@ -281,97 +292,111 @@ function ImpactContent({ metrics }: { metrics: TrackedDatasetMetrics }) {
           >
             {segments.length ? (
               segments.map((s, i) => (
-                <div
-                  key={`${s.kind}-${i}`}
-                  className={`rounded-sm ${s.kind === 'independent' ? 'bg-emerald-700' : 'bg-emerald-700/30'}`}
-                  style={{ flexGrow: s.weight }}
-                />
+                <span key={`${s.kind}-${i}`} className={cx('h-1.5', s.kind === 'independent' ? 'bg-reuse' : 'bg-reuse-soft')} style={{ flexGrow: s.weight }} />
               ))
             ) : (
-              <div className="flex-grow rounded-sm bg-slate-200" />
+              <span className="h-1.5 flex-grow bg-line-2" />
             )}
-          </div>
+          </span>
+          <span className="text-xs text-muted">different lab</span>
           {reuse > 0 && <span className="sr-only">{metrics.same_lab_reuse_count} by the dataset's lab.</span>}
-        </Stat>
-        <Stat label="Mentions" value={metrics.mention_count.toLocaleString('en-US')}>
-          <div className="text-xs text-slate-600">cited without reuse</div>
-        </Stat>
-        <Stat
+        </StatTile>
+        <StatTile first row2 label="Mentions" value={metrics.mention_count.toLocaleString('en-US')}>
+          <span className="text-xs leading-snug text-muted">cited without reuse</span>
+        </StatTile>
+        <StatTile
+          row2
           label="Last reused"
-          value={last ? formatMonthYear(last.first_date ?? last.publication_date) ?? 'Date unknown' : 'Not yet'}
-          valueClassName={last?.first_date ?? last?.publication_date ? 'text-[26px] text-slate-900' : 'text-[22px] text-slate-600'}
+          value={last ? lastDate ?? 'Date unknown' : 'Not yet'}
+          valueClassName={cx('!text-[22px] !leading-[1.45]', last && lastDate ? '' : 'text-muted')}
         >
-          <div className="truncate text-xs text-slate-600">
+          <span className="truncate text-[12.5px]">
             {last ? (
-              <a
-                href={doiUrl(last.doi)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-700 hover:text-blue-900 hover:underline"
-                title={last.title ?? undefined}
-              >
+              <a href={doiUrl(last.doi)} target="_blank" rel="noopener noreferrer" title={last.title ?? undefined}>
                 {byline ?? 'View paper'}
               </a>
             ) : published ? (
-              `published ${published}`
+              <span className="text-muted">published {published}</span>
             ) : null}
-          </div>
-        </Stat>
-      </div>
+          </span>
+        </StatTile>
+      </StatGrid>
 
-      <div className="flex flex-col gap-1">
-        <PerYearChart perYear={metrics.per_year} />
-        {undated > 0 && (
-          <p className="text-[11px] text-slate-500">Not in the chart: {plural(undated, 'undated paper', 'undated papers')}.</p>
-        )}
-      </div>
-
-      <p className={`text-xs ${coverage.incomplete ? 'text-amber-700' : 'text-slate-500'}`}>{coverage.text}</p>
+      <SubTitle letter="B" aside={<Legend />}>
+        Citing Papers per Year
+      </SubTitle>
+      <PerYearChart perYear={metrics.per_year} />
+      <Note className={coverage.incomplete ? 'text-warn-ink' : undefined}>
+        {coverage.text}
+        {undated > 0 && ` Not in the chart: ${plural(undated, 'undated paper', 'undated papers')}.`}
+        {' '}A paper counts once, by publication year.
+      </Note>
     </>
   );
 }
 
 /**
- * The dataset page's square "Dataset impact" card: reuse, independent reuse,
- * mentions, last reuse, a per-year split bar chart and how many citing papers
- * the numbers rest on.
+ * The dataset page's "Dataset Impact" card: reuse, independent reuse,
+ * mentions and last reuse as stat tiles, a per-year split column chart and
+ * how many citing papers the numbers rest on.
  */
 export function DatasetImpactCard({
   metrics,
   loading = false,
   error = null,
+  number = 1,
+  untrackedNote,
 }: {
   metrics: TrackedDatasetMetrics | null;
   loading?: boolean;
   error?: string | null;
+  number?: number;
+  /** Shown instead of the metrics when the archive has no paper mapping. */
+  untrackedNote?: string;
 }) {
+  const title = (
+    <CardTitle number={number} id="impact-h" aside={metrics ? <HowWeCount /> : undefined}>
+      Dataset Impact
+    </CardTitle>
+  );
   if (metrics) {
     return (
-      <section aria-label="Dataset impact" className={CARD_CLASS}>
+      <Card aria-labelledby="impact-h">
+        {title}
         <ImpactContent metrics={metrics} />
-      </section>
+      </Card>
     );
   }
   if (error) {
     return (
-      <section aria-label="Dataset impact" className="rounded-2xl border border-slate-200 bg-white p-[22px] shadow-xl">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Dataset impact</h2>
-        <p className="mt-2 text-sm text-slate-600">Impact metrics couldn't be loaded.</p>
-        <p className="mt-1 text-xs text-slate-500">{error}</p>
-      </section>
+      <Card aria-labelledby="impact-h">
+        {title}
+        <p className="m-0 text-sm text-ink-2">Impact metrics couldn't be loaded.</p>
+        <p className="m-0 text-xs text-muted">{error}</p>
+      </Card>
     );
   }
-  if (!loading) return null;
+  if (!loading) {
+    return (
+      <Card aria-labelledby="impact-h">
+        {title}
+        <p className="m-0 text-sm text-ink-2">{untrackedNote ?? 'No impact metrics for this dataset yet.'}</p>
+      </Card>
+    );
+  }
   return (
-    <section aria-label="Dataset impact" aria-busy="true" className={CARD_CLASS}>
-      <div className="h-3 w-28 animate-pulse rounded bg-slate-200" />
-      <div className="grid grid-cols-2 gap-2.5">
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="h-[92px] animate-pulse rounded-[10px] bg-slate-100" />
-        ))}
-      </div>
-      <div className="h-[120px] animate-pulse rounded-[10px] bg-slate-100" />
-      <div className="h-3 w-3/4 animate-pulse rounded bg-slate-200" />
-    </section>
+    <Card aria-labelledby="impact-h" aria-busy="true">
+      {title}
+      <SubTitle letter="A">Reuse Metrics</SubTitle>
+      <StatGrid columns={2}>
+        <StatTile first label="Reuse" loading />
+        <StatTile label="Independent" loading />
+        <StatTile first row2 label="Mentions" loading />
+        <StatTile row2 label="Last reused" loading />
+      </StatGrid>
+      <SubTitle letter="B">Citing Papers per Year</SubTitle>
+      <div className="h-[120px] animate-skeleton rounded bg-panel motion-reduce:animate-none" />
+      <div className="h-3 w-3/4 animate-skeleton rounded bg-line-2 motion-reduce:animate-none" />
+    </Card>
   );
 }

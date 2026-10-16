@@ -20,6 +20,9 @@ function inferApiBaseUrl(): string {
 
 const API_BASE_URL = inferApiBaseUrl();
 
+/** The archives in the order every page lists them: filters, count tiles, intros and the footer. */
+export const ARCHIVE_SOURCES = ['DANDI', 'OpenNeuro', 'CRCNS', 'SPARC'] as const;
+
 export interface Dataset {
   source: 'CRCNS' | 'DANDI' | 'OpenNeuro' | 'SPARC';
   id: string;

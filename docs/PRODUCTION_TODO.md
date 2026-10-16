@@ -334,6 +334,13 @@ e2-standard-2.
       (`frontend_min_instances = 1`), so visitors skip the compile. Because CPU
       isn't throttled, it bills as always-on (~$50/mo). Set it back to 0 once
       this item is done.
+    - Re-measured 2026-10-15: staging serves `/static/js/bundle.js`, 3.4 MB
+      uncompressed, including `react-dom.development` and the
+      webpack-dev-server client. The same code's `CI=true` production build is
+      135 kB gzipped (PR #106). Nate's review of #106 called this the biggest
+      frontend performance lever.
+    - While doing it, load the Paper Mapping route with `React.lazy`, so the
+      internal dashboard isn't in every visitor's bundle.
 18. **API cold starts and latency.**
     - Done 2026-10-01: one API instance stays warm (`api_min_instances = 1`,
       a few dollars a month), so the first dashboard request no longer waits
@@ -440,6 +447,69 @@ e2-standard-2.
       review before relying on them in the impact metrics; add the confirmed
       pairs to the known-pairs file and the wrong ones to the benchmark's hard
       cases (see item 21).
+23. **Exact reuse breakdown and citation totals from the API.** Follow-up to
+    PR #106.
+    - The dataset detail endpoint returns at most 250 citation rows
+      (`LIMIT 250` in `api/main.py`), one per primary paper and citing paper
+      pair. On DANDI 000070, 250 rows held 185 of its 553 citing papers.
+    - The dataset page builds How It Is Reused (reuse type × lab) from those
+      rows, but the Impact tiles come from `/metrics`, which reads every
+      edge. For a dataset with more than 250 reuse links the two disagree.
+      The page shows "Showing N of M reuse papers" as a stopgap and
+      hard-codes the limit (`CITATION_LINKS_LOADED`).
+    - Return `citations_total` from the detail endpoint, and the reuse-type ×
+      lab breakdown (different lab, same lab, unknown; once per citing work)
+      from `/metrics`. Drive the card from that, and drop the hard-coded 250.
+24. **Home search: debounce and cancel requests.** Already on `main`; raised
+    in the PR #106 review.
+    - Typing "hippocampus" one character at a time sends 23 requests (12 to
+      `/api/datasets`, 11 to `/api/datasets/stats`), and none can be
+      cancelled. Starting from page 2, a follow-up effect adds one more.
+    - Debounce the value that feeds the queries (~250 ms), pass an
+      `AbortController` signal through `fetchDatasets` and
+      `fetchDatasetStats`, and reset the page in the same state update as the
+      query change.
+    - As archives and visitors grow, this becomes the home page's main load
+      on the API.
+25. **Link author names on the dataset page (ORCID or OpenAlex).**
+    - **Paper authors:** `papers.author_ids` and `papers.author_orcids`
+      (23,279 and 23,044 papers locally) are deduplicated sets kept for the
+      same-lab check, not lists in author order. 3,563 papers have a
+      different number of names and ids, so names can't be linked by
+      position.
+    - Store each author as an ordered (name, OpenAlex id, ORCID) entry in the
+      existing fill task (`utils/paper_author_ids.py`), then re-run
+      `paper_author_ids_backfill` locally and on staging.
+    - **Dataset authors:** ingestion keeps only name and roles, although
+      DANDI's contributor metadata carries ORCIDs (check SPARC's too). Keep
+      them.
+    - The API returns the links; the page links a name to its ORCID when
+      known, otherwise to the OpenAlex author page.
+26. **Repair garbled characters in stored author names.**
+    - Some names are stored as UTF-8 read as Windows-1252, e.g.
+      "Daniel J. Oâ€™Shea" for "O’Shea" on DANDI 000070's LFADS paper. It is
+      on `main` too, so it's a data problem, not a display one.
+    - Find the writer that introduces it, fix it at write time with tests,
+      and repair existing rows with a script that runs as a dry run first.
+    - In progress since 2026-10-15 in a separate session; not reviewed yet.
+27. **The poster's archive-wide sections on the dataset page.**
+    - The SfN 2026 dataset-card poster has two sections that compare a
+      dataset with its archive:
+      - **Reuse in Context:** where this dataset sits among DANDI datasets at
+        least three years old by number of different-lab reuse papers, and
+        its different-lab reuse by age three against its cohort's mean.
+      - **How DANDI Data Are Reused:** reuse types for different-lab and
+        same-lab reuse across the whole archive.
+    - PR #106 left them out because no endpoint returns archive-wide figures.
+    - Needs an archive-level aggregation (per archive and release-year
+      cohort), cached or precomputed since it reads every reuse label. Also
+      decide how cohorts work for archives with year-only dates (CRCNS).
+28. **Shorter dataset header on phones.** Minor.
+    - PR #106 caps the header at 12 authors and the first 3 names of 6
+      roles. On DANDI 000026 (183 role names) it is still 678 px on a
+      375×667 phone, about one screen, because each role wraps to two lines.
+    - Show fewer roles below `md` (for example 3), or keep roles behind the
+      "Show all people" button on phones.
 
 ## Projected cost
 

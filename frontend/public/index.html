@@ -3,17 +3,26 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#000000" />
+    <meta name="theme-color" content="#021242" />
     <meta
       name="description"
-      content="Dataset Reuse Hub"
+      content="NeuroD3 Dataset Reuse Hub: neuroscience datasets across archives, with the papers that reuse them"
     />
-    <title>Dataset Reuse Hub</title>
+    <title>NeuroD3 · Dataset Reuse Hub</title>
+    <!--
+      Inline on purpose: it must run before the first paint. If a Content-Security-Policy
+      is added, allow this script by its 'sha256-...' hash in script-src, or dark mode
+      will flash light on every load.
+    -->
+    <script>
+      // Apply the saved theme before the first paint (src/utils/theme.ts owns the key).
+      try {
+        if (localStorage.getItem('d3-theme') === 'dark') document.documentElement.classList.add('dark');
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
     <div id="root"></div>
   </body>
 </html>
-
-
