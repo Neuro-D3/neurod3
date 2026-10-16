@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import type { DatasetDetailCitation, TrackedDatasetMetrics } from '../services/api';
 import { LABEL_FILL, confidenceShort, modalityLabel, primaryQuote, reuseTypeLabel, reusedModalities } from '../utils/classification';
 import { histogram, labSplit, paperLab, rangeLabel, roleShares, yearOf } from '../utils/datasetCard';
@@ -273,19 +273,18 @@ function PaperColumns({ papers, sameLabByDoi }: { papers: DatasetPaperItem[]; sa
 export function DatasetPaperList({
   items,
   metrics,
+  sameLabByDoi,
   number,
 }: {
   items: DatasetPaperItem[];
   metrics: TrackedDatasetMetrics | null;
+  /** The metrics' lab call per DOI, built once by the page so every card agrees. */
+  sameLabByDoi: Map<string, boolean>;
   number?: number;
 }) {
   const counts = countByLabel(items);
   const [filter, setFilter] = useState<PaperLabel | 'ALL'>('ALL');
   const shown = filter === 'ALL' ? items : items.filter((p) => p.label === filter);
-  const sameLabByDoi = useMemo(
-    () => new Map((metrics?.reuse_papers ?? []).map((p) => [p.doi, p.same_lab])),
-    [metrics],
-  );
   // The detail endpoint returns at most 250 citations; say so when the metrics count more.
   const totals: Partial<Record<PaperLabel, number>> = metrics
     ? { REUSE: metrics.reuse_count, MENTION: metrics.mention_count }

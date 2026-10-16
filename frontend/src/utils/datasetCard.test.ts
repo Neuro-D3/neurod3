@@ -118,13 +118,20 @@ describe('reuseTypeBreakdown', () => {
       new Map([['c', false]]),
     );
     expect(rows).toEqual([
-      { key: 'TOOL_DEMO', label: 'Tool demo', independent: 1, sameLab: 1 },
-      { key: 'BENCHMARK', label: 'Benchmark', independent: 1, sameLab: 0 },
+      // 'a' has no metrics call and the classifier only said "not same lab": unknown, not independent.
+      { key: 'TOOL_DEMO', label: 'Tool demo', independent: 0, sameLab: 1, unknown: 1 },
+      { key: 'BENCHMARK', label: 'Benchmark', independent: 1, sameLab: 0, unknown: 0 },
     ]);
   });
   it('prefers the metrics same-lab call over the classifier', () => {
     const rows = reuseTypeBreakdown([paper('a', 'REUSE', 'SIMULATION', false)], new Map([['a', true]]));
-    expect(rows[0]).toMatchObject({ independent: 0, sameLab: 1 });
+    expect(rows[0]).toMatchObject({ independent: 0, sameLab: 1, unknown: 0 });
+  });
+  it('agrees with the paper list before /metrics answers', () => {
+    const papers = [paper('a', 'REUSE', 'SIMULATION', false), paper('b', 'REUSE', 'SIMULATION')];
+    const [row] = reuseTypeBreakdown(papers, new Map());
+    const split = labSplit(papers, new Map());
+    expect({ independent: row.independent, sameLab: row.sameLab, unknown: row.unknown }).toEqual(split);
   });
 });
 

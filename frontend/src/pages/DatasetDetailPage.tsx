@@ -392,9 +392,15 @@ function NotesCard({ points, notes }: { points: string[]; notes: string[] }) {
 
 function ReuseTypesCard({ papers, sameLabByDoi, number }: { papers: DatasetPaperItem[]; sameLabByDoi: Map<string, boolean>; number: number }) {
   const rows = reuseTypeBreakdown(papers, sameLabByDoi);
-  const max = Math.max(1, ...rows.map((r) => Math.max(r.independent, r.sameLab)));
+  const max = Math.max(1, ...rows.map((r) => Math.max(r.independent, r.sameLab, r.unknown)));
   const independent = rows.reduce((n, r) => n + r.independent, 0);
   const sameLab = rows.reduce((n, r) => n + r.sameLab, 0);
+  const unknown = rows.reduce((n, r) => n + r.unknown, 0);
+  const bars: Array<{ key: 'independent' | 'sameLab' | 'unknown'; fill: string }> = [
+    { key: 'independent', fill: 'bg-reuse' },
+    { key: 'sameLab', fill: 'bg-reuse-soft' },
+    ...(unknown > 0 ? [{ key: 'unknown' as const, fill: 'bg-bar' }] : []),
+  ];
   return (
     <Card aria-labelledby="how-h">
       <CardTitle number={number} id="how-h">
@@ -409,24 +415,30 @@ function ReuseTypesCard({ papers, sameLabByDoi, number }: { papers: DatasetPaper
           <span className="h-2.5 w-3.5 bg-reuse-soft" aria-hidden="true" />
           same lab (n = {sameLab})
         </span>
+        {unknown > 0 && (
+          <span className="flex items-center gap-1.5" title="No lab call yet; not counted as independent">
+            <span className="h-2.5 w-3.5 bg-bar" aria-hidden="true" />
+            lab unknown (n = {unknown})
+          </span>
+        )}
       </span>
       <div
         role="img"
-        aria-label={`Reuse papers by type, different lab then same lab: ${rows.map((r) => `${r.label} ${r.independent} and ${r.sameLab}`).join(', ')}.`}
+        aria-label={`Reuse papers by type, different lab then same lab${unknown ? ' then lab unknown' : ''}: ${rows
+          .map((r) => `${r.label} ${r.independent} and ${r.sameLab}${unknown ? ` and ${r.unknown}` : ''}`)
+          .join(', ')}.`}
         className="flex flex-col gap-[7px]"
       >
         {rows.map((r) => (
           <div key={r.key} className="grid items-center gap-2" style={{ gridTemplateColumns: '118px minmax(0, 1fr)' }}>
             <span className="text-right text-[12.5px] text-ink-2">{r.label}</span>
             <span className="flex flex-col gap-[2px]">
-              <span className="flex items-center gap-1">
-                <span className="h-[9px] bg-reuse" style={{ width: `${(100 * r.independent) / max}%` }} />
-                <span className="text-[11px] tabular-nums text-ink-3">{r.independent}</span>
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="h-[9px] bg-reuse-soft" style={{ width: `${(100 * r.sameLab) / max}%` }} />
-                <span className="text-[11px] tabular-nums text-ink-3">{r.sameLab}</span>
-              </span>
+              {bars.map((b) => (
+                <span key={b.key} className="flex items-center gap-1">
+                  <span className={cx('h-[9px]', b.fill)} style={{ width: `${(100 * r[b.key]) / max}%` }} />
+                  <span className="text-[11px] tabular-nums text-ink-3">{r[b.key]}</span>
+                </span>
+              ))}
             </span>
           </div>
         ))}
@@ -571,7 +583,7 @@ export default function DatasetDetailPage() {
             error={metricsError}
             untrackedNote={`Reuse metrics are not tracked for ${ds.source} yet: no citing papers have been mapped for this archive.`}
           />
-          <DatasetPaperList number={2} items={papers} metrics={trackedMetrics} />
+          <DatasetPaperList number={2} items={papers} metrics={trackedMetrics} sameLabByDoi={sameLabByDoi} />
         </div>
         <div className="flex min-w-0 flex-col gap-6 md:col-span-2 md:grid md:grid-cols-2 md:gap-6 xl:col-span-1 xl:flex">
           {hasReuse && <ReuseTypesCard papers={papers} sameLabByDoi={sameLabByDoi} number={3} />}

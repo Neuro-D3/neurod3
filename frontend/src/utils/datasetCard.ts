@@ -99,12 +99,14 @@ export interface ReuseTypeRow {
   label: string;
   independent: number;
   sameLab: number;
+  /** No lab call yet (e.g. before /metrics answers): never counted as independent. */
+  unknown: number;
 }
 
 /**
- * How this dataset's reuse papers used it, by reuse type, split by lab
- * (the metrics' same-lab call when loaded, else the classifier's). Only
- * labelled reuse citations count; one per paper.
+ * How this dataset's reuse papers used it, by reuse type, split by lab with
+ * the same rule as the paper list (paperLab). Only labelled reuse citations
+ * count; one per paper.
  */
 export function reuseTypeBreakdown(
   papers: DatasetPaperItem[],
@@ -115,15 +117,15 @@ export function reuseTypeBreakdown(
     if (p.label !== 'REUSE' || !p.citation) return;
     const key = (p.citation.reuse_type || '').trim().toUpperCase() || 'UNKNOWN';
     const label = key === 'UNKNOWN' ? 'Not classified' : reuseTypeLabel(p.citation.reuse_type, null) ?? key;
-    const row = rows.get(key) ?? { key, label, independent: 0, sameLab: 0 };
-    const sameLab = sameLabByDoi.get(p.doi) ?? p.citation.same_lab === true;
-    if (sameLab) row.sameLab += 1;
-    else row.independent += 1;
+    const row = rows.get(key) ?? { key, label, independent: 0, sameLab: 0, unknown: 0 };
+    const lab = paperLab(p, sameLabByDoi);
+    if (lab === true) row.sameLab += 1;
+    else if (lab === false) row.independent += 1;
+    else row.unknown += 1;
     rows.set(key, row);
   });
-  return Array.from(rows.values()).sort(
-    (a, b) => b.independent + b.sameLab - (a.independent + a.sameLab) || a.label.localeCompare(b.label),
-  );
+  const total = (r: ReuseTypeRow) => r.independent + r.sameLab + r.unknown;
+  return Array.from(rows.values()).sort((a, b) => total(b) - total(a) || a.label.localeCompare(b.label));
 }
 
 /**
