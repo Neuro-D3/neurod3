@@ -25,11 +25,13 @@ export function yearOf(date: string | null | undefined): number | null {
  * client; otherwise null and the page shows the archive link instead.
  */
 export function downloadCommand(source: string, datasetId: string): string | null {
+  // The command is meant to be pasted into a shell, so it is only built for an id
+  // in the archive's own format; anything else falls back to the dataset link.
   switch (source) {
     case 'DANDI':
-      return `dandi download DANDI:${datasetId}`;
+      return /^\d{6}$/.test(datasetId) ? `dandi download DANDI:${datasetId}` : null;
     case 'OpenNeuro':
-      return `openneuro-py download --dataset ${datasetId}`;
+      return /^ds\d{6}$/.test(datasetId) ? `openneuro-py download --dataset ${datasetId}` : null;
     default:
       return null;
   }

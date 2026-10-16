@@ -83,6 +83,12 @@ describe('downloadCommand', () => {
     expect(downloadCommand('OpenNeuro', 'ds000001')).toBe('openneuro-py download --dataset ds000001');
     expect(downloadCommand('CRCNS', 'pvc-1')).toBeNull();
   });
+  it('builds no shell command for an id outside the archive format', () => {
+    expect(downloadCommand('DANDI', '000070; rm -rf ~')).toBeNull();
+    expect(downloadCommand('DANDI', '$(id)')).toBeNull();
+    expect(downloadCommand('OpenNeuro', 'ds000001\necho hi')).toBeNull();
+    expect(downloadCommand('OpenNeuro', '000001')).toBeNull();
+  });
 });
 
 describe('contributorRoles', () => {
