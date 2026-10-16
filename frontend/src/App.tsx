@@ -85,8 +85,8 @@ function MastheadNav() {
     );
 
   return (
-    <header className="sticky top-0 z-40 border-b border-navy-line bg-navy text-white">
-      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-4 px-4 sm:gap-6 sm:px-6 lg:px-8">
+    <header className="sticky top-0 z-40 h-[var(--masthead-h)] border-b border-navy-line bg-navy text-white">
+      <div className="mx-auto flex h-full max-w-[1440px] items-center justify-between gap-4 px-4 sm:gap-6 sm:px-6 lg:px-8">
         <Link to="/" className="flex items-baseline gap-3 py-2.5 no-underline hover:no-underline">
           <span className="text-lg font-bold tracking-tight text-white">NeuroD3</span>
           <span className="hidden font-mono text-xs uppercase tracking-[0.08em] text-navy-muted sm:inline">

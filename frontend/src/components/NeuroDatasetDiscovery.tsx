@@ -483,7 +483,7 @@ export default function NeuroDatasetDiscovery() {
       </section>
 
       {/* Filter band */}
-      <div className="sticky top-[49px] z-30 border-b border-line bg-surface">
+      <div className="border-b border-line bg-surface md:sticky md:top-[var(--masthead-h)] md:z-30">
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-5 gap-y-2.5 px-4 py-2.5 sm:px-6 lg:px-8">
           <div className="flex flex-wrap items-center gap-1.5">
             <Eyebrow className="mr-0.5">Source</Eyebrow>

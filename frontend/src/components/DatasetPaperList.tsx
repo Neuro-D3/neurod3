@@ -294,7 +294,7 @@ export function DatasetPaperList({
   );
 
   return (
-    <Card id="papers" aria-labelledby="dataset-papers-title" className="scroll-mt-16">
+    <Card id="papers" aria-labelledby="dataset-papers-title" className="scroll-mt-[calc(var(--masthead-h)_+_1rem)]">
       <CardTitle number={number} id="dataset-papers-title" aside={<span className="text-muted">{plural(items.length, 'paper', 'papers')}</span>}>
         Papers
       </CardTitle>

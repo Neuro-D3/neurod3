@@ -9,6 +9,8 @@
  */
 @layer base {
   :root {
+    /* The pinned top bar's height (App.tsx); the filter bars pin just below it. */
+    --masthead-h: calc(3rem + 1px);
     color-scheme: light;
     --ink: 22 32 42;
     --ink-2: 38 49 61;
