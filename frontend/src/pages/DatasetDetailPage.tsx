@@ -29,6 +29,7 @@ import {
   citationText,
   contributorRoles,
   downloadCommand,
+  peopleView,
   qualifiedId,
   reuseTypeBreakdown,
   takeaways,
@@ -63,9 +64,6 @@ function decodedDatasetIdParam(raw: string | undefined): string {
 function formatModality(label: string): string {
   return /[A-Z]{2,}/.test(label) ? label : label.toLowerCase();
 }
-
-/** How many authors the masthead lists before "and N others". */
-const AUTHORS_SHOWN = 12;
 
 /* ───────────────────────── Masthead ───────────────────────── */
 
@@ -104,11 +102,8 @@ function Masthead({
   routeId: string;
 }) {
   const ds = data.dataset;
-  const [allAuthors, setAllAuthors] = useState(false);
-  const roles = contributorRoles(ds.contributors);
-  const authors = ds.authors ?? [];
-  const shownAuthors = allAuthors ? authors : authors.slice(0, AUTHORS_SHOWN);
-  const hiddenAuthors = authors.length - shownAuthors.length;
+  const [allPeople, setAllPeople] = useState(false);
+  const people = peopleView(ds.authors ?? [], contributorRoles(ds.contributors), allPeople);
   const published = formatPublishedDate(ds.created_at, ds.created_at_precision);
   const updated = formatDay(ds.updated_at);
   const licenses = licenseLinks(ds.license);
@@ -126,33 +121,31 @@ function Masthead({
             <span className="font-mono text-xs uppercase tracking-[0.08em] text-navy-muted">Dataset card</span>
           </span>
           <h1 className="m-0 break-words text-[30px] font-bold leading-[1.1] tracking-[-0.005em] sm:text-[38px] lg:text-[46px]">{ds.title}</h1>
-          {authors.length > 0 && (
+          {people.authors.length > 0 && (
             <p className="m-0 mt-0.5 text-[17px] leading-[1.4] text-white sm:text-[19px]">
-              {shownAuthors.join(', ')}
-              {hiddenAuthors > 0 && (
-                <>
-                  {' '}
-                  <button type="button" onClick={() => setAllAuthors(true)} aria-expanded={false} className={toggleClass}>
-                    and {plural(hiddenAuthors, 'other', 'others')}
-                  </button>
-                </>
-              )}
-              {allAuthors && authors.length > AUTHORS_SHOWN && (
-                <>
-                  {' '}
-                  <button type="button" onClick={() => setAllAuthors(false)} aria-expanded className={cx(toggleClass, 'text-sm')}>
-                    Show fewer
-                  </button>
-                </>
-              )}
+              {people.authors.join(', ')}
+              {people.hiddenAuthors > 0 && ` and ${plural(people.hiddenAuthors, 'other', 'others')}`}
             </p>
           )}
-          <div className="flex flex-wrap gap-x-6 gap-y-1.5 text-sm text-navy-sub">
-            {roles.map((r) => (
+          <div id="dataset-people" className="flex flex-wrap gap-x-6 gap-y-1.5 text-sm text-navy-sub">
+            {people.roles.map((r) => (
               <span key={r.role}>
                 {r.role}: {r.names.join(', ')}
+                {r.more > 0 && ` +${r.more}`}
               </span>
             ))}
+            {people.hiddenRoles > 0 && <span>{plural(people.hiddenRoles, 'more role', 'more roles')}</span>}
+            {(people.truncated || allPeople) && (
+              <button
+                type="button"
+                onClick={() => setAllPeople((v) => !v)}
+                aria-expanded={allPeople}
+                aria-controls="dataset-people"
+                className={toggleClass}
+              >
+                {allPeople ? 'Show fewer people' : `Show all ${people.people.toLocaleString('en-US')} people`}
+              </button>
+            )}
             {ds.num_subjects != null && ds.num_subjects > 0 && (
               <span>
                 {ds.num_subjects.toLocaleString('en-US')} {ds.source === 'OpenNeuro' ? 'participants' : 'subjects'}

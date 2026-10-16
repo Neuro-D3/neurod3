@@ -97,6 +97,53 @@ export function contributorRoles(
   return Array.from(byRole.entries()).map(([role, names]) => ({ role, names }));
 }
 
+/** How much of the people list the masthead shows before "Show all people". */
+export const PEOPLE_LIMITS = { authors: 12, namesPerRole: 3, roles: 6 } as const;
+
+export interface PeopleView {
+  authors: string[];
+  /** Authors past the limit, for "and N others". */
+  hiddenAuthors: number;
+  /** Each shown role with its shown names and how many more it has. */
+  roles: Array<{ role: string; names: string[]; more: number }>;
+  /** Roles past the limit. */
+  hiddenRoles: number;
+  /** Anything hidden at all, so the page knows to offer "Show all". */
+  truncated: boolean;
+  /** Distinct people across authors and contributors. */
+  people: number;
+}
+
+/**
+ * The masthead's people, cut to PEOPLE_LIMITS unless `all`: the first 12
+ * authors, and the first 3 names of each of the first 6 roles. Archives can
+ * list hundreds of contributors (DANDI:000026 has 183 role names), which
+ * otherwise push the dataset id several screens down on a phone.
+ */
+export function peopleView(
+  authors: string[],
+  roles: Array<{ role: string; names: string[] }>,
+  all: boolean,
+  limits: { authors: number; namesPerRole: number; roles: number } = PEOPLE_LIMITS,
+): PeopleView {
+  const people = new Set([...authors, ...roles.flatMap((r) => r.names)]).size;
+  const shownAuthors = all ? authors : authors.slice(0, limits.authors);
+  const shownRoles = (all ? roles : roles.slice(0, limits.roles)).map((r) => {
+    const names = all ? r.names : r.names.slice(0, limits.namesPerRole);
+    return { role: r.role, names, more: r.names.length - names.length };
+  });
+  const hiddenAuthors = authors.length - shownAuthors.length;
+  const hiddenRoles = roles.length - shownRoles.length;
+  return {
+    authors: shownAuthors,
+    hiddenAuthors,
+    roles: shownRoles,
+    hiddenRoles,
+    truncated: hiddenAuthors > 0 || hiddenRoles > 0 || shownRoles.some((r) => r.more > 0),
+    people,
+  };
+}
+
 export interface ReuseTypeRow {
   key: string;
   label: string;

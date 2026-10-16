@@ -8,6 +8,7 @@ import {
   histogram,
   labSplit,
   paperLab,
+  peopleView,
   rangeLabel,
   reuseTypeBreakdown,
   roleShares,
@@ -108,6 +109,30 @@ describe('contributorRoles', () => {
       { role: 'Methodology', names: ['C'] },
       { role: 'Software', names: ['D'] },
     ]);
+  });
+});
+
+describe('peopleView', () => {
+  const authors = Array.from({ length: 15 }, (_, i) => `Author ${i}`);
+  const roles = Array.from({ length: 8 }, (_, i) => ({ role: `Role ${i}`, names: ['Author 0', `X${i}`, `Y${i}`, `Z${i}`, `W${i}`] }));
+  it('shows 12 authors and the first 3 names of the first 6 roles', () => {
+    const v = peopleView(authors, roles, false);
+    expect(v.authors).toHaveLength(12);
+    expect(v.hiddenAuthors).toBe(3);
+    expect(v.roles).toHaveLength(6);
+    expect(v.roles[0]).toEqual({ role: 'Role 0', names: ['Author 0', 'X0', 'Y0'], more: 2 });
+    expect(v.hiddenRoles).toBe(2);
+    expect(v.truncated).toBe(true);
+    // 15 authors + 4 new names in each of 8 roles ('Author 0' is counted once)
+    expect(v.people).toBe(15 + 8 * 4);
+  });
+  it('shows everything when asked, and says nothing is hidden for a short list', () => {
+    const v = peopleView(authors, roles, true);
+    expect(v.authors).toHaveLength(15);
+    expect(v.roles).toHaveLength(8);
+    expect(v.roles.every((r) => r.more === 0)).toBe(true);
+    expect(v.truncated).toBe(false);
+    expect(peopleView(['A'], [{ role: 'Funder', names: ['B'] }], false).truncated).toBe(false);
   });
 });
 
