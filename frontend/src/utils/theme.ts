@@ -26,19 +26,27 @@ function browserStorage(): Storage | null {
   }
 }
 
-/** The current theme and a toggle; keeps the `dark` class on <html> and the saved value in step. */
+/**
+ * The current theme and a toggle. The `dark` class on <html> follows the
+ * theme; the choice is saved only when someone uses the toggle, so "nothing
+ * saved" keeps meaning "never chose" (and could later follow the system
+ * setting without overriding anyone who picked light).
+ */
 export function useTheme(): [Theme, () => void] {
   const [theme, setTheme] = useState<Theme>(() => readStoredTheme(browserStorage()));
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
+  }, [theme]);
+
+  const toggle = useCallback(() => {
+    const next: Theme = theme === 'dark' ? 'light' : 'dark';
     try {
-      browserStorage()?.setItem(THEME_KEY, theme);
+      browserStorage()?.setItem(THEME_KEY, next);
     } catch {
       // Storage blocked: the theme still applies for this visit.
     }
+    setTheme(next);
   }, [theme]);
-
-  const toggle = useCallback(() => setTheme((t) => (t === 'dark' ? 'light' : 'dark')), []);
   return [theme, toggle];
 }
