@@ -331,7 +331,7 @@ function AboutCard({
     <Card aria-labelledby="about-h">
       <CardTitle id="about-h">About This Dataset</CardTitle>
       {description ? (
-        <div className="prose prose-sm max-w-none break-words text-[15px] leading-[1.55] text-ink-2 prose-headings:text-ink prose-p:my-0 prose-p:text-ink-2 prose-a:text-link prose-strong:text-ink prose-code:text-ink prose-li:text-ink-2 [&>*+*]:mt-3">
+        <div className="prose prose-sm max-w-none break-words text-[15px] leading-[1.55] prose-p:my-0 prose-pre:border prose-pre:border-line-2 [&>*+*]:mt-3">
           <ReactMarkdown>{description}</ReactMarkdown>
         </div>
       ) : (

@@ -162,3 +162,29 @@ select:focus-visible,
 .App > main {
   flex: 1 0 auto;
 }
+
+/*
+ * Markdown (the typography plugin's .prose) in the theme's colours, light and
+ * dark, so no page needs per-element prose-* colour overrides. Code blocks
+ * get the grey well rather than the plugin's dark slab.
+ */
+.prose {
+  --tw-prose-body: rgb(var(--ink-2));
+  --tw-prose-headings: rgb(var(--ink));
+  --tw-prose-lead: rgb(var(--ink-2));
+  --tw-prose-links: rgb(var(--link));
+  --tw-prose-bold: rgb(var(--ink));
+  --tw-prose-counters: rgb(var(--muted));
+  --tw-prose-bullets: rgb(var(--line-rule));
+  --tw-prose-hr: rgb(var(--line));
+  --tw-prose-quotes: rgb(var(--ink-2));
+  --tw-prose-quote-borders: rgb(var(--line-rule));
+  --tw-prose-captions: rgb(var(--muted));
+  --tw-prose-kbd: rgb(var(--ink));
+  --tw-prose-kbd-shadows: var(--ink);
+  --tw-prose-code: rgb(var(--ink));
+  --tw-prose-pre-code: rgb(var(--ink));
+  --tw-prose-pre-bg: rgb(var(--panel));
+  --tw-prose-th-borders: rgb(var(--line));
+  --tw-prose-td-borders: rgb(var(--line-inner));
+}
