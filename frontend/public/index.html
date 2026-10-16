@@ -8,13 +8,12 @@
       name="description"
       content="NeuroD3 Dataset Reuse Hub: neuroscience datasets across archives, with the papers that reuse them"
     />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
-    />
     <title>NeuroD3 · Dataset Reuse Hub</title>
+    <!--
+      Inline on purpose: it must run before the first paint. If a Content-Security-Policy
+      is added, allow this script by its 'sha256-...' hash in script-src, or dark mode
+      will flash light on every load.
+    -->
     <script>
       // Apply the saved theme before the first paint (src/utils/theme.ts owns the key).
       try {
