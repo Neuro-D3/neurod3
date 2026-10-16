@@ -248,8 +248,10 @@ export function ButtonLink({
 }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { variant?: ButtonVariant; size?: 'sm'; to?: string }) {
   const classes = cx(BUTTON_BASE, BUTTON_VARIANTS[variant], size === 'sm' && 'h-8 px-3 text-[13px]', 'no-underline hover:no-underline', className);
   if (to) {
+    // Everything else (aria-label, title, onClick, target...) reaches the link too; Link makes its own href.
+    const { href: _ignored, ...linkProps } = rest;
     return (
-      <Link to={to} className={classes}>
+      <Link to={to} className={classes} {...linkProps}>
         {children}
       </Link>
     );
