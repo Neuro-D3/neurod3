@@ -45,10 +45,15 @@ describe('licenseLinks', () => {
   it('leaves unknown text unlinked and shortened, and placeholders out', () => {
     expect(one('Not Specified')).toEqual({ label: 'Not Specified', url: null });
     expect(one('TODO: choose a license, e.g. PDDL (http://opendatacommons.org/licenses/pddl/)').url).toBeNull();
+    // A URL in free text is only linked when it is on a license site.
     expect(one('See https://example.org/terms for the terms')).toEqual({
       label: 'See https://example.org/terms for the t…',
-      url: 'https://example.org/terms',
+      url: null,
     });
+    expect(one('NIDO Terms and Conditions, see http://oma.od.nih.gov/public/ms/privacy/pafiles/0156.htm').url).toBeNull();
+    expect(one('Released under https://www.gnu.org/licenses/agpl-3.0.html').url).toBe('https://www.gnu.org/licenses/agpl-3.0.html');
+    // A look-alike host is not a license site.
+    expect(one('Terms: https://notgnu.org/x').url).toBeNull();
     const long = one('NIDO Terms and Conditions In accessing data from one or more of the datasets');
     expect(long.url).toBeNull();
     expect(long.label.length).toBeLessThanOrEqual(40);

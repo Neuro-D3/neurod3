@@ -21,10 +21,24 @@ function shorten(text: string): string {
   return text.length > MAX_LABEL ? `${text.slice(0, MAX_LABEL - 1).trimEnd()}…` : text;
 }
 
-/** First http(s) URL in free text, without trailing punctuation. */
+/**
+ * Sites we link a license to. A URL in an archive's free-text license field
+ * is written by whoever uploaded the dataset, so anywhere else stays unlinked
+ * rather than being shown as our license link.
+ */
+const LICENSE_HOSTS = ['creativecommons.org', 'opendatacommons.org', 'spdx.org', 'opensource.org', 'gnu.org', 'apache.org', 'cdla.dev'];
+
+/** First http(s) URL in free text, without trailing punctuation, if it is on a license site. */
 function urlIn(text: string): string | null {
   const m = /https?:\/\/[^\s)'"]+/i.exec(text);
-  return m ? m[0].replace(/[.,;]+$/, '') : null;
+  if (!m) return null;
+  const url = m[0].replace(/[.,;]+$/, '');
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return LICENSE_HOSTS.some((h) => host === h || host.endsWith(`.${h}`)) ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 function creativeCommons(text: string): Omit<LicenseLink, 'title'> | null {
