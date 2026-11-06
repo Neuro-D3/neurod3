@@ -58,6 +58,7 @@ from utils.citation_status import (
     STATUS_COMPLETE as CITATIONS_COMPLETE,
     STATUS_FAILED as CITATIONS_FAILED,
     citation_status_ddl,
+    count_past_retry_limit_sql,
     has_failed_citations_sql,
     mark_citations,
 )
@@ -1401,6 +1402,9 @@ def summarize_run(**context) -> None:
             # papers fetched during this run: derive text_status from the
             # fetcher result stored in fulltext_available / fulltext_reason.
             backfill_papers_text_status(cursor)
+            # Failed citing-paper fetches the nightly selection no longer retries (utils/citation_status.py).
+            cursor.execute(count_past_retry_limit_sql("openneuro_paper_map"))
+            citations_past_retry_limit = cursor.fetchone()[0]
             cursor.execute(
                 """
                 UPDATE openneuro_paper_resolution_runs
@@ -1463,7 +1467,8 @@ def summarize_run(**context) -> None:
                 f"- citing papers upserted: {totals['citing_papers_upserted']} (datasets_with_primary_papers={totals['datasets_with_primary_papers']})",
                 # Not papers (eLife assessments, OSF, NEMAR), and lists OpenAlex left unfinished (retried next run).
                 f"- non-paper DOIs skipped: {totals.get('non_paper_dois_skipped', 0)}",
-                f"- citing-paper fetches failed (marked for retry): {totals.get('citations_failed', 0)}",
+                f"- citing-paper fetches failed: {totals.get('citations_failed', 0)} marked for retry; "
+                f"{citations_past_retry_limit} rows past the retry limit (not selected again)",
                 f"- citation contexts: extracted={totals['citation_contexts_extracted']} missing_text={totals['citation_contexts_missing_text']}",
                 f"- telemetry: {telemetry_totals}",
                 # One more metered request, to show where today's OpenAlex budget stands.

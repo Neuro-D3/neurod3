@@ -362,7 +362,7 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 4. **`example_dag`** - Basic Airflow example for learning
 
 5. **`dandi_paper_mapping`, `openneuro_paper_mapping`, `crcns_paper_mapping`, `sparc_paper_mapping`** - Resolve each dataset's primary papers, find citing papers via OpenAlex, fetch their full text, and fill `papers`, `<src>_paper_map` and `<src>_paper_citations`
-   - Each `<src>_paper_map` row records `citations_status`: `complete` when every citing-paper page answered, `failed` when OpenAlex stopped answering partway (nothing of that list is saved, and the error is in `citations_error`). The nightly run selects datasets with a `failed` row, first, as well as unmapped ones, so a failed fetch is retried until it completes. Run summaries report `citations_failed`. See `utils/citation_status.py`
+   - Each `<src>_paper_map` row records `citations_status`: `complete` when every citing-paper page answered, `failed` when OpenAlex stopped answering partway (nothing of that list is saved, and the error is in `citations_error`). The nightly run selects datasets with a `failed` row, first, as well as unmapped ones, so a failed fetch is retried on the next runs. A row that fails three runs in a row (`citations_attempts`) is left alone with its status and error, and only an `include_already_mapped` run fetches it again. Run summaries report `citations_failed` and how many rows are past the retry limit. See `utils/citation_status.py`
 
 6. **`paper_reuse_classification`** - LLM classification of every (citing paper, dataset) pair as REUSE / MENTION / NEITHER (or PRIMARY in direct mode). Manual trigger; see [Paper Reuse Classification](#paper-reuse-classification)
 
