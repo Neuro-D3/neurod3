@@ -35,3 +35,6 @@ _tmp_find_reuse_friend/
 
 # LLMs
 .claude/
+
+# SimpleAuthManager passwords for PR previews: written by pr-preview.yml from a secret.
+airflow/config/simple_auth_manager_passwords.json
