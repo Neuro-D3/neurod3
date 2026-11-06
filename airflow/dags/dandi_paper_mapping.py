@@ -2101,6 +2101,9 @@ def summarize_run(**context) -> None:
             # papers fetched during this run: derive text_status from the
             # fetcher result stored in fulltext_available / fulltext_reason.
             backfill_papers_text_status(cursor)
+            # Failed citing-paper fetches the nightly selection no longer retries (utils/citation_status.py).
+            cursor.execute(count_past_retry_limit_sql("dandi_paper_map"))
+            citations_past_retry_limit = cursor.fetchone()[0]
             cursor.execute(
                 """
                 UPDATE dandi_paper_resolution_runs
@@ -2204,9 +2207,6 @@ def verify_paper_mapping(**context) -> None:
         with conn.cursor() as cursor:
             cursor.execute("SELECT COUNT(*) FROM dandi_paper_map;")
             map_count_total = cursor.fetchone()[0]
-            # Failed citing-paper fetches the nightly selection no longer retries (utils/citation_status.py).
-            cursor.execute(count_past_retry_limit_sql("dandi_paper_map"))
-            citations_past_retry_limit = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM papers;")
             paper_count_total = cursor.fetchone()[0]
 
