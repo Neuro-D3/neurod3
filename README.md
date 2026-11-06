@@ -367,7 +367,7 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 
 7. **`stack_integration_test`** - Wiring test: two datasets per archive through ingestion, mapping, classification, the API and the site, with known pairs checked. Manual trigger; see [Stack integration test](#stack-integration-test)
 
-8. **`reuse_classification_benchmark_test`** - Classifier accuracy against find_reuse's 161 human-reviewed pairs. Manual trigger; see [Benchmark](#benchmark-sanity-test)
+8. **`reuse_classification_benchmark_test`** - Classifier accuracy against find_reuse's 648 human-reviewed pairs. Manual trigger; see [Benchmark](#benchmark-sanity-test)
 
 9. **`paper_author_ids_backfill`** - Backfills `papers.author_ids` / `author_orcids` from OpenAlex (50 papers per request) for every stored paper that lacks them, so the dataset metrics can tell a dataset's own lab from independent reuse by author id rather than name. Manual trigger (`max_papers`, default 20000). New papers get ids without it: each paper-mapping DAG runs a `fill_author_ids` task for its archive once citing papers are stored (param `fill_author_ids`, default on)
 
@@ -435,15 +435,17 @@ mkdir -p airflow/output && mv airflow/dags/output/* airflow/output/ && rmdir air
 
 ### Benchmark (sanity test)
 
-`reuse_classification_benchmark_test` (in `airflow/dags/reuse_classification_benchmark_test/`) checks that the classifier still finds reuse. It runs the production fetcher, prompt and model over a fixed answer key of **161 (paper, dandiset) pairs that find_reuse's reviewers judged by hand**, and compares the labels with their calls:
+`reuse_classification_benchmark_test` (in `airflow/dags/reuse_classification_benchmark_test/`) checks that the classifier still finds reuse. It runs the production fetcher, prompt and model over a fixed answer key of **648 (paper, dandiset) pairs that find_reuse's reviewers judged by hand** (built from find_reuse 049ed38), and compares the labels with their calls:
 
-- **110 confirmed reuse.** The share labelled REUSE is `reuse_recall`.
-- **51 rejected.** find_reuse's classifier called each of these REUSE and a reviewer disagreed, so they are hard cases. The share labelled REUSE is `false_reuse_rate`.
+- **451 confirmed reuse.** The share labelled REUSE is `reuse_recall`.
+- **197 rejected.** find_reuse's classifier called each of these REUSE and a reviewer disagreed, so they are hard cases. The share labelled REUSE is `false_reuse_rate`.
+
+Only clear calls are in the key. Reviewed pairs are left out when the DOI is not a paper (eLife assessment, OSF registration, NEMAR record), when upstream no longer proposes the pair (for example after a dandiset's primary paper was corrected), when the reviewer called it `ambiguous_reuse` or `unsure`, or when two reviewers disagreed on reuse. The key's `reviewed_but_skipped` lists each.
 
 | Pair set | Pairs | Default where |
 |---|---|---|
 | `smoke` | 20 fixed (10 + 10) | everywhere, unless overridden |
-| `full` | all 161 | staging (`REUSE_BENCHMARK_PAIR_SET=full` in `docker-compose.gce.yml`) |
+| `full` | all 648 (about 4x the cost of the old 161-pair key) | staging (`REUSE_BENCHMARK_PAIR_SET=full` in `docker-compose.gce.yml`) |
 
 A run fails when `reuse_recall` drops below `min_reuse_recall` (default 0.8), `false_reuse_rate` rises above `max_false_reuse_rate` (0.5), or fewer than `min_text_coverage` (0.8) of the pairs got full text, which would make the result inconclusive. The thresholds are provisional until a few full runs set a baseline. Each run writes a summary row to `reuse_benchmark_runs` and one row per pair to `reuse_benchmark_results`; production classification tables are never touched. The score task's log lists every disagreement with the model's reasoning, plus `mapping_coverage`: how many answer-key pairs D3's own mapping DAGs produced at all. `dry_run=true` fetches text and builds prompts without any LLM calls.
 
@@ -453,7 +455,7 @@ Trigger it by hand (it is no longer run by the staging deploy workflow), from th
 docker compose exec airflow-scheduler airflow dags trigger reuse_classification_benchmark_test
 ```
 
-The answer key (`benchmark_pairs.json`) is generated from a find_reuse checkout; rebuild it when their reviewers have judged more pairs:
+The answer key (`benchmark_pairs.json`) is generated from a find_reuse checkout; rebuild it when their reviewers have judged more pairs. A rebuild keeps the smoke pairs that are still eligible, so smoke results stay comparable:
 
 ```bash
 python airflow/dags/reuse_classification_benchmark_test/build_benchmark_pairs.py --find-reuse-dir <path-to-find_reuse>
