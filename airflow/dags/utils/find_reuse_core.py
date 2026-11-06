@@ -357,12 +357,22 @@ class HttpFetchFailed(RuntimeError):
         super().__init__(f"{reason} (status={status}) url={url}")
 
 
-class OpenAlexError(RuntimeError):
+class CitationFetchError(RuntimeError):
     """
-    OpenAlex did not answer, so a citing-paper list (or a paper's record) would
-    be incomplete. The paper-mapping DAGs catch it per primary paper, save no
-    partial list, and mark that primary's citations as failed so the next run
-    fetches them again (utils/citation_status.py).
+    A source the citing-paper fetch depends on did not answer, so the list for
+    a primary paper would be incomplete. The paper-mapping DAGs catch it per
+    primary paper, save no partial list, and mark that primary's citations as
+    failed so the next run fetches them again (utils/citation_status.py).
+    Raised as is for bioRxiv (a preprint's published version); see
+    ``OpenAlexError`` for OpenAlex.
+    """
+
+
+class OpenAlexError(CitationFetchError):
+    """
+    OpenAlex did not answer, so a citing-paper list, a paper's record or the
+    search for its preprint would be incomplete (upstream find_reuse's
+    OpenAlexError).
     """
 
 

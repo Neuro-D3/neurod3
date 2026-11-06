@@ -82,3 +82,50 @@ class TestOpenAlexFailuresRaise:
         assert C.get_openalex_paper_data(None, "10.1/a", telemetry=Telemetry())["openalex_id"] is None
         with pytest.raises(OpenAlexError):
             C.get_openalex_paper_data(None, "10.1/a", telemetry=Telemetry(), raise_on_failure=True)
+
+
+class TestAlternateDoiFailuresRaise:
+    """A version lookup that was refused must not look like "no other version"."""
+
+    def _failing_get(self, *a, **k):
+        from utils.find_reuse_core import HttpFetchFailed
+        if k.get("raise_on_failure"):
+            raise HttpFetchFailed("u", "HTTPError: 503", 503)
+        return None
+
+    def test_biorxiv_default_is_none(self, monkeypatch):
+        from utils.find_reuse_core import Telemetry
+        monkeypatch.setattr(C, "http_get_json", self._failing_get)
+        assert C.get_alternate_doi(None, "10.1101/2024.01.01.000001", telemetry=Telemetry()) is None
+
+    def test_biorxiv_raises_when_asked(self, monkeypatch):
+        from utils.find_reuse_core import CitationFetchError, OpenAlexError, Telemetry
+        monkeypatch.setattr(C, "http_get_json", self._failing_get)
+        with pytest.raises(CitationFetchError, match="bioRxiv did not answer") as ei:
+            C.get_alternate_doi(None, "10.1101/2024.01.01.000001", telemetry=Telemetry(), raise_on_failure=True)
+        assert not isinstance(ei.value, OpenAlexError)
+
+    def test_openalex_record_raises_when_asked(self, monkeypatch):
+        from utils.find_reuse_core import OpenAlexError, Telemetry
+        monkeypatch.setattr(C, "http_get_json", self._failing_get)
+        assert C.get_alternate_doi(None, "10.1038/s41586-023-06031-6", telemetry=Telemetry()) is None
+        with pytest.raises(OpenAlexError):
+            C.get_alternate_doi(None, "10.1038/s41586-023-06031-6", telemetry=Telemetry(), raise_on_failure=True)
+
+    def test_openalex_preprint_search_raises_when_asked(self, monkeypatch):
+        from utils.find_reuse_core import HttpFetchFailed, OpenAlexError, Telemetry
+        record = {"doi": "https://doi.org/10.1038/x", "title": "A long enough paper title",
+                  "publication_date": "2023-01-01", "publication_year": 2023,
+                  "id": "https://openalex.org/W1", "authorships": []}
+
+        def fake_get(session, url, **k):
+            if "/works/doi:" in url:
+                return record
+            if k.get("raise_on_failure"):
+                raise HttpFetchFailed(url, "HTTPError: 500", 500)
+            return None
+
+        monkeypatch.setattr(C, "http_get_json", fake_get)
+        assert C.get_alternate_doi(None, "10.1038/x", telemetry=Telemetry()) is None
+        with pytest.raises(OpenAlexError, match="preprint search"):
+            C.get_alternate_doi(None, "10.1038/x", telemetry=Telemetry(), raise_on_failure=True)

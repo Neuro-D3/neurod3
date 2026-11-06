@@ -20,6 +20,7 @@ from urllib.parse import quote
 import requests
 
 from utils.find_reuse_core import (
+    CitationFetchError,
     HttpFetchFailed,
     OpenAlexError,
     Telemetry,
@@ -167,6 +168,7 @@ def _lookup_published_version(
     min_interval_seconds: float = 0.2,
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
+    raise_on_failure: bool = False,
 ) -> Optional[str]:
     doi_norm = normalize_doi(preprint_doi)
     if not doi_norm or not doi_norm.lower().startswith("10.1101/"):
@@ -174,15 +176,23 @@ def _lookup_published_version(
 
     for server in ("biorxiv", "medrxiv"):
         url = f"https://api.biorxiv.org/pubs/{server}/{quote(doi_norm)}"
-        data = http_get_json(
-            session,
-            url,
-            timeout=_PAPER_METADATA_TIMEOUT,
-            min_interval_seconds=min_interval_seconds,
-            max_retries=max_retries,
-            backoff_seconds=backoff_seconds,
-            telemetry=telemetry,
-        )
+        try:
+            data = http_get_json(
+                session,
+                url,
+                timeout=_PAPER_METADATA_TIMEOUT,
+                min_interval_seconds=min_interval_seconds,
+                max_retries=max_retries,
+                backoff_seconds=backoff_seconds,
+                telemetry=telemetry,
+                raise_on_failure=raise_on_failure,
+            )
+        except HttpFetchFailed as e:
+            # Without the published version, its citers would be missing from a
+            # list that would still look complete.
+            raise CitationFetchError(
+                f"bioRxiv did not answer for {doi_norm} ({server}): {e.reason} (status={e.status})"
+            ) from e
         if not isinstance(data, dict):
             continue
         collection = data.get("collection")
@@ -215,6 +225,7 @@ def _lookup_preprint_version(
     min_interval_seconds: float = 0.2,
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
+    raise_on_failure: bool = False,
 ) -> Optional[str]:
     published_norm = normalize_doi(published_doi)
     if not published_norm or published_norm.lower().startswith("10.1101/"):
@@ -227,6 +238,7 @@ def _lookup_preprint_version(
         min_interval_seconds=min_interval_seconds,
         max_retries=max_retries,
         backoff_seconds=backoff_seconds,
+        raise_on_failure=raise_on_failure,
     )
     title = paper.get("title")
     if not isinstance(title, str) or len(title.strip()) < 10:
@@ -241,15 +253,21 @@ def _lookup_preprint_version(
         "https://api.openalex.org/works"
         f"?filter={quote(filter_value)}&select=doi,title,id,publication_date&per_page=5"
     )
-    data = http_get_json(
-        session,
-        url,
-        timeout=20,
-        min_interval_seconds=min_interval_seconds,
-        max_retries=max_retries,
-        backoff_seconds=backoff_seconds,
-        telemetry=telemetry,
-    )
+    try:
+        data = http_get_json(
+            session,
+            url,
+            timeout=20,
+            min_interval_seconds=min_interval_seconds,
+            max_retries=max_retries,
+            backoff_seconds=backoff_seconds,
+            telemetry=telemetry,
+            raise_on_failure=raise_on_failure,
+        )
+    except HttpFetchFailed as e:
+        raise OpenAlexError(
+            f"OpenAlex did not answer the preprint search for {published_norm}: {e.reason} (status={e.status})"
+        ) from e
     if not isinstance(data, dict):
         return None
     results = data.get("results")
@@ -280,7 +298,14 @@ def get_alternate_doi(
     min_interval_seconds: float = 0.2,
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
+    raise_on_failure: bool = False,
 ) -> Optional[str]:
+    """
+    The other version of a paper: the published article for a preprint (bioRxiv),
+    the preprint for a published article (OpenAlex). None when there is none.
+    With ``raise_on_failure`` a source that did not answer raises
+    ``CitationFetchError`` instead of looking like "no other version".
+    """
     doi_norm = normalize_doi(doi)
     if not doi_norm:
         return None
@@ -292,6 +317,7 @@ def get_alternate_doi(
             min_interval_seconds=min_interval_seconds,
             max_retries=max_retries,
             backoff_seconds=backoff_seconds,
+            raise_on_failure=raise_on_failure,
         )
     return _lookup_preprint_version(
         session,
@@ -300,6 +326,7 @@ def get_alternate_doi(
         min_interval_seconds=min_interval_seconds,
         max_retries=max_retries,
         backoff_seconds=backoff_seconds,
+        raise_on_failure=raise_on_failure,
     )
 
 

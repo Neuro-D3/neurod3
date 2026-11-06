@@ -40,7 +40,7 @@ from utils.database import (
     backfill_papers_text_status,
 )
 from utils.cache_keys import paper_cache_key_for_doi
-from utils.find_reuse_core import OpenAlexError, is_definitive_no_paper, normalize_doi, Telemetry
+from utils.find_reuse_core import CitationFetchError, is_definitive_no_paper, normalize_doi, Telemetry
 from utils.targeting import requested_dataset_ids, sql_id_list
 from utils.dataset_status import STATUS_EXCLUDED, ensure_dataset_status_columns, refresh_dataset_status
 from utils.paper_citations import (
@@ -842,6 +842,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                         session,
                         primary_doi,
                         telemetry=telemetry,
+                        raise_on_failure=True,
                         min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
                         max_retries=int(params.get("max_retries", 6)),
                         backoff_seconds=float(params.get("backoff_seconds", 2.0)),
@@ -929,8 +930,8 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                     # Every citing-paper page and version answered: this list is complete.
                     mark_citations(cursor, "crcns_paper_map", "crcns_id", crcns_id, rec.get("paper_doi"), CITATIONS_COMPLETE)
                     conn.commit()
-                except OpenAlexError as e:
-                    # OpenAlex stopped answering. Lists already saved for other versions
+                except CitationFetchError as e:
+                    # OpenAlex (or bioRxiv) stopped answering. Lists already saved for other versions
                     # of this paper were complete; the rest is fetched again next run.
                     conn.rollback()
                     metrics["citations_failed"] += 1
