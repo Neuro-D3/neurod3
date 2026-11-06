@@ -2159,6 +2159,9 @@ def summarize_run(**context) -> None:
                 f"- fulltext sources: {totals['fulltext_source_counts']}",
                 f"- citation edges: upserted={totals['citation_edges_upserted']} context_edges_updated={totals['citation_edges_updated']}",
                 f"- citing papers upserted: {totals['citing_papers_upserted']} (datasets_with_primary_papers={totals['datasets_with_primary_papers']})",
+                # Not papers (eLife assessments, OSF, NEMAR), and lists OpenAlex left unfinished (retried next run).
+                f"- non-paper DOIs skipped: {totals.get('non_paper_dois_skipped', 0)}",
+                f"- citing-paper fetches failed (marked for retry): {totals.get('citations_failed', 0)}",
                 f"- citation contexts: extracted={totals['citation_contexts_extracted']} missing_text={totals['citation_contexts_missing_text']}",
                 f"- telemetry: {telemetry_totals}",
                 # One more metered request, to show where today's OpenAlex budget stands.
