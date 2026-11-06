@@ -214,7 +214,7 @@ Stores datasets fetched from the DANDI Archive API.
 - `created_at` (TIMESTAMP) - Record creation timestamp
 - `updated_at` (TIMESTAMP) - Last update timestamp
 - `version` (VARCHAR) - Dataset version
-- `asset_count` (INTEGER) - Files in the version shown; 0 marks an empty dandiset
+- `asset_count` (INTEGER) - Files in the fullest version, draft or published; 0 marks an empty dandiset (both versions empty, as find_reuse's `holds_data`)
 - `dataset_status` (TEXT) - Where the dataset stands in paper mapping (see below); also on `openneuro_dataset`, `crcns_dataset`, `sparc_dataset`
 - `dataset_status_reason` (TEXT) - Why a dataset is `excluded`
 
