@@ -169,7 +169,7 @@ def _published_date(attrs: Dict[str, Any]) -> Tuple[Optional[datetime], Optional
 def _derive_modality(title: Optional[str], description: Optional[str]) -> Optional[str]:
     """Heuristic modality classification.
 
-    Ported from _tmp_find_reuse_friend/archives/crcns.py to keep the same labels
+    Ported from find_reuse src/archives/crcns.py to keep the same labels
     in use by the existing reuse-analysis pipeline.
     """
     text = ((title or "") + " " + (description or "")).lower()

@@ -17,7 +17,7 @@ hash, so smoke runs stay comparable as the review data grows.
 Usage (from the repo root, with a find_reuse checkout at hand):
 
     python airflow/dags/reuse_classification_benchmark_test/build_benchmark_pairs.py \
-        --find-reuse-dir _tmp_find_reuse_friend
+        --find-reuse-dir ../find_reuse
 """
 
 from __future__ import annotations

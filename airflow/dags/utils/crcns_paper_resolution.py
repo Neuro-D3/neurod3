@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # DOIs that appear on many CRCNS about pages but are not dataset-specific
 # primary papers. Mirrors the list in
-# _tmp_find_reuse_friend/archives/crcns.py.
+# find_reuse src/archives/crcns.py.
 CRCNS_INFRASTRUCTURE_DOIS: Set[str] = {
     # Teeters et al. 2008 — "Data Sharing for Computational Neuroscience"
     "10.1007/s12021-008-9009-y",

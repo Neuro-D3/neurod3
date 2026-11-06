@@ -1,5 +1,6 @@
 """
-Core helper utilities adapted from ../find_reuse for resolving paper metadata.
+Core helper utilities adapted from catalystneuro/find_reuse for resolving paper metadata.
+(Last compared with upstream 049ed38, 2026-11-05.)
 
 This file is intentionally scoped:
 - DOI normalization + extraction helpers
@@ -26,7 +27,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 
-# DOI pattern adapted from ../find_reuse/dandi_primary_papers.py.
+# DOI pattern adapted from find_reuse src/indirect_pipeline/dandi_primary_papers.py.
 # Matches `10.xxxx/...` and stops at whitespace or common punctuation that
 # typically terminates a DOI, including `<` so a DOI pasted into HTML
 # (`10.1038/nature14178</a>`) does not carry the tag along.

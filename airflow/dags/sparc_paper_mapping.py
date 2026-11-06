@@ -84,7 +84,7 @@ _SPARC_USER_AGENT = "D3-SPARC-PaperMapping/1.0"
 
 # Relationship types that indicate the publication describes / introduces this
 # dataset. Mirrors the research adapter at
-# _tmp_find_reuse_friend/archives/sparc.py:119-121.
+# find_reuse src/archives/sparc.py (the relationshipType check, about line 118).
 _ALLOWED_RELATIONSHIPS: Set[str] = {
     "IsDescribedBy",
     "IsPublishedIn",
