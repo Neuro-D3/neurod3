@@ -1258,6 +1258,11 @@ def summarize_run(**context) -> None:
             continue
         totals["citation_edges_upserted"] += int(r.get("citation_edges_upserted", 0) or 0)
         totals["citing_papers_upserted"] += int(r.get("citing_papers_upserted", 0) or 0)
+        cit_tel = r.get("telemetry") or {}
+        if isinstance(cit_tel, dict):
+            # Citing works OpenAlex returned that are not papers (eLife assessments, ...).
+            totals["non_paper_dois_skipped"] = (totals.get("non_paper_dois_skipped", 0)
+                                                + int(cit_tel.get("non_paper_dois_skipped", 0) or 0))
         totals["datasets_with_primary_papers"] += int(r.get("datasets_with_primary_papers", 0) or 0)
         tel = r.get("telemetry") or {}
         if isinstance(tel, dict):

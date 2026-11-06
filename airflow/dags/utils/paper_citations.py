@@ -22,6 +22,7 @@ import requests
 from utils.find_reuse_core import (
     Telemetry,
     http_get_json,
+    is_paper,
     normalize_doi,
     publication_year_from_date,
     strip_nul,
@@ -335,6 +336,10 @@ def get_citing_papers(
             if not isinstance(work, dict):
                 continue
             doi = normalize_doi(str(work.get("doi", "")).replace("https://doi.org/", ""))
+            if doi and not is_paper(doi):
+                # eLife assessment, OSF registration, NEMAR record: not a citing paper.
+                telemetry.non_paper_dois_skipped += 1
+                continue
             openalex_work_id = work.get("id") if isinstance(work.get("id"), str) else None
             dedupe_key = doi or normalize_openalex_id(openalex_work_id)
             if not dedupe_key or dedupe_key in seen:

@@ -75,7 +75,7 @@ try:
         fetcher_cache_key,
         TEXT_STATUS_FULL,
     )
-    from utils.find_reuse_core import Telemetry
+    from utils.find_reuse_core import Telemetry, NOT_A_PAPER_PATTERN
 except ImportError:  # pragma: no cover - direct import outside the dags folder
     from dags.utils.database import get_db_connection, ensure_paper_reuse_classification_columns
     from dags.utils.targeting import requested_dataset_ids, requested_ids, sql_id_list
@@ -99,7 +99,7 @@ except ImportError:  # pragma: no cover - direct import outside the dags folder
         fetcher_cache_key,
         TEXT_STATUS_FULL,
     )
-    from dags.utils.find_reuse_core import Telemetry
+    from dags.utils.find_reuse_core import Telemetry, NOT_A_PAPER_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +414,9 @@ def fetch_unclassified_edges(**context) -> List[Dict[str, Any]]:
                 return []
 
         status_sql, status_params = _candidate_status_filter(reclassify, PROMPT_VERSION, model)
+        # Rows stored before mapping skipped non-paper DOIs (eLife assessments,
+        # OSF registrations, NEMAR records) are never sent to the model.
+        status_params = {**status_params, "not_a_paper": NOT_A_PAPER_PATTERN}
 
         # dataset_ids: only pairs for these datasets (the stack integration test).
         requested = requested_dataset_ids(params)
@@ -461,7 +464,7 @@ def _fetch_citation_edge_candidates(cursor, source_name, cit_table, cls_table, i
             ON  cls.{id_col}          = cit.{id_col}
             AND cls.primary_paper_doi = cit.primary_paper_doi
             AND cls.citing_paper_doi  = cit.citing_paper_doi
-        WHERE 1=1
+        WHERE cit.citing_paper_doi !~* %(not_a_paper)s
           {status_sql}
         ORDER BY
             {_citation_edge_order_sql(mix_publishers, first_dois)}
@@ -488,7 +491,7 @@ def _fetch_primary_candidates(cursor, source_name, cit_table, cls_table, id_col,
             ON  cls.{id_col}          = cit.{id_col}
             AND cls.primary_paper_doi = cit.primary_paper_doi
             AND cls.citing_paper_doi  = cit.primary_paper_doi
-        WHERE 1=1
+        WHERE cit.primary_paper_doi !~* %(not_a_paper)s
           {status_sql}
         ORDER BY cit.{id_col}, cit.primary_paper_doi
         LIMIT %(limit)s;

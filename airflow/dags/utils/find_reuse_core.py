@@ -41,6 +41,21 @@ _DOI_JUNK_SUFFIX = re.compile(r"\.(?:svg|png|jpe?g|gif|html?)$", flags=re.IGNORE
 # prefix for deposits from 2026 on.
 _PREPRINT_PREFIXES = ("10.1101/", "10.64898/")
 
+# A DOI minted for something published alongside a paper, which OpenAlex returns
+# as a citing work as if it were one: an eLife assessment, review or author
+# response (.sa0 to .sa3), an OSF registration, or a NEMAR dataset record.
+# find_reuse's reviewers rejected every pair built on one (upstream
+# src/shared/run_fulltext_classification.py, 846cd49 and 2472a23). The pattern
+# is plain enough for both Python `re` and PostgreSQL `~*`, so the classification
+# DAG filters stored rows with the same text.
+NOT_A_PAPER_PATTERN = r"\.sa\d+$|^10\.17605/osf\.io/|^10\.82901/nemar\."
+_NOT_A_PAPER = re.compile(NOT_A_PAPER_PATTERN, flags=re.IGNORECASE)
+
+
+def is_paper(doi: Optional[str]) -> bool:
+    """Whether a DOI names a paper, as far as its form can say (upstream ``is_paper``)."""
+    return not (isinstance(doi, str) and _NOT_A_PAPER.search(doi.strip()))
+
 
 def strip_nul(text: Optional[str]) -> Optional[str]:
     """
@@ -262,6 +277,7 @@ class Telemetry:
     throttled_count: int = 0
     throttled_sleep_seconds: float = 0.0
     total_requests: int = 0
+    non_paper_dois_skipped: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -272,6 +288,7 @@ class Telemetry:
             "throttled_count": self.throttled_count,
             "throttled_sleep_seconds": self.throttled_sleep_seconds,
             "total_requests": self.total_requests,
+            "non_paper_dois_skipped": self.non_paper_dois_skipped,
         }
 
 

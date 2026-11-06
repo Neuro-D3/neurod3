@@ -266,3 +266,30 @@ class TestHttpGetJsonUsesIt:
         session = FakeSession()
         F.http_get_json(session, "https://api.crossref.org/works/10.1/abc", min_interval_seconds=0)
         assert session.urls == ["https://api.crossref.org/works/10.1/abc"]
+
+
+# --- is_paper: DOIs that name something other than a paper (upstream 846cd49, 2472a23)
+
+@pytest.mark.parametrize("doi", [
+    "10.7554/eLife.88888.3.sa0",       # eLife assessment
+    "10.7554/elife.88888.sa3",         # author response
+    "10.17605/OSF.IO/PBU8X",           # OSF registration
+    "10.82901/nemar.ds004000",         # NEMAR dataset record
+])
+def test_is_paper_rejects_non_papers(doi):
+    from utils.find_reuse_core import is_paper
+    assert is_paper(doi) is False
+
+
+@pytest.mark.parametrize("doi", [
+    "10.7554/eLife.88888",
+    "10.7554/eLife.88888.3",
+    "10.1101/2024.04.23.590673",
+    "10.1038/s41586-023-06031-6",
+    "10.1016/j.neuron.2021.03.sa1x",   # .sa followed by more than digits
+    None,
+    "",
+])
+def test_is_paper_keeps_papers(doi):
+    from utils.find_reuse_core import is_paper
+    assert is_paper(doi) is True
