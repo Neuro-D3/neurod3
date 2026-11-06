@@ -1,5 +1,7 @@
 """Tests for the deterministic citation-context helpers in utils/paper_citations.py."""
 
+import pytest
+
 from utils import paper_citations as C
 
 
@@ -42,3 +44,41 @@ class TestGetCitingPapersSkipsNonPapers:
                                   min_interval_seconds=0)
         assert [p["doi"] for p in out] == ["10.1038/s41586-023-06031-6"]
         assert tel.non_paper_dois_skipped == 2
+
+
+class TestOpenAlexFailuresRaise:
+    """A citing-paper list cut short by OpenAlex must raise, not look complete."""
+
+    def test_failure_on_a_later_page_raises_with_the_count(self, monkeypatch):
+        from utils.find_reuse_core import HttpFetchFailed, OpenAlexError, Telemetry
+
+        pages = [
+            {"results": [{"id": "https://openalex.org/W2", "doi": "https://doi.org/10.1/a"}],
+             "meta": {"next_cursor": "abc"}},
+            HttpFetchFailed("https://api.openalex.org/works", "HTTPError: 500", 500),
+        ]
+
+        def fake_get(*a, **k):
+            assert k.get("raise_on_failure") is True
+            item = pages.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        monkeypatch.setattr(C, "http_get_json", fake_get)
+        with pytest.raises(OpenAlexError, match="after 1 papers"):
+            C.get_citing_papers(None, "W99", "2020-01-01", telemetry=Telemetry(), max_results=10,
+                                min_interval_seconds=0)
+
+    def test_paper_data_raises_only_when_asked(self, monkeypatch):
+        from utils.find_reuse_core import HttpFetchFailed, OpenAlexError, Telemetry
+
+        def fake_get(*a, **k):
+            if k.get("raise_on_failure"):
+                raise HttpFetchFailed("u", "HTTPError: 500", 500)
+            return None
+
+        monkeypatch.setattr(C, "http_get_json", fake_get)
+        assert C.get_openalex_paper_data(None, "10.1/a", telemetry=Telemetry())["openalex_id"] is None
+        with pytest.raises(OpenAlexError):
+            C.get_openalex_paper_data(None, "10.1/a", telemetry=Telemetry(), raise_on_failure=True)

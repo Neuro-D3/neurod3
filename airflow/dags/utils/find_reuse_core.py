@@ -342,6 +342,30 @@ def is_definitive_no_paper(reason: Optional[str]) -> bool:
     return (reason or "") in NO_PAPER_REASONS
 
 
+class HttpFetchFailed(RuntimeError):
+    """
+    A request still failed after its retries, so what it would have returned is
+    unknown. Raised by ``http_get_json(..., raise_on_failure=True)`` instead of
+    returning None, for callers that must not mistake a refusal for "no results"
+    (upstream find_reuse's OpenAlexError, src/indirect_pipeline/openalex.py).
+    """
+
+    def __init__(self, url: str, reason: str, status: Optional[int] = None):
+        self.url = url
+        self.reason = reason
+        self.status = status
+        super().__init__(f"{reason} (status={status}) url={url}")
+
+
+class OpenAlexError(RuntimeError):
+    """
+    OpenAlex did not answer, so a citing-paper list (or a paper's record) would
+    be incomplete. The paper-mapping DAGs catch it per primary paper, save no
+    partial list, and mark that primary's citations as failed so the next run
+    fetches them again (utils/citation_status.py).
+    """
+
+
 class ApiQuotaExhausted(RuntimeError):
     """
     An API refused the request and asked us to come back much later.
@@ -442,12 +466,18 @@ def http_get_json(
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
     telemetry: Optional[Telemetry] = None,
+    raise_on_failure: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     Throttled + retried JSON GET with simple telemetry.
 
     Retries transient statuses: 429, 502, 503, 504 and network errors.
     OpenAlex URLs get a ``mailto`` parameter (see ``openalex_polite_url``).
+
+    On failure it returns None, which callers cannot tell from "nothing found".
+    With ``raise_on_failure=True`` only a 404 returns None; any other failure
+    (retries spent, another HTTP error, a body that is not JSON) raises
+    ``HttpFetchFailed``.
     """
     tel = telemetry or Telemetry()
     url = openalex_polite_url(url)
@@ -498,6 +528,8 @@ def http_get_json(
                 time.sleep(wait)
                 continue
 
+            if raise_on_failure and status == 404:
+                return None
             resp.raise_for_status()
             try:
                 return resp.json()
@@ -526,6 +558,12 @@ def http_get_json(
 
     if last_exc:
         logger.debug("http_get_json failed url=%s last_exc=%s", url, last_exc)
+    if raise_on_failure:
+        last_status = getattr(getattr(last_exc, "response", None), "status_code", None)
+        if last_status is None and "resp" in locals():
+            last_status = getattr(resp, "status_code", None)
+        reason = f"{type(last_exc).__name__}: {last_exc}" if last_exc else f"no answer after {max_retries} attempts"
+        raise HttpFetchFailed(url, reason, last_status)
     return None
 
 

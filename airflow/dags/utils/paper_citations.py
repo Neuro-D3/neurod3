@@ -20,6 +20,8 @@ from urllib.parse import quote
 import requests
 
 from utils.find_reuse_core import (
+    HttpFetchFailed,
+    OpenAlexError,
     Telemetry,
     http_get_json,
     is_paper,
@@ -84,7 +86,13 @@ def get_openalex_paper_data(
     min_interval_seconds: float = 0.2,
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
+    raise_on_failure: bool = False,
 ) -> Dict[str, Any]:
+    """
+    A paper's OpenAlex record. Empty when OpenAlex has no such DOI; with
+    ``raise_on_failure`` a request OpenAlex did not answer raises OpenAlexError
+    instead of looking like a DOI it lacks.
+    """
     doi_norm = normalize_doi(doi)
     empty = {
         "publication_date": None,
@@ -100,15 +108,19 @@ def get_openalex_paper_data(
         return empty
 
     url = f"https://api.openalex.org/works/doi:{quote(doi_norm)}"
-    data = http_get_json(
-        session,
-        url,
-        timeout=20,
-        min_interval_seconds=min_interval_seconds,
-        max_retries=max_retries,
-        backoff_seconds=backoff_seconds,
-        telemetry=telemetry,
-    )
+    try:
+        data = http_get_json(
+            session,
+            url,
+            timeout=20,
+            min_interval_seconds=min_interval_seconds,
+            max_retries=max_retries,
+            backoff_seconds=backoff_seconds,
+            telemetry=telemetry,
+            raise_on_failure=raise_on_failure,
+        )
+    except HttpFetchFailed as e:
+        raise OpenAlexError(f"OpenAlex did not answer for {doi_norm}: {e.reason} (status={e.status})") from e
     if not data:
         return empty
 
@@ -317,15 +329,24 @@ def get_citing_papers(
             "https://api.openalex.org/works"
             f"?filter={quote(filter_value)}&per_page={per_page}&cursor={quote(cursor)}"
         )
-        data = http_get_json(
-            session,
-            url,
-            timeout=30,
-            min_interval_seconds=min_interval_seconds,
-            max_retries=max_retries,
-            backoff_seconds=backoff_seconds,
-            telemetry=telemetry,
-        )
+        try:
+            data = http_get_json(
+                session,
+                url,
+                timeout=30,
+                min_interval_seconds=min_interval_seconds,
+                max_retries=max_retries,
+                backoff_seconds=backoff_seconds,
+                telemetry=telemetry,
+                raise_on_failure=True,
+            )
+        except HttpFetchFailed as e:
+            # The pages gathered so far are an incomplete list that would look
+            # complete; the caller marks this primary paper failed instead.
+            raise OpenAlexError(
+                f"OpenAlex did not answer for cites:{openalex_norm} after {len(out)} papers: "
+                f"{e.reason} (status={e.status})"
+            ) from e
         if not isinstance(data, dict):
             break
         results = data.get("results")

@@ -293,3 +293,73 @@ def test_is_paper_rejects_non_papers(doi):
 def test_is_paper_keeps_papers(doi):
     from utils.find_reuse_core import is_paper
     assert is_paper(doi) is True
+
+
+# --- raise_on_failure: a refusal must not look like "nothing found" (upstream OpenAlexError)
+
+class _StatusResponse:
+    def __init__(self, status, payload=None):
+        import requests as _rq
+        self.status_code = status
+        self.headers = {}
+        self.text = ""
+        self._payload = payload
+        self._rq = _rq
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("not json")
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            err = self._rq.HTTPError(f"HTTP {self.status_code}")
+            err.response = self
+            raise err
+
+
+class _ScriptedSession:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = 0
+
+    def get(self, url, timeout=None, headers=None, **kwargs):
+        self.calls += 1
+        return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+
+
+class TestRaiseOnFailure:
+    URL = "https://api.openalex.org/works?filter=cites:W1"
+
+    def test_default_still_returns_none_on_failure(self):
+        out = F.http_get_json(_ScriptedSession(_StatusResponse(500)), self.URL, min_interval_seconds=0)
+        assert out is None
+
+    def test_404_is_not_found_not_failure(self):
+        out = F.http_get_json(_ScriptedSession(_StatusResponse(404)), self.URL,
+                              min_interval_seconds=0, raise_on_failure=True)
+        assert out is None
+
+    def test_other_http_error_raises(self):
+        with pytest.raises(F.HttpFetchFailed) as ei:
+            F.http_get_json(_ScriptedSession(_StatusResponse(500)), self.URL,
+                            min_interval_seconds=0, raise_on_failure=True)
+        assert ei.value.status == 500
+
+    def test_spent_retries_raise(self, monkeypatch):
+        monkeypatch.setattr(F.time, "sleep", lambda s: None)
+        session = _ScriptedSession(_StatusResponse(503))
+        with pytest.raises(F.HttpFetchFailed) as ei:
+            F.http_get_json(session, self.URL, min_interval_seconds=0, max_retries=3,
+                            backoff_seconds=0, raise_on_failure=True)
+        assert session.calls == 3 and ei.value.status == 503
+
+    def test_non_json_body_raises(self):
+        with pytest.raises(F.HttpFetchFailed):
+            F.http_get_json(_ScriptedSession(_StatusResponse(200, payload=None)), self.URL,
+                            min_interval_seconds=0, raise_on_failure=True)
+
+    def test_success_returns_the_body(self):
+        out = F.http_get_json(_ScriptedSession(_StatusResponse(200, {"results": []})), self.URL,
+                              min_interval_seconds=0, raise_on_failure=True)
+        assert out == {"results": []}
