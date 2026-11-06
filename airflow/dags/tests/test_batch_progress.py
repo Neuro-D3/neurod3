@@ -96,15 +96,17 @@ ARCHIVES = ["crcns", "dandi", "openneuro", "sparc"]
 class FakeCursor:
     def __init__(self, rows):
         self._rows = rows
+        self._last_sql = ""
 
-    def execute(self, *a, **k):
-        pass
+    def execute(self, sql="", *a, **k):
+        self._last_sql = " ".join(str(sql).split())
 
     def fetchall(self):
         return self._rows
 
     def fetchone(self):
-        return None
+        # A COUNT answers 0 (summarize_run reads such counts); anything else has no row.
+        return (0,) if self._last_sql.upper().startswith("SELECT COUNT(") else None
 
     def __enter__(self):
         return self

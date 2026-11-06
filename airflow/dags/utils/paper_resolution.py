@@ -1,7 +1,7 @@
 """
 Resolve DANDI dandiset -> paper DOIs/titles.
 
-Adapted from ../find_reuse/dandi_primary_papers.py, but scoped for DAG use:
+Adapted from find_reuse src/indirect_pipeline/dandi_primary_papers.py, but scoped for DAG use:
 - fetch dandiset version metadata from DANDI API
 - extract paper DOIs from relatedResource + description
 - resolve titles/IDs via Crossref/OpenAlex

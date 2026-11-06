@@ -43,6 +43,7 @@ from utils.database import (
 )
 from utils.cache_keys import paper_cache_key_for_doi
 from utils.find_reuse_core import (
+    CitationFetchError,
     is_definitive_no_paper,
     normalize_doi,
     Telemetry,
@@ -61,6 +62,14 @@ from utils.paper_fulltext import fetch_fulltext_oa
 from utils.citing_paper_text import citing_text_pool, ensure_citing_papers
 from utils.openalex_budget import check_openalex_budget, fetch_openalex_budget, format_budget
 from utils.batch_progress import BatchProgress
+from utils.citation_status import (
+    STATUS_COMPLETE as CITATIONS_COMPLETE,
+    STATUS_FAILED as CITATIONS_FAILED,
+    citation_status_ddl,
+    count_past_retry_limit_sql,
+    has_failed_citations_sql,
+    mark_citations,
+)
 from utils.titles import clean_title
 from utils.paper_author_ids import fill_missing_author_ids
 
@@ -84,7 +93,7 @@ _SPARC_USER_AGENT = "D3-SPARC-PaperMapping/1.0"
 
 # Relationship types that indicate the publication describes / introduces this
 # dataset. Mirrors the research adapter at
-# _tmp_find_reuse_friend/archives/sparc.py:119-121.
+# find_reuse src/archives/sparc.py (the relationshipType check, about line 118).
 _ALLOWED_RELATIONSHIPS: Set[str] = {
     "IsDescribedBy",
     "IsPublishedIn",
@@ -501,6 +510,8 @@ def create_sparc_paper_mapping_tables(**_context) -> None:
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             apply_schema_ddl(cursor, ddl)
+            # citations_status per (dataset, primary paper): utils/citation_status.py
+            apply_schema_ddl(cursor, citation_status_ddl("sparc_paper_map"))
             # dataset_status / dataset_status_reason on the dataset table (utils/dataset_status.py)
             ensure_dataset_status_columns(cursor, "SPARC")
             # Whole-paper classification columns + runs table (utils/database.py);
@@ -531,10 +542,13 @@ def fetch_unmapped_sparc_ids(**context) -> Dict[str, Any]:
 
     base_where = ""
     if not include_already_mapped:
-        base_where = """
-        WHERE NOT EXISTS (
+        # Unmapped datasets, plus mapped ones whose citing papers OpenAlex did not
+        # finish answering last time (citations_status = 'failed'): see
+        # utils/citation_status.py.
+        base_where = f"""
+        WHERE (NOT EXISTS (
             SELECT 1 FROM sparc_paper_map m WHERE m.sparc_id = d.dataset_id
-        )
+        ) OR {has_failed_citations_sql("sparc_paper_map", "sparc_id")})
         """
         if not retry_unresolved:
             # A previous run already tried these and found no paper (`papers = 0`).
@@ -555,7 +569,8 @@ def fetch_unmapped_sparc_ids(**context) -> Dict[str, Any]:
            d.dataset_status, d.dataset_status_reason
     FROM sparc_dataset d
     {base_where}
-    ORDER BY d.updated_at DESC NULLS LAST, d.dataset_id ASC;
+    ORDER BY {has_failed_citations_sql("sparc_paper_map", "sparc_id")} DESC,
+             d.updated_at DESC NULLS LAST, d.dataset_id ASC;
     """
 
     with get_db_connection() as conn:
@@ -977,6 +992,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
         "citation_edges_upserted": 0,
         "citing_papers_upserted": 0,
         "primary_papers_reviewed": 0,
+        "citations_failed": 0,
         "datasets_with_primary_papers": 0,
         "already_cached": 0,
         "fulltext_fetched": 0,
@@ -1004,141 +1020,158 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                 metrics["primary_papers_reviewed"] += 1
                 after_date = created_at.date().isoformat()
 
-                openalex_id = rec.get("openalex_id")
-                publication_date = rec.get("publication_date")
-                publication_year = rec.get("publication_year")
-                authors = rec.get("authors")
-                title = rec.get("paper_title")
+                try:
+                    openalex_id = rec.get("openalex_id")
+                    publication_date = rec.get("publication_date")
+                    publication_year = rec.get("publication_year")
+                    authors = rec.get("authors")
+                    title = rec.get("paper_title")
 
-                if not openalex_id or not publication_date or not publication_year:
-                    extra = get_openalex_paper_data(
+                    if not openalex_id or not publication_date or not publication_year:
+                        extra = get_openalex_paper_data(
+                            session,
+                            primary_doi,
+                            telemetry=telemetry,
+                            raise_on_failure=True,
+                            min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
+                            max_retries=int(params.get("max_retries", 6)),
+                            backoff_seconds=float(params.get("backoff_seconds", 2.0)),
+                        )
+                        openalex_id = openalex_id or extra.get("openalex_id")
+                        publication_date = publication_date or extra.get("publication_date")
+                        publication_year = publication_year or extra.get("publication_year")
+                        title = title or extra.get("title")
+                        authors = authors or extra.get("authors")
+                        if extra.get("openalex_id") or extra.get("publication_date") or extra.get("publication_year"):
+                            cursor.execute(
+                                """
+                                UPDATE papers
+                                SET
+                                    openalex_id = COALESCE(%s, openalex_id),
+                                    title = COALESCE(%s, title),
+                                    authors = COALESCE(%s::jsonb, authors),
+                                    publication_date = COALESCE(%s, publication_date),
+                                    publication_year = COALESCE(%s, publication_year),
+                                    fetched_at = NOW()
+                                WHERE paper_doi = %s;
+                                """,
+                                (
+                                    openalex_id,
+                                    title,
+                                    json.dumps(authors) if authors is not None else None,
+                                    publication_date,
+                                    publication_year,
+                                    primary_doi,
+                                ),
+                            )
+                            conn.commit()
+
+                    primary_versions: List[Tuple[str, str]] = []
+                    if isinstance(openalex_id, str) and openalex_id.strip():
+                        primary_versions.append((primary_doi, openalex_id))
+
+                    alternate_doi = get_alternate_doi(
                         session,
                         primary_doi,
                         telemetry=telemetry,
+                        raise_on_failure=True,
                         min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
                         max_retries=int(params.get("max_retries", 6)),
                         backoff_seconds=float(params.get("backoff_seconds", 2.0)),
                     )
-                    openalex_id = openalex_id or extra.get("openalex_id")
-                    publication_date = publication_date or extra.get("publication_date")
-                    publication_year = publication_year or extra.get("publication_year")
-                    title = title or extra.get("title")
-                    authors = authors or extra.get("authors")
-                    if extra.get("openalex_id") or extra.get("publication_date") or extra.get("publication_year"):
-                        cursor.execute(
-                            """
-                            UPDATE papers
-                            SET
-                                openalex_id = COALESCE(%s, openalex_id),
-                                title = COALESCE(%s, title),
-                                authors = COALESCE(%s::jsonb, authors),
-                                publication_date = COALESCE(%s, publication_date),
-                                publication_year = COALESCE(%s, publication_year),
-                                fetched_at = NOW()
-                            WHERE paper_doi = %s;
-                            """,
-                            (
-                                openalex_id,
-                                title,
-                                json.dumps(authors) if authors is not None else None,
-                                publication_date,
-                                publication_year,
-                                primary_doi,
-                            ),
+                    if alternate_doi and alternate_doi != primary_doi:
+                        alt_extra = get_openalex_paper_data(
+                            session,
+                            alternate_doi,
+                            telemetry=telemetry,
+                            raise_on_failure=True,
+                            min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
+                            max_retries=int(params.get("max_retries", 6)),
+                            backoff_seconds=float(params.get("backoff_seconds", 2.0)),
                         )
-                        conn.commit()
+                        if isinstance(alt_extra.get("openalex_id"), str) and alt_extra.get("openalex_id"):
+                            primary_versions.append((alternate_doi, alt_extra.get("openalex_id")))
 
-                primary_versions: List[Tuple[str, str]] = []
-                if isinstance(openalex_id, str) and openalex_id.strip():
-                    primary_versions.append((primary_doi, openalex_id))
-
-                alternate_doi = get_alternate_doi(
-                    session,
-                    primary_doi,
-                    telemetry=telemetry,
-                    min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
-                    max_retries=int(params.get("max_retries", 6)),
-                    backoff_seconds=float(params.get("backoff_seconds", 2.0)),
-                )
-                if alternate_doi and alternate_doi != primary_doi:
-                    alt_extra = get_openalex_paper_data(
-                        session,
-                        alternate_doi,
-                        telemetry=telemetry,
-                        min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
-                        max_retries=int(params.get("max_retries", 6)),
-                        backoff_seconds=float(params.get("backoff_seconds", 2.0)),
-                    )
-                    if isinstance(alt_extra.get("openalex_id"), str) and alt_extra.get("openalex_id"):
-                        primary_versions.append((alternate_doi, alt_extra.get("openalex_id")))
-
-                dedup_versions: List[Tuple[str, str]] = []
-                seen_versions: set[str] = set()
-                for matched_doi, matched_openalex_id in primary_versions:
-                    key = f"{matched_doi}|{matched_openalex_id}"
-                    if key in seen_versions:
-                        continue
-                    seen_versions.add(key)
-                    dedup_versions.append((matched_doi, matched_openalex_id))
-
-                for matched_primary_doi, matched_primary_openalex_id in dedup_versions:
-                    citing_papers = get_citing_papers(
-                        session,
-                        matched_primary_openalex_id,
-                        after_date,
-                        telemetry=telemetry,
-                        max_results=max_citing_papers_per_primary,
-                        min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
-                        max_retries=int(params.get("max_retries", 6)),
-                        backoff_seconds=float(params.get("backoff_seconds", 2.0)),
-                    )
-                    progress.update(note=f"{sparc_id} {primary_doi}: {len(citing_papers)} citing papers from OpenAlex",
-                                    force=True)
-                    new_citing: List[Tuple[str, Dict[str, Any]]] = []
-                    for citing in citing_papers:
-                        citing_doi = normalize_doi(citing.get("doi"))
-                        if not citing_doi:
+                    dedup_versions: List[Tuple[str, str]] = []
+                    seen_versions: set[str] = set()
+                    for matched_doi, matched_openalex_id in primary_versions:
+                        key = f"{matched_doi}|{matched_openalex_id}"
+                        if key in seen_versions:
                             continue
-                        edge_key = (sparc_id, primary_doi, citing_doi)
-                        if edge_key in seen_edges:
-                            continue
-                        seen_edges.add(edge_key)
-                        new_citing.append((citing_doi, citing))
-                    citing_by_doi = dict(new_citing)
+                        seen_versions.add(key)
+                        dedup_versions.append((matched_doi, matched_openalex_id))
 
-                    # Cached papers are written first; the rest are fetched on the thread pool
-                    # and written here, on this thread, as each download finishes. As before,
-                    # each paper row is committed on its own (so parallel mapped batches do not
-                    # deadlock on shared DOIs) and its edge is committed separately below.
-                    for citing_index, (citing_doi, cache_metrics) in enumerate(
-                        ensure_citing_papers(conn, cursor, [c for _, c in new_citing], params=params,
-                                             output_root=output_root, pool=text_pool),
-                        1,
-                    ):
-                        progress.update(note=f"{sparc_id} {primary_doi}: citing paper {citing_index}/{len(new_citing)}")
-                        citing = citing_by_doi[citing_doi]
-                        metrics["citing_papers_upserted"] += int(bool(cache_metrics.get("paper_upserted")))
-                        metrics["already_cached"] += int(cache_metrics.get("already_cached", 0))
-                        metrics["fulltext_fetched"] += int(cache_metrics.get("fulltext_fetched", 0))
-                        metrics["fulltext_unavailable"] += int(cache_metrics.get("fulltext_unavailable", 0))
-
-                        cursor.execute(
-                            citation_upsert,
-                            (
-                                sparc_id,
-                                primary_doi,
-                                citing_doi,
-                                matched_primary_doi,
-                                matched_primary_openalex_id,
-                                citing.get("citation_source"),
-                                citing.get("publication_date"),
-                                citing.get("journal"),
-                                citing.get("senior_author_country"),
-                                run_id,
-                            ),
+                    for matched_primary_doi, matched_primary_openalex_id in dedup_versions:
+                        citing_papers = get_citing_papers(
+                            session,
+                            matched_primary_openalex_id,
+                            after_date,
+                            telemetry=telemetry,
+                            max_results=max_citing_papers_per_primary,
+                            min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
+                            max_retries=int(params.get("max_retries", 6)),
+                            backoff_seconds=float(params.get("backoff_seconds", 2.0)),
                         )
-                        metrics["citation_edges_upserted"] += 1
-                        conn.commit()
+                        progress.update(note=f"{sparc_id} {primary_doi}: {len(citing_papers)} citing papers from OpenAlex",
+                                        force=True)
+                        new_citing: List[Tuple[str, Dict[str, Any]]] = []
+                        for citing in citing_papers:
+                            citing_doi = normalize_doi(citing.get("doi"))
+                            if not citing_doi:
+                                continue
+                            edge_key = (sparc_id, primary_doi, citing_doi)
+                            if edge_key in seen_edges:
+                                continue
+                            seen_edges.add(edge_key)
+                            new_citing.append((citing_doi, citing))
+                        citing_by_doi = dict(new_citing)
+
+                        # Cached papers are written first; the rest are fetched on the thread pool
+                        # and written here, on this thread, as each download finishes. As before,
+                        # each paper row is committed on its own (so parallel mapped batches do not
+                        # deadlock on shared DOIs) and its edge is committed separately below.
+                        for citing_index, (citing_doi, cache_metrics) in enumerate(
+                            ensure_citing_papers(conn, cursor, [c for _, c in new_citing], params=params,
+                                                 output_root=output_root, pool=text_pool),
+                            1,
+                        ):
+                            progress.update(note=f"{sparc_id} {primary_doi}: citing paper {citing_index}/{len(new_citing)}")
+                            citing = citing_by_doi[citing_doi]
+                            metrics["citing_papers_upserted"] += int(bool(cache_metrics.get("paper_upserted")))
+                            metrics["already_cached"] += int(cache_metrics.get("already_cached", 0))
+                            metrics["fulltext_fetched"] += int(cache_metrics.get("fulltext_fetched", 0))
+                            metrics["fulltext_unavailable"] += int(cache_metrics.get("fulltext_unavailable", 0))
+
+                            cursor.execute(
+                                citation_upsert,
+                                (
+                                    sparc_id,
+                                    primary_doi,
+                                    citing_doi,
+                                    matched_primary_doi,
+                                    matched_primary_openalex_id,
+                                    citing.get("citation_source"),
+                                    citing.get("publication_date"),
+                                    citing.get("journal"),
+                                    citing.get("senior_author_country"),
+                                    run_id,
+                                ),
+                            )
+                            metrics["citation_edges_upserted"] += 1
+                            conn.commit()
+                    # Every citing-paper page and version answered: this list is complete.
+                    mark_citations(cursor, "sparc_paper_map", "sparc_id", sparc_id, rec.get("paper_doi"), CITATIONS_COMPLETE)
+                    conn.commit()
+                except CitationFetchError as e:
+                    # OpenAlex (or bioRxiv) stopped answering. Lists already saved for other versions
+                    # of this paper were complete; the rest is fetched again next run.
+                    conn.rollback()
+                    metrics["citations_failed"] += 1
+                    logger.warning("Citing papers for %s %s not fetched; marked failed for the next run: %s",
+                                   sparc_id, primary_doi, e)
+                    mark_citations(cursor, "sparc_paper_map", "sparc_id", sparc_id, rec.get("paper_doi"),
+                                   CITATIONS_FAILED, str(e))
+                    conn.commit()
         conn.commit()
 
     metrics["datasets_with_primary_papers"] = len(seen_datasets)
@@ -1489,6 +1522,13 @@ def summarize_run(**context) -> None:
             continue
         totals["citation_edges_upserted"] += int(r.get("citation_edges_upserted", 0) or 0)
         totals["citing_papers_upserted"] += int(r.get("citing_papers_upserted", 0) or 0)
+        # Primary papers whose citing papers OpenAlex did not finish answering; retried next run.
+        totals["citations_failed"] = totals.get("citations_failed", 0) + int(r.get("citations_failed", 0) or 0)
+        cit_tel = r.get("telemetry") or {}
+        if isinstance(cit_tel, dict):
+            # Citing works OpenAlex returned that are not papers (eLife assessments, ...).
+            totals["non_paper_dois_skipped"] = (totals.get("non_paper_dois_skipped", 0)
+                                                + int(cit_tel.get("non_paper_dois_skipped", 0) or 0))
         totals["datasets_with_primary_papers"] += int(r.get("datasets_with_primary_papers", 0) or 0)
         tel = r.get("telemetry") or {}
         if isinstance(tel, dict):
@@ -1517,6 +1557,9 @@ def summarize_run(**context) -> None:
             # papers fetched during this run: derive text_status from the
             # fetcher result stored in fulltext_available / fulltext_reason.
             backfill_papers_text_status(cursor)
+            # Failed citing-paper fetches the nightly selection no longer retries (utils/citation_status.py).
+            cursor.execute(count_past_retry_limit_sql("sparc_paper_map"))
+            citations_past_retry_limit = cursor.fetchone()[0]
             cursor.execute(
                 """
                 UPDATE sparc_paper_resolution_runs
@@ -1577,6 +1620,10 @@ def summarize_run(**context) -> None:
                 f"- fulltext sources: {totals['fulltext_source_counts']}",
                 f"- citation edges: upserted={totals['citation_edges_upserted']} context_edges_updated={totals['citation_edges_updated']}",
                 f"- citing papers upserted: {totals['citing_papers_upserted']} (datasets_with_primary_papers={totals['datasets_with_primary_papers']})",
+                # Not papers (eLife assessments, OSF, NEMAR), and lists OpenAlex left unfinished (retried next run).
+                f"- non-paper DOIs skipped: {totals.get('non_paper_dois_skipped', 0)}",
+                f"- citing-paper fetches failed: {totals.get('citations_failed', 0)} marked for retry; "
+                f"{citations_past_retry_limit} rows past the retry limit (not selected again)",
                 f"- citation contexts: extracted={totals['citation_contexts_extracted']} missing_text={totals['citation_contexts_missing_text']}",
                 f"- telemetry: {telemetry_totals}",
                 # One more metered request, to show where today's OpenAlex budget stands.

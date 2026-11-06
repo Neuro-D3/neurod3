@@ -1,5 +1,6 @@
 """
-Core helper utilities adapted from ../find_reuse for resolving paper metadata.
+Core helper utilities adapted from catalystneuro/find_reuse for resolving paper metadata.
+(Last compared with upstream 049ed38, 2026-11-05.)
 
 This file is intentionally scoped:
 - DOI normalization + extraction helpers
@@ -26,7 +27,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 
-# DOI pattern adapted from ../find_reuse/dandi_primary_papers.py.
+# DOI pattern adapted from find_reuse src/indirect_pipeline/dandi_primary_papers.py.
 # Matches `10.xxxx/...` and stops at whitespace or common punctuation that
 # typically terminates a DOI, including `<` so a DOI pasted into HTML
 # (`10.1038/nature14178</a>`) does not carry the tag along.
@@ -40,6 +41,21 @@ _DOI_JUNK_SUFFIX = re.compile(r"\.(?:svg|png|jpe?g|gif|html?)$", flags=re.IGNORE
 # the registries do not know. 10.1101 is bioRxiv/medRxiv; 10.64898 is bioRxiv's
 # prefix for deposits from 2026 on.
 _PREPRINT_PREFIXES = ("10.1101/", "10.64898/")
+
+# A DOI minted for something published alongside a paper, which OpenAlex returns
+# as a citing work as if it were one: an eLife assessment, review or author
+# response (.sa0 to .sa3), an OSF registration, or a NEMAR dataset record.
+# find_reuse's reviewers rejected every pair built on one (upstream
+# src/shared/run_fulltext_classification.py, 846cd49 and 2472a23). The pattern
+# is plain enough for both Python `re` and PostgreSQL `~*`, so the classification
+# DAG filters stored rows with the same text.
+NOT_A_PAPER_PATTERN = r"\.sa\d+$|^10\.17605/osf\.io/|^10\.82901/nemar\."
+_NOT_A_PAPER = re.compile(NOT_A_PAPER_PATTERN, flags=re.IGNORECASE)
+
+
+def is_paper(doi: Optional[str]) -> bool:
+    """Whether a DOI names a paper, as far as its form can say (upstream ``is_paper``)."""
+    return not (isinstance(doi, str) and _NOT_A_PAPER.search(doi.strip()))
 
 
 def strip_nul(text: Optional[str]) -> Optional[str]:
@@ -262,6 +278,7 @@ class Telemetry:
     throttled_count: int = 0
     throttled_sleep_seconds: float = 0.0
     total_requests: int = 0
+    non_paper_dois_skipped: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -272,6 +289,7 @@ class Telemetry:
             "throttled_count": self.throttled_count,
             "throttled_sleep_seconds": self.throttled_sleep_seconds,
             "total_requests": self.total_requests,
+            "non_paper_dois_skipped": self.non_paper_dois_skipped,
         }
 
 
@@ -322,6 +340,40 @@ NO_PAPER_REASONS = frozenset({
 def is_definitive_no_paper(reason: Optional[str]) -> bool:
     """True when an unresolved dataset truly has no paper, not a failed attempt."""
     return (reason or "") in NO_PAPER_REASONS
+
+
+class HttpFetchFailed(RuntimeError):
+    """
+    A request still failed after its retries, so what it would have returned is
+    unknown. Raised by ``http_get_json(..., raise_on_failure=True)`` instead of
+    returning None, for callers that must not mistake a refusal for "no results"
+    (upstream find_reuse's OpenAlexError, src/indirect_pipeline/openalex.py).
+    """
+
+    def __init__(self, url: str, reason: str, status: Optional[int] = None):
+        self.url = url
+        self.reason = reason
+        self.status = status
+        super().__init__(f"{reason} (status={status}) url={url}")
+
+
+class CitationFetchError(RuntimeError):
+    """
+    A source the citing-paper fetch depends on did not answer, so the list for
+    a primary paper would be incomplete. The paper-mapping DAGs catch it per
+    primary paper, save no partial list, and mark that primary's citations as
+    failed so the next run fetches them again (utils/citation_status.py).
+    Raised as is for bioRxiv (a preprint's published version); see
+    ``OpenAlexError`` for OpenAlex.
+    """
+
+
+class OpenAlexError(CitationFetchError):
+    """
+    OpenAlex did not answer, so a citing-paper list, a paper's record or the
+    search for its preprint would be incomplete (upstream find_reuse's
+    OpenAlexError).
+    """
 
 
 class ApiQuotaExhausted(RuntimeError):
@@ -424,12 +476,18 @@ def http_get_json(
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
     telemetry: Optional[Telemetry] = None,
+    raise_on_failure: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     Throttled + retried JSON GET with simple telemetry.
 
     Retries transient statuses: 429, 502, 503, 504 and network errors.
     OpenAlex URLs get a ``mailto`` parameter (see ``openalex_polite_url``).
+
+    On failure it returns None, which callers cannot tell from "nothing found".
+    With ``raise_on_failure=True`` only a 404 returns None; any other failure
+    (retries spent, another HTTP error, a body that is not JSON) raises
+    ``HttpFetchFailed``.
     """
     tel = telemetry or Telemetry()
     url = openalex_polite_url(url)
@@ -480,6 +538,8 @@ def http_get_json(
                 time.sleep(wait)
                 continue
 
+            if raise_on_failure and status == 404:
+                return None
             resp.raise_for_status()
             try:
                 return resp.json()
@@ -508,6 +568,12 @@ def http_get_json(
 
     if last_exc:
         logger.debug("http_get_json failed url=%s last_exc=%s", url, last_exc)
+    if raise_on_failure:
+        last_status = getattr(getattr(last_exc, "response", None), "status_code", None)
+        if last_status is None and "resp" in locals():
+            last_status = getattr(resp, "status_code", None)
+        reason = f"{type(last_exc).__name__}: {last_exc}" if last_exc else f"no answer after {max_retries} attempts"
+        raise HttpFetchFailed(url, reason, last_status)
     return None
 
 
