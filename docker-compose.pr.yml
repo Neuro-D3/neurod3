@@ -30,16 +30,22 @@ x-airflow-common:
     # OpenAlex API key (free). Without one, requests draw on a small daily budget
     # shared by every caller on this IP and stop at midnight UTC once spent.
     OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
-    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-9m9C9yN7OYMva9n-1kO-Y8I4JVXu2fLG3gNsYch0eK0=}
+    # Keys and the admin password have no defaults here: pr-preview.yml sets them
+    # from repository secrets (or generates them) before `up`. Left empty, Airflow
+    # stores connections unencrypted and the UI fails JWT checks, so a preview never
+    # starts with keys that are public in this file. Empty (not required) so that
+    # `down` in the teardown steps still parses without them.
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     # Keep auth signing stable across components/restarts; otherwise UI requests (incl. logs) can fail with
     # "JWT token is not valid: Signature verification failed".
-    AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:-dev-only-airflow-api-secret-key}
-    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-dev-only-airflow-jwt-secret}
-    # Airflow 3 SimpleAuthManager (stable credentials for PR previews)
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:-}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-}
+    # Airflow 3 SimpleAuthManager. The passwords file is written by pr-preview.yml from
+    # the PREVIEW_AIRFLOW_ADMIN_PASSWORD secret; it is gitignored (see the .example file).
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: 'airflow-admin:admin'
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: '/opt/airflow/config/simple_auth_manager_passwords.json'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}

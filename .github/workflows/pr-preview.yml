@@ -351,7 +351,22 @@ jobs:
           UID: ${{ env.UID }}
           GID: ${{ env.GID }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AIRFLOW__CORE__FERNET_KEY: ${{ secrets.PREVIEW_AIRFLOW_FERNET_KEY }}
+          PREVIEW_AIRFLOW_ADMIN_PASSWORD: ${{ secrets.PREVIEW_AIRFLOW_ADMIN_PASSWORD }}
         run: |
+          # Fail closed: a preview is public, so it never starts with known keys.
+          for name in AIRFLOW__CORE__FERNET_KEY PREVIEW_AIRFLOW_ADMIN_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret for $name is empty. Set PREVIEW_AIRFLOW_FERNET_KEY and PREVIEW_AIRFLOW_ADMIN_PASSWORD as repository secrets."
+              exit 1
+            fi
+          done
+          # Signing keys only need to match across this deploy's containers.
+          export AIRFLOW__API__SECRET_KEY="$(openssl rand -hex 32)"
+          export AIRFLOW__API_AUTH__JWT_SECRET="$(openssl rand -hex 32)"
+          # SimpleAuthManager passwords file (gitignored), readable by the containers' UID only.
+          (umask 077 && jq -n --arg p "$PREVIEW_AIRFLOW_ADMIN_PASSWORD" '{"airflow-admin": $p}' > airflow/config/simple_auth_manager_passwords.json)
+
           echo "Building and deploying PR #$PR_NUMBER..."
           echo "Using UID=$UID, GID=$GID for containers"
           export REACT_APP_API_URL="http://${PUBLIC_IP}/pr-${PR_NUMBER}/api"
