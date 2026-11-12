@@ -56,6 +56,27 @@ def test_long_errors_are_cut():
     assert len(cur.executed[0][1][1]) == 1000
 
 
+def test_mark_none_clears_the_status():
+    # Nothing to fetch (no OpenAlex id): an earlier 'failed' must not stay and be retried.
+    cur = FakeCursor()
+    S.mark_citations(cur, "dandi_paper_map", "dandi_id", "000034", "10.1/x", None)
+    sql, params = cur.executed[0]
+    assert params == (None, None, "000034", "10.1/x")
+    assert "citations_attempts = 0" in sql
+
+
+def test_mark_truncated():
+    cur = FakeCursor()
+    S.mark_citations(cur, "dandi_paper_map", "dandi_id", "000034", "10.1/x", S.STATUS_TRUNCATED)
+    assert cur.executed[0][1] == ("truncated", None, "000034", "10.1/x")
+
+
+def test_status_of_a_fetch_that_raised_nothing():
+    assert S.fetched_citations_status(0, False) is None
+    assert S.fetched_citations_status(1, False) == "complete"
+    assert S.fetched_citations_status(2, True) == "truncated"
+
+
 def test_unknown_status_is_refused():
     with pytest.raises(ValueError):
         S.mark_citations(FakeCursor(), "dandi_paper_map", "dandi_id", "1", "d", "partial")

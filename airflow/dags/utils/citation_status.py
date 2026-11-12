@@ -9,11 +9,18 @@ again.
 
 Each ``<x>_paper_map`` row (one per dataset and primary paper) now records:
 
-- ``citations_status``: ``complete`` when every citing-paper page and version
-  was fetched; ``failed`` when a citation source did not answer
-  (``CitationFetchError``), in which case none of that list was saved; NULL
-  when never fetched or nothing could be fetched (no OpenAlex id, citation
-  enrichment turned off, rows from before this column).
+- ``citations_status``:
+  - ``complete``: every citing-paper page and version was fetched.
+  - ``truncated``: the fetch worked but stopped at
+    ``max_citing_papers_per_primary`` with more citing papers left, so the
+    list is known to be short. It is not retried; a run with a higher cap
+    and ``include_already_mapped`` fetches the rest.
+  - ``failed``: a citation source did not answer (``CitationFetchError``).
+    The list of the version being fetched is not saved; a version fetched
+    before it keeps its list.
+  - NULL: never fetched, or there was nothing to ask OpenAlex about (the
+    paper has no OpenAlex id and no other version, citation enrichment turned
+    off, rows from before this column).
 - ``citations_checked_at``: when that status was set.
 - ``citations_error``: the error for a ``failed`` row, cleared on success.
 - ``citations_attempts``: how many runs in a row the source answered with an
@@ -34,6 +41,7 @@ from __future__ import annotations
 from typing import Optional
 
 STATUS_COMPLETE = "complete"
+STATUS_TRUNCATED = "truncated"
 STATUS_FAILED = "failed"
 
 # A row with this many counted failures in a row is no longer selected for retry.
@@ -53,16 +61,29 @@ def citation_status_ddl(map_table: str) -> str:
     """
 
 
+def fetched_citations_status(versions_fetched: int, truncated: bool) -> Optional[str]:
+    """
+    The status of a fetch that raised nothing: None when no version of the
+    paper had an OpenAlex id to fetch citing papers for, ``truncated`` when a
+    list stopped at the cap, otherwise ``complete``.
+    """
+    if versions_fetched <= 0:
+        return None
+    return STATUS_TRUNCATED if truncated else STATUS_COMPLETE
+
+
 def mark_citations(cursor, map_table: str, id_col: str, dataset_id: str, paper_doi: str,
-                   status: str, error: Optional[str] = None, *, count_attempt: bool = True) -> None:
+                   status: Optional[str], error: Optional[str] = None, *, count_attempt: bool = True) -> None:
     """
     Set one (dataset, primary paper) row's citation status. The caller commits.
+    A status of None clears it (nothing could be fetched), so a row that failed
+    earlier is not retried for a list that does not exist.
 
     A failure adds one to ``citations_attempts`` unless ``count_attempt`` is
     False (pass ``not error.transient``: a busy or unreachable source is not
     counted); a success resets it to 0.
     """
-    if status not in (STATUS_COMPLETE, STATUS_FAILED):
+    if status not in (None, STATUS_COMPLETE, STATUS_TRUNCATED, STATUS_FAILED):
         raise ValueError(f"unknown citations_status {status!r}")
     error_text = None
     if status == STATUS_FAILED and error:

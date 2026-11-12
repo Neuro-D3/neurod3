@@ -383,6 +383,15 @@ def iter_primary_versions(
         yield alternate_doi, alt_openalex_id
 
 
+class CitingPapers(list):
+    """
+    The list ``get_citing_papers`` returns. ``truncated`` is True when it
+    stopped at ``max_results`` while OpenAlex had more citing works to give.
+    """
+
+    truncated: bool = False
+
+
 def get_citing_papers(
     session: requests.Session,
     openalex_id: str,
@@ -400,8 +409,10 @@ def get_citing_papers(
 
     per_page = min(max(int(max_results or 0), 1), 200)
     cursor = "*"
-    out: List[Dict[str, Any]] = []
+    out: CitingPapers = CitingPapers()
     seen: set[str] = set()
+    works_read = 0          # results looked at, kept or not
+    total_count: Any = None  # OpenAlex's count of citing works (meta.count)
 
     while cursor and len(out) < max_results:
         filter_value = f"cites:{openalex_norm},publication_date:>{after_date}"
@@ -435,6 +446,7 @@ def get_citing_papers(
             break
 
         for work in results:
+            works_read += 1
             if not isinstance(work, dict):
                 continue
             doi = normalize_doi(str(work.get("doi", "")).replace("https://doi.org/", ""))
@@ -488,10 +500,16 @@ def get_citing_papers(
                 break
 
         meta = data.get("meta")
+        if isinstance(meta, dict) and isinstance(meta.get("count"), int):
+            total_count = meta["count"]
         cursor = meta.get("next_cursor") if isinstance(meta, dict) else None
         if not isinstance(cursor, str) or not cursor.strip():
             break
 
+    if len(out) >= max_results:
+        # Stopped at the cap. Truncated unless every citing work was read; when
+        # OpenAlex gave no count, assume there was more.
+        out.truncated = works_read < total_count if isinstance(total_count, int) else True
     return out
 
 

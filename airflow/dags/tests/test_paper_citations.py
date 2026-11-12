@@ -193,3 +193,38 @@ class TestIterPrimaryVersions:
         assert list(C.iter_primary_versions(None, "10.1/a", "W1", telemetry=Telemetry())) == [("10.1/a", "W1")]
         monkeypatch.setattr(C, "get_alternate_doi", lambda s, doi, **k: doi)
         assert list(C.iter_primary_versions(None, "10.1/a", "W1", telemetry=Telemetry())) == [("10.1/a", "W1")]
+
+
+class TestCitingPapersTruncated:
+    """A list that stopped at max_results with more to come says so."""
+
+    def _pages(self, monkeypatch, n_works, count):
+        works = [{"id": f"https://openalex.org/W{i}", "doi": f"https://doi.org/10.1/p{i}"} for i in range(n_works)]
+        meta = {"next_cursor": None}
+        if count is not None:
+            meta["count"] = count
+        monkeypatch.setattr(C, "http_get_json", lambda *a, **k: {"results": works, "meta": meta})
+
+    def _get(self, max_results):
+        from utils.find_reuse_core import Telemetry
+        return C.get_citing_papers(None, "W99", "2020-01-01", telemetry=Telemetry(), max_results=max_results,
+                                   min_interval_seconds=0)
+
+    def test_under_the_cap_is_not_truncated(self, monkeypatch):
+        self._pages(monkeypatch, 3, 3)
+        out = self._get(10)
+        assert len(out) == 3 and out.truncated is False
+
+    def test_cap_reached_with_more_left_is_truncated(self, monkeypatch):
+        self._pages(monkeypatch, 5, 40)
+        out = self._get(5)
+        assert len(out) == 5 and out.truncated is True
+
+    def test_cap_reached_exactly_at_the_end_is_not_truncated(self, monkeypatch):
+        self._pages(monkeypatch, 5, 5)
+        out = self._get(5)
+        assert len(out) == 5 and out.truncated is False
+
+    def test_cap_reached_without_a_count_is_assumed_truncated(self, monkeypatch):
+        self._pages(monkeypatch, 5, None)
+        assert self._get(5).truncated is True

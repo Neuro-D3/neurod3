@@ -55,10 +55,10 @@ from utils.citing_paper_text import citing_text_pool, ensure_citing_papers
 from utils.openalex_budget import check_openalex_budget, fetch_openalex_budget, format_budget
 from utils.batch_progress import BatchProgress
 from utils.citation_status import (
-    STATUS_COMPLETE as CITATIONS_COMPLETE,
     STATUS_FAILED as CITATIONS_FAILED,
     citation_status_ddl,
     count_past_retry_limit_sql,
+    fetched_citations_status,
     has_failed_citations_sql,
     mark_citations,
 )
@@ -901,6 +901,8 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                             # Release the row lock before this worker moves on to other papers.
                             conn.commit()
 
+                    versions_fetched = 0
+                    list_truncated = False
                     # The paper's own citing papers are fetched and saved before its other
                     # version is looked up (utils.paper_citations.iter_primary_versions).
                     for matched_primary_doi, matched_primary_openalex_id in iter_primary_versions(
@@ -922,6 +924,8 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                             max_retries=int(params.get("max_retries", 6)),
                             backoff_seconds=float(params.get("backoff_seconds", 2.0)),
                         )
+                        versions_fetched += 1
+                        list_truncated = list_truncated or bool(getattr(citing_papers, "truncated", False))
                         progress.update(note=f"{openneuro_id} {primary_doi}: {len(citing_papers)} citing papers from OpenAlex",
                                         force=True)
                         new_citing: List[Tuple[str, Dict[str, Any]]] = []
@@ -969,8 +973,10 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                             )
                             metrics["citation_edges_upserted"] += 1
                             conn.commit()
-                    # Every citing-paper page and version answered: this list is complete.
-                    mark_citations(cursor, "openneuro_paper_map", "openneuro_id", openneuro_id, rec.get("paper_doi"), CITATIONS_COMPLETE)
+                    # Every page and version answered: complete, truncated at the cap, or
+                    # (no OpenAlex id to ask about) left without a status.
+                    mark_citations(cursor, "openneuro_paper_map", "openneuro_id", openneuro_id, rec.get("paper_doi"),
+                                   fetched_citations_status(versions_fetched, list_truncated))
                     conn.commit()
                 except CitationFetchError as e:
                     # OpenAlex (or bioRxiv) stopped answering. Lists already saved for other versions
