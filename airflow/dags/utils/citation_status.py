@@ -105,6 +105,17 @@ def mark_citations(cursor, map_table: str, id_col: str, dataset_id: str, paper_d
     )
 
 
+def already_fetched(status: Optional[str]) -> bool:
+    """
+    Whether a row's citing papers are in and need no fetch on a retry run:
+    ``complete``, or ``truncated`` (short only because of the cap). A dataset
+    is selected again when one of its primary papers failed; its other
+    primaries are skipped with this, so a retry asks OpenAlex only for the
+    lists that are missing.
+    """
+    return status in (STATUS_COMPLETE, STATUS_TRUNCATED)
+
+
 def has_failed_citations_sql(map_table: str, id_col: str, dataset_alias: str = "d") -> str:
     """
     SQL condition: the dataset has a primary paper whose citing papers failed to

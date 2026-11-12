@@ -64,6 +64,7 @@ from utils.openalex_budget import check_openalex_budget, fetch_openalex_budget, 
 from utils.batch_progress import BatchProgress
 from utils.citation_status import (
     STATUS_FAILED as CITATIONS_FAILED,
+    already_fetched,
     citation_status_ddl,
     count_past_retry_limit_sql,
     fetched_citations_status,
@@ -946,7 +947,8 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                     p.title,
                     p.authors,
                     p.publication_date,
-                    p.publication_year
+                    p.publication_year,
+                    m.citations_status
                 FROM sparc_dataset d
                 JOIN sparc_paper_map m ON m.sparc_id = d.dataset_id
                 LEFT JOIN papers p ON p.paper_doi = m.paper_doi
@@ -966,6 +968,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                         "authors": row[5],
                         "publication_date": row[6],
                         "publication_year": row[7],
+                        "citations_status": row[8],
                     }
                 )
 
@@ -993,6 +996,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
         "citing_papers_upserted": 0,
         "primary_papers_reviewed": 0,
         "citations_failed": 0,
+        "citations_already_fetched": 0,
         "datasets_with_primary_papers": 0,
         "already_cached": 0,
         "fulltext_fetched": 0,
@@ -1000,6 +1004,9 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
     }
     seen_datasets: set[str] = set()
     seen_edges: set[tuple[str, str, str]] = set()
+    # A normal run fetches only lists that are missing or failed. A run that asks
+    # for everything (include_already_mapped) or for named datasets fetches all.
+    skip_already_fetched = not bool(params.get("include_already_mapped", False)) and not requested_dataset_ids(params)
 
     with citing_text_pool(params) as text_pool, get_db_connection() as conn:
         with conn.cursor() as cursor:
@@ -1015,6 +1022,10 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                 progress.update(rec_index, note=f"starting {sparc_id} {primary_doi}", force=True)
                 created_at = rec.get("created_at")
                 if not primary_doi or not created_at:
+                    continue
+                if skip_already_fetched and already_fetched(rec.get("citations_status")):
+                    # The dataset is here for another primary paper's failed fetch; this list is in.
+                    metrics["citations_already_fetched"] += 1
                     continue
                 seen_datasets.add(sparc_id)
                 metrics["primary_papers_reviewed"] += 1

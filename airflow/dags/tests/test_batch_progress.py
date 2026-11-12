@@ -149,9 +149,10 @@ def dag_module(request, monkeypatch):
 def test_citation_batch_logs_each_primary_paper_and_the_finish(dag_module, monkeypatch, caplog):
     archive, mod = dag_module
     created = datetime(2020, 1, 1, tzinfo=timezone.utc)
-    # dataset_id, created_at, paper_doi, openalex_id, title, authors, publication_date, publication_year
-    rows = [("ds1", created, "10.1/a", "W1", "A", [], "2019-01-01", 2019),
-            ("ds1", created, "10.1/b", "W2", "B", [], "2019-01-01", 2019)]
+    # dataset_id, created_at, paper_doi, openalex_id, title, authors, publication_date, publication_year,
+    # citations_status
+    rows = [("ds1", created, "10.1/a", "W1", "A", [], "2019-01-01", 2019, None),
+            ("ds1", created, "10.1/b", "W2", "B", [], "2019-01-01", 2019, None)]
     monkeypatch.setattr(mod, "get_db_connection", fake_db(rows))
     monkeypatch.setattr(mod, "iter_primary_versions",
                         lambda session, doi, openalex_id, **k: iter([(doi, openalex_id)]))
@@ -172,6 +173,32 @@ def test_citation_batch_logs_each_primary_paper_and_the_finish(dag_module, monke
     assert "Citations batch 7: 0/2 primary papers (0%)" in text and "starting ds1 10.1/a" in text
     assert "ds1 10.1/b: 3 citing papers from OpenAlex" in text
     assert "Citations batch 7: 2/2 primary papers (100%)" in text and "batch finished" in text
+
+
+@pytest.mark.parametrize("extra_params, fetched", [
+    ({}, ["W2", "W3"]),                                        # a retry run: only the missing lists
+    ({"include_already_mapped": True}, ["W1", "W2", "W3", "W4"]),
+    ({"dataset_ids": "ds1"}, ["W1", "W2", "W3", "W4"]),
+])
+def test_citation_batch_skips_lists_already_fetched(dag_module, monkeypatch, extra_params, fetched):
+    archive, mod = dag_module
+    created = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    rows = [("ds1", created, "10.1/a", "W1", "A", [], "2019-01-01", 2019, "complete"),
+            ("ds1", created, "10.1/b", "W2", "B", [], "2019-01-01", 2019, "failed"),
+            ("ds1", created, "10.1/c", "W3", "C", [], "2019-01-01", 2019, None),
+            ("ds1", created, "10.1/d", "W4", "D", [], "2019-01-01", 2019, "truncated")]
+    monkeypatch.setattr(mod, "get_db_connection", fake_db(rows))
+    monkeypatch.setattr(mod, "iter_primary_versions",
+                        lambda session, doi, openalex_id, **k: iter([(doi, openalex_id)]))
+    asked = []
+    monkeypatch.setattr(mod, "get_citing_papers", lambda session, openalex_id, *a, **k: asked.append(openalex_id) or [])
+    monkeypatch.setattr(mod, "ensure_citing_papers", lambda conn, cursor, papers, **k: iter(()))
+
+    out = mod.fetch_and_persist_citations_batch(batch_index=1, dataset_ids=["ds1"], run_id="r",
+                                                params={"max_citing_papers_per_primary": 10, **extra_params})
+    assert asked == fetched
+    assert out["citations_already_fetched"] == 4 - len(fetched)
+    assert out["primary_papers_reviewed"] == len(fetched)
 
 
 def test_context_batch_logs_start_and_finish(dag_module, monkeypatch, caplog):

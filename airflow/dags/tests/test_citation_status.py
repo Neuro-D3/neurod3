@@ -77,6 +77,11 @@ def test_status_of_a_fetch_that_raised_nothing():
     assert S.fetched_citations_status(2, True) == "truncated"
 
 
+def test_already_fetched():
+    assert S.already_fetched("complete") and S.already_fetched("truncated")
+    assert not S.already_fetched("failed") and not S.already_fetched(None)
+
+
 def test_unknown_status_is_refused():
     with pytest.raises(ValueError):
         S.mark_citations(FakeCursor(), "dandi_paper_map", "dandi_id", "1", "d", "partial")
