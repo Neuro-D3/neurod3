@@ -362,7 +362,12 @@ For detailed API usage, see [docs/API_USAGE.md](docs/API_USAGE.md).
 4. **`example_dag`** - Basic Airflow example for learning
 
 5. **`dandi_paper_mapping`, `openneuro_paper_mapping`, `crcns_paper_mapping`, `sparc_paper_mapping`** - Resolve each dataset's primary papers, find citing papers via OpenAlex, fetch their full text, and fill `papers`, `<src>_paper_map` and `<src>_paper_citations`
-   - Each `<src>_paper_map` row records `citations_status`: `complete` when every citing-paper page answered, `failed` when OpenAlex, or bioRxiv for a preprint's published version, did not answer (nothing of that list is saved, and the error is in `citations_error`). The nightly run selects datasets with a `failed` row, first, as well as unmapped ones, so a failed fetch is retried on the next runs. A row that fails three runs in a row (`citations_attempts`) is left alone with its status and error, and only an `include_already_mapped` run fetches it again. Run summaries report `citations_failed` and how many rows are past the retry limit. See `utils/citation_status.py`
+   - Each `<src>_paper_map` row records `citations_status` (see `utils/citation_status.py`):
+     - `complete`: every citing-paper page answered.
+     - `truncated`: the fetch worked but stopped at `max_citing_papers_per_primary` with more citing papers left. Not retried.
+     - `failed`: OpenAlex, or bioRxiv for a preprint's published version, did not answer; the error is in `citations_error`. The list being fetched is not saved. The paper's own citing papers are fetched before its other version is looked up, so they are kept when only that lookup fails.
+     - empty: never fetched, or the paper has no OpenAlex id to ask about.
+   - The nightly run selects datasets with a `failed` row, first, as well as unmapped ones, and fetches only the lists that are missing, so a failed fetch is retried on the next runs. `citations_attempts` counts the runs in a row where the source answered with an error of its own (a 400, a 403, a 501); after three the row is left alone with its status and error, and only an `include_already_mapped` run fetches it again. A run where the source was busy or unreachable (429, 500, 502, 503, 504, a timeout) is retried without being counted. Run summaries report `citations_failed` and how many rows are past the retry limit
 
 6. **`paper_reuse_classification`** - LLM classification of every (citing paper, dataset) pair as REUSE / MENTION / NEITHER (or PRIMARY in direct mode). Manual trigger; see [Paper Reuse Classification](#paper-reuse-classification)
 
