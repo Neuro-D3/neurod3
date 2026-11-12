@@ -153,7 +153,8 @@ def test_citation_batch_logs_each_primary_paper_and_the_finish(dag_module, monke
     rows = [("ds1", created, "10.1/a", "W1", "A", [], "2019-01-01", 2019),
             ("ds1", created, "10.1/b", "W2", "B", [], "2019-01-01", 2019)]
     monkeypatch.setattr(mod, "get_db_connection", fake_db(rows))
-    monkeypatch.setattr(mod, "get_alternate_doi", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "iter_primary_versions",
+                        lambda session, doi, openalex_id, **k: iter([(doi, openalex_id)]))
     monkeypatch.setattr(mod, "get_citing_papers",
                         lambda *a, **k: [{"doi": "10.9/c1"}, {"doi": "10.9/c2"}, {"doi": "10.9/c3"}])
     monkeypatch.setattr(mod, "ensure_citing_papers",

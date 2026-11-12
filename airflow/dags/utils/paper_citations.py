@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import quote
 
 import requests
@@ -331,6 +331,56 @@ def get_alternate_doi(
         backoff_seconds=backoff_seconds,
         raise_on_failure=raise_on_failure,
     )
+
+
+def iter_primary_versions(
+    session: requests.Session,
+    primary_doi: str,
+    openalex_id: Optional[str],
+    *,
+    telemetry: Telemetry,
+    min_interval_seconds: float = 0.2,
+    max_retries: int = 6,
+    backoff_seconds: float = 2.0,
+) -> Iterator[Tuple[str, str]]:
+    """
+    The versions of a primary paper whose citing papers are to be fetched, as
+    ``(doi, openalex_id)``: the paper itself first, then its other version
+    (preprint or published article) when it has one.
+
+    It is a generator so that the caller fetches and saves the paper's own
+    citing papers before the other version is looked up. That lookup is the
+    less dependable step (bioRxiv, or an OpenAlex title search), and when it
+    raises ``CitationFetchError`` the paper's own list is already saved; the
+    caller still marks the row failed, so the other version is tried again.
+    """
+    seen: set[str] = set()
+    if isinstance(openalex_id, str) and openalex_id.strip():
+        seen.add(f"{primary_doi}|{openalex_id}")
+        yield primary_doi, openalex_id
+
+    alternate_doi = get_alternate_doi(
+        session,
+        primary_doi,
+        telemetry=telemetry,
+        raise_on_failure=True,
+        min_interval_seconds=min_interval_seconds,
+        max_retries=max_retries,
+        backoff_seconds=backoff_seconds,
+    )
+    if not alternate_doi or alternate_doi == primary_doi:
+        return
+    alt_openalex_id = get_openalex_paper_data(
+        session,
+        alternate_doi,
+        telemetry=telemetry,
+        raise_on_failure=True,
+        min_interval_seconds=min_interval_seconds,
+        max_retries=max_retries,
+        backoff_seconds=backoff_seconds,
+    ).get("openalex_id")
+    if isinstance(alt_openalex_id, str) and alt_openalex_id and f"{alternate_doi}|{alt_openalex_id}" not in seen:
+        yield alternate_doi, alt_openalex_id
 
 
 def get_citing_papers(

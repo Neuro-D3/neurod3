@@ -149,3 +149,47 @@ class TestAlternateDoiFailuresRaise:
         assert C.get_alternate_doi(None, "10.1038/x", telemetry=Telemetry()) is None
         with pytest.raises(OpenAlexError, match="preprint search"):
             C.get_alternate_doi(None, "10.1038/x", telemetry=Telemetry(), raise_on_failure=True)
+
+
+class TestIterPrimaryVersions:
+    """The paper's own version comes first, before its other version is looked up."""
+
+    def test_own_version_is_yielded_before_the_other_is_looked_up(self, monkeypatch):
+        from utils.find_reuse_core import Telemetry
+        looked_up = []
+        monkeypatch.setattr(C, "get_alternate_doi", lambda s, doi, **k: looked_up.append(doi) or "10.1101/alt")
+        monkeypatch.setattr(C, "get_openalex_paper_data",
+                            lambda s, doi, **k: {"openalex_id": "https://openalex.org/W2"})
+        versions = C.iter_primary_versions(None, "10.1/a", "https://openalex.org/W1", telemetry=Telemetry())
+        assert next(versions) == ("10.1/a", "https://openalex.org/W1")
+        assert looked_up == []
+        assert list(versions) == [("10.1101/alt", "https://openalex.org/W2")]
+        assert looked_up == ["10.1/a"]
+
+    def test_failed_lookup_raises_after_the_own_version(self, monkeypatch):
+        from utils.find_reuse_core import CitationFetchError, Telemetry
+
+        def refuse(s, doi, **k):
+            assert k.get("raise_on_failure") is True
+            raise CitationFetchError("bioRxiv did not answer", transient=True)
+
+        monkeypatch.setattr(C, "get_alternate_doi", refuse)
+        versions = C.iter_primary_versions(None, "10.1101/p", "https://openalex.org/W1", telemetry=Telemetry())
+        assert next(versions) == ("10.1101/p", "https://openalex.org/W1")
+        with pytest.raises(CitationFetchError):
+            next(versions)
+
+    def test_no_openalex_id_still_tries_the_other_version(self, monkeypatch):
+        from utils.find_reuse_core import Telemetry
+        monkeypatch.setattr(C, "get_alternate_doi", lambda s, doi, **k: "10.1038/pub")
+        monkeypatch.setattr(C, "get_openalex_paper_data",
+                            lambda s, doi, **k: {"openalex_id": "https://openalex.org/W9"})
+        assert list(C.iter_primary_versions(None, "10.1101/p", None, telemetry=Telemetry())) == [
+            ("10.1038/pub", "https://openalex.org/W9")]
+
+    def test_no_other_version_and_same_work_are_left_out(self, monkeypatch):
+        from utils.find_reuse_core import Telemetry
+        monkeypatch.setattr(C, "get_alternate_doi", lambda s, doi, **k: None)
+        assert list(C.iter_primary_versions(None, "10.1/a", "W1", telemetry=Telemetry())) == [("10.1/a", "W1")]
+        monkeypatch.setattr(C, "get_alternate_doi", lambda s, doi, **k: doi)
+        assert list(C.iter_primary_versions(None, "10.1/a", "W1", telemetry=Telemetry())) == [("10.1/a", "W1")]

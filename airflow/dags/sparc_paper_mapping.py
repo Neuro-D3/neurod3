@@ -54,8 +54,8 @@ from utils.targeting import requested_dataset_ids, sql_id_list
 from utils.dataset_status import STATUS_EXCLUDED, ensure_dataset_status_columns, refresh_dataset_status
 from utils.paper_citations import (
     find_citation_contexts,
-    get_alternate_doi,
     get_citing_papers,
+    iter_primary_versions,
     get_openalex_paper_data,
 )
 from utils.paper_fulltext import fetch_fulltext_oa
@@ -1066,42 +1066,17 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                             )
                             conn.commit()
 
-                    primary_versions: List[Tuple[str, str]] = []
-                    if isinstance(openalex_id, str) and openalex_id.strip():
-                        primary_versions.append((primary_doi, openalex_id))
-
-                    alternate_doi = get_alternate_doi(
+                    # The paper's own citing papers are fetched and saved before its other
+                    # version is looked up (utils.paper_citations.iter_primary_versions).
+                    for matched_primary_doi, matched_primary_openalex_id in iter_primary_versions(
                         session,
                         primary_doi,
+                        openalex_id,
                         telemetry=telemetry,
-                        raise_on_failure=True,
                         min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
                         max_retries=int(params.get("max_retries", 6)),
                         backoff_seconds=float(params.get("backoff_seconds", 2.0)),
-                    )
-                    if alternate_doi and alternate_doi != primary_doi:
-                        alt_extra = get_openalex_paper_data(
-                            session,
-                            alternate_doi,
-                            telemetry=telemetry,
-                            raise_on_failure=True,
-                            min_interval_seconds=float(params.get("min_api_interval_seconds", 0.2)),
-                            max_retries=int(params.get("max_retries", 6)),
-                            backoff_seconds=float(params.get("backoff_seconds", 2.0)),
-                        )
-                        if isinstance(alt_extra.get("openalex_id"), str) and alt_extra.get("openalex_id"):
-                            primary_versions.append((alternate_doi, alt_extra.get("openalex_id")))
-
-                    dedup_versions: List[Tuple[str, str]] = []
-                    seen_versions: set[str] = set()
-                    for matched_doi, matched_openalex_id in primary_versions:
-                        key = f"{matched_doi}|{matched_openalex_id}"
-                        if key in seen_versions:
-                            continue
-                        seen_versions.add(key)
-                        dedup_versions.append((matched_doi, matched_openalex_id))
-
-                    for matched_primary_doi, matched_primary_openalex_id in dedup_versions:
+                    ):
                         citing_papers = get_citing_papers(
                             session,
                             matched_primary_openalex_id,
