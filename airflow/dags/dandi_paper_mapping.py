@@ -1614,7 +1614,7 @@ def fetch_and_persist_citations_batch(*, batch_index: int, dataset_ids: List[str
                     logger.warning("Citing papers for %s %s not fetched; marked failed for the next run: %s",
                                    dandi_id, primary_doi, e)
                     mark_citations(cursor, "dandi_paper_map", "dandi_id", dandi_id, rec.get("paper_doi"),
-                                   CITATIONS_FAILED, str(e))
+                                   CITATIONS_FAILED, str(e), count_attempt=not e.transient)
                     conn.commit()
         conn.commit()
 

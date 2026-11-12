@@ -121,7 +121,8 @@ def get_openalex_paper_data(
             raise_on_failure=raise_on_failure,
         )
     except HttpFetchFailed as e:
-        raise OpenAlexError(f"OpenAlex did not answer for {doi_norm}: {e.reason} (status={e.status})") from e
+        raise OpenAlexError(f"OpenAlex did not answer for {doi_norm}: {e.reason} (status={e.status})",
+                            transient=e.transient) from e
     if not data:
         return empty
 
@@ -191,7 +192,8 @@ def _lookup_published_version(
             # Without the published version, its citers would be missing from a
             # list that would still look complete.
             raise CitationFetchError(
-                f"bioRxiv did not answer for {doi_norm} ({server}): {e.reason} (status={e.status})"
+                f"bioRxiv did not answer for {doi_norm} ({server}): {e.reason} (status={e.status})",
+                transient=e.transient,
             ) from e
         if not isinstance(data, dict):
             continue
@@ -266,7 +268,8 @@ def _lookup_preprint_version(
         )
     except HttpFetchFailed as e:
         raise OpenAlexError(
-            f"OpenAlex did not answer the preprint search for {published_norm}: {e.reason} (status={e.status})"
+            f"OpenAlex did not answer the preprint search for {published_norm}: {e.reason} (status={e.status})",
+            transient=e.transient,
         ) from e
     if not isinstance(data, dict):
         return None
@@ -372,7 +375,8 @@ def get_citing_papers(
             # complete; the caller marks this primary paper failed instead.
             raise OpenAlexError(
                 f"OpenAlex did not answer for cites:{openalex_norm} after {len(out)} papers: "
-                f"{e.reason} (status={e.status})"
+                f"{e.reason} (status={e.status})",
+                transient=e.transient,
             ) from e
         if not isinstance(data, dict):
             break

@@ -31,6 +31,16 @@ def test_mark_failed_keeps_the_error():
     assert "citations_attempts = COALESCE(citations_attempts, 0) + 1" in sql
 
 
+def test_transient_failure_is_marked_but_not_counted():
+    # An outage (5xx, timeout) must not use up the retry limit.
+    cur = FakeCursor()
+    S.mark_citations(cur, "dandi_paper_map", "dandi_id", "000034", "10.1/x", S.STATUS_FAILED, "HTTP 503",
+                     count_attempt=False)
+    sql, params = cur.executed[0]
+    assert params == ("failed", "HTTP 503", "000034", "10.1/x")
+    assert "citations_attempts = COALESCE(citations_attempts, 0) WHERE" in sql
+
+
 def test_mark_complete_clears_the_error():
     cur = FakeCursor()
     S.mark_citations(cur, "sparc_paper_map", "sparc_id", "157", "10.1/x", S.STATUS_COMPLETE, "ignored")

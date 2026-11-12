@@ -70,6 +70,25 @@ class TestOpenAlexFailuresRaise:
             C.get_citing_papers(None, "W99", "2020-01-01", telemetry=Telemetry(), max_results=10,
                                 min_interval_seconds=0)
 
+    @pytest.mark.parametrize("transient", [True, False])
+    def test_transient_is_passed_on(self, monkeypatch, transient):
+        from utils.find_reuse_core import HttpFetchFailed, OpenAlexError, Telemetry
+
+        def fake_get(*a, **k):
+            raise HttpFetchFailed("u", "HTTP 503", 503, transient=transient)
+
+        monkeypatch.setattr(C, "http_get_json", fake_get)
+        with pytest.raises(OpenAlexError) as ei:
+            C.get_citing_papers(None, "W99", "2020-01-01", telemetry=Telemetry(), max_results=10,
+                                min_interval_seconds=0)
+        assert ei.value.transient is transient
+        with pytest.raises(OpenAlexError) as ei:
+            C.get_openalex_paper_data(None, "10.1/a", telemetry=Telemetry(), raise_on_failure=True)
+        assert ei.value.transient is transient
+        with pytest.raises(OpenAlexError) as ei:
+            C.get_alternate_doi(None, "10.1038/x", telemetry=Telemetry(), raise_on_failure=True)
+        assert ei.value.transient is transient
+
     def test_paper_data_raises_only_when_asked(self, monkeypatch):
         from utils.find_reuse_core import HttpFetchFailed, OpenAlexError, Telemetry
 
@@ -104,6 +123,7 @@ class TestAlternateDoiFailuresRaise:
         with pytest.raises(CitationFetchError, match="bioRxiv did not answer") as ei:
             C.get_alternate_doi(None, "10.1101/2024.01.01.000001", telemetry=Telemetry(), raise_on_failure=True)
         assert not isinstance(ei.value, OpenAlexError)
+        assert ei.value.transient is False
 
     def test_openalex_record_raises_when_asked(self, monkeypatch):
         from utils.find_reuse_core import OpenAlexError, Telemetry

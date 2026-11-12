@@ -16,14 +16,17 @@ Each ``<x>_paper_map`` row (one per dataset and primary paper) now records:
   enrichment turned off, rows from before this column).
 - ``citations_checked_at``: when that status was set.
 - ``citations_error``: the error for a ``failed`` row, cleared on success.
-- ``citations_attempts``: how many runs in a row have failed; reset to 0 on
-  success.
+- ``citations_attempts``: how many runs in a row the source answered with an
+  error of its own (a 400, a 403, a 501, a body that is not JSON); reset to 0
+  on success. A run where the source was only busy or unreachable (429, 500,
+  502, 503, 504, a timeout, a dropped connection) marks the row ``failed`` but
+  is not counted, so an outage of several nights does not use the attempts up.
 
 The nightly selection picks datasets with a ``failed`` row as well as unmapped
-ones, so a failed fetch is retried on the next run. A row that has failed
-``MAX_CITATION_ATTEMPTS`` times in a row is left alone: it keeps its status and
-error for a look, but no longer sorts ahead of unmapped datasets every night.
-``include_already_mapped`` runs still fetch it.
+ones, so a failed fetch is retried on the next run. A row with
+``MAX_CITATION_ATTEMPTS`` counted failures in a row is left alone: it keeps its
+status and error for a look, but no longer sorts ahead of unmapped datasets
+every night. ``include_already_mapped`` runs still fetch it.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ from typing import Optional
 STATUS_COMPLETE = "complete"
 STATUS_FAILED = "failed"
 
-# A row that failed this many runs in a row is no longer selected for retry.
+# A row with this many counted failures in a row is no longer selected for retry.
 MAX_CITATION_ATTEMPTS = 3
 
 # Error text is kept short enough to read in a table, long enough to show the URL.
@@ -51,18 +54,25 @@ def citation_status_ddl(map_table: str) -> str:
 
 
 def mark_citations(cursor, map_table: str, id_col: str, dataset_id: str, paper_doi: str,
-                   status: str, error: Optional[str] = None) -> None:
+                   status: str, error: Optional[str] = None, *, count_attempt: bool = True) -> None:
     """
     Set one (dataset, primary paper) row's citation status. The caller commits.
 
-    A failure adds one to ``citations_attempts``; a success resets it to 0.
+    A failure adds one to ``citations_attempts`` unless ``count_attempt`` is
+    False (pass ``not error.transient``: a busy or unreachable source is not
+    counted); a success resets it to 0.
     """
     if status not in (STATUS_COMPLETE, STATUS_FAILED):
         raise ValueError(f"unknown citations_status {status!r}")
     error_text = None
     if status == STATUS_FAILED and error:
         error_text = error[:_MAX_ERROR_CHARS]
-    attempts_sql = "COALESCE(citations_attempts, 0) + 1" if status == STATUS_FAILED else "0"
+    if status != STATUS_FAILED:
+        attempts_sql = "0"
+    elif count_attempt:
+        attempts_sql = "COALESCE(citations_attempts, 0) + 1"
+    else:
+        attempts_sql = "COALESCE(citations_attempts, 0)"
     cursor.execute(
         f"""
         UPDATE {map_table}

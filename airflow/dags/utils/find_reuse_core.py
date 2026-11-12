@@ -378,7 +378,15 @@ class CitationFetchError(RuntimeError):
     failed so the next run fetches them again (utils/citation_status.py).
     Raised as is for bioRxiv (a preprint's published version); see
     ``OpenAlexError`` for OpenAlex.
+
+    ``transient`` is True when the source was busy or unreachable (see
+    ``HttpFetchFailed.transient``). Such a failure says nothing about the
+    request itself, so it does not count towards the retry limit.
     """
+
+    def __init__(self, message: str, *, transient: bool = False):
+        self.transient = transient
+        super().__init__(message)
 
 
 class OpenAlexError(CitationFetchError):
