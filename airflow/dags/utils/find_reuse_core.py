@@ -1,5 +1,6 @@
 """
-Core helper utilities adapted from ../find_reuse for resolving paper metadata.
+Core helper utilities adapted from catalystneuro/find_reuse for resolving paper metadata.
+(Last compared with upstream 049ed38, 2026-11-05.)
 
 This file is intentionally scoped:
 - DOI normalization + extraction helpers
@@ -26,7 +27,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 
-# DOI pattern adapted from ../find_reuse/dandi_primary_papers.py.
+# DOI pattern adapted from find_reuse src/indirect_pipeline/dandi_primary_papers.py.
 # Matches `10.xxxx/...` and stops at whitespace or common punctuation that
 # typically terminates a DOI, including `<` so a DOI pasted into HTML
 # (`10.1038/nature14178</a>`) does not carry the tag along.
@@ -40,6 +41,21 @@ _DOI_JUNK_SUFFIX = re.compile(r"\.(?:svg|png|jpe?g|gif|html?)$", flags=re.IGNORE
 # the registries do not know. 10.1101 is bioRxiv/medRxiv; 10.64898 is bioRxiv's
 # prefix for deposits from 2026 on.
 _PREPRINT_PREFIXES = ("10.1101/", "10.64898/")
+
+# A DOI minted for something published alongside a paper, which OpenAlex returns
+# as a citing work as if it were one: an eLife assessment, review or author
+# response (.sa0 to .sa3), an OSF registration, or a NEMAR dataset record.
+# find_reuse's reviewers rejected every pair built on one (upstream
+# src/shared/run_fulltext_classification.py, 846cd49 and 2472a23). The pattern
+# is plain enough for both Python `re` and PostgreSQL `~*`, so the classification
+# DAG filters stored rows with the same text.
+NOT_A_PAPER_PATTERN = r"\.sa\d+$|^10\.17605/osf\.io/|^10\.82901/nemar\."
+_NOT_A_PAPER = re.compile(NOT_A_PAPER_PATTERN, flags=re.IGNORECASE)
+
+
+def is_paper(doi: Optional[str]) -> bool:
+    """Whether a DOI names a paper, as far as its form can say (upstream ``is_paper``)."""
+    return not (isinstance(doi, str) and _NOT_A_PAPER.search(doi.strip()))
 
 
 def strip_nul(text: Optional[str]) -> Optional[str]:
@@ -262,6 +278,7 @@ class Telemetry:
     throttled_count: int = 0
     throttled_sleep_seconds: float = 0.0
     total_requests: int = 0
+    non_paper_dois_skipped: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -272,6 +289,7 @@ class Telemetry:
             "throttled_count": self.throttled_count,
             "throttled_sleep_seconds": self.throttled_sleep_seconds,
             "total_requests": self.total_requests,
+            "non_paper_dois_skipped": self.non_paper_dois_skipped,
         }
 
 
@@ -301,6 +319,15 @@ OPENALEX_HOST = "api.openalex.org"
 # covers real burst limits; a spent OpenAlex daily allowance asks for hours.
 MAX_RETRY_AFTER_SECONDS = 300.0
 
+# Statuses worth asking again. 500 is usually a one-off on the server's side
+# too: on 2026-10-08 api.biorxiv.org answered one preprint's published-version
+# lookup with a 500 and the same request worked minutes later, but the lookup
+# had already returned "no published version" and its 73 citing papers were
+# skipped. It gets fewer tries than the overload statuses, because a 500 that
+# keeps coming back is a real fault rather than a busy server.
+TRANSIENT_STATUSES = (429, 500, 502, 503, 504)
+SERVER_ERROR_MAX_RETRIES = 4   # retries after the first 500: waits of 2, 4, 8, 16 s by default
+
 
 # Resolution outcomes that mean the dataset has no linkable paper, as opposed
 # to a failed attempt. The paper-mapping DAGs record papers = 0 only for these,
@@ -322,6 +349,52 @@ NO_PAPER_REASONS = frozenset({
 def is_definitive_no_paper(reason: Optional[str]) -> bool:
     """True when an unresolved dataset truly has no paper, not a failed attempt."""
     return (reason or "") in NO_PAPER_REASONS
+
+
+class HttpFetchFailed(RuntimeError):
+    """
+    A request still failed after its retries, so what it would have returned is
+    unknown. Raised by ``http_get_json(..., raise_on_failure=True)`` instead of
+    returning None, for callers that must not mistake a refusal for "no results"
+    (upstream find_reuse's OpenAlexError, src/indirect_pipeline/openalex.py).
+    """
+
+    def __init__(self, url: str, reason: str, status: Optional[int] = None, *, transient: bool = False):
+        self.url = url
+        self.reason = reason
+        self.status = status
+        # True when the source was busy or unreachable (429, 500, 502, 503, 504,
+        # a timeout, a dropped connection), so the same request may work later.
+        # False when it answered with something asking again will not change.
+        self.transient = transient
+        super().__init__(f"{reason} (status={status}) url={url}")
+
+
+class CitationFetchError(RuntimeError):
+    """
+    A source the citing-paper fetch depends on did not answer, so the list for
+    a primary paper would be incomplete. The paper-mapping DAGs catch it per
+    primary paper, save no partial list, and mark that primary's citations as
+    failed so the next run fetches them again (utils/citation_status.py).
+    Raised as is for bioRxiv (a preprint's published version); see
+    ``OpenAlexError`` for OpenAlex.
+
+    ``transient`` is True when the source was busy or unreachable (see
+    ``HttpFetchFailed.transient``). Such a failure says nothing about the
+    request itself, so it does not count towards the retry limit.
+    """
+
+    def __init__(self, message: str, *, transient: bool = False):
+        self.transient = transient
+        super().__init__(message)
+
+
+class OpenAlexError(CitationFetchError):
+    """
+    OpenAlex did not answer, so a citing-paper list, a paper's record or the
+    search for its preprint would be incomplete (upstream find_reuse's
+    OpenAlexError).
+    """
 
 
 class ApiQuotaExhausted(RuntimeError):
@@ -424,18 +497,33 @@ def http_get_json(
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
     telemetry: Optional[Telemetry] = None,
+    raise_on_failure: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     Throttled + retried JSON GET with simple telemetry.
 
-    Retries transient statuses: 429, 502, 503, 504 and network errors.
+    Retries transient statuses (``TRANSIENT_STATUSES``: 429, 500, 502, 503,
+    504) and network errors, with exponential backoff, up to ``max_retries``
+    attempts in all; a 500 is retried at most ``SERVER_ERROR_MAX_RETRIES``
+    times. When the retries run out it logs a warning and returns None.
     OpenAlex URLs get a ``mailto`` parameter (see ``openalex_polite_url``).
+
+    On failure it returns None, which callers cannot tell from "nothing found".
+    With ``raise_on_failure=True`` only a 404 returns None; any other failure
+    (retries spent, another HTTP error, a body that is not JSON) raises
+    ``HttpFetchFailed``, which carries the status and reason of the last
+    attempt and whether that failure was a transient one.
     """
     tel = telemetry or Telemetry()
     url = openalex_polite_url(url)
     headers = openalex_request_headers(url)
 
-    last_exc: Optional[Exception] = None
+    # What the last attempt came to; each failing attempt overwrites all three,
+    # so the error raised never mixes one attempt's status with another's reason.
+    last_status: Optional[int] = None
+    last_reason: Optional[str] = None
+    last_transient = False
+    server_error_retries = 0
     for attempt in range(1, max_retries + 1):
         _throttle(min_interval_seconds=min_interval_seconds, telemetry=tel)
         tel.total_requests += 1
@@ -443,7 +531,19 @@ def http_get_json(
             resp = session.get(url, timeout=timeout, headers=headers or None)
             status = resp.status_code
 
-            if status in (429, 502, 503, 504):
+            if status == 500:
+                if server_error_retries >= SERVER_ERROR_MAX_RETRIES:
+                    logger.warning(
+                        "HTTP 500 kept coming back; giving up after %d retries url=%s body=%s",
+                        server_error_retries, url, (resp.text[:500] if resp.text else ""),
+                    )
+                    tel.api_5xx_count += 1
+                    last_status, last_reason, last_transient = status, "HTTP 500", True
+                    break
+                server_error_retries += 1
+
+            if status in TRANSIENT_STATUSES:
+                last_status, last_reason, last_transient = status, f"HTTP {status}", True
                 if status == 429:
                     tel.api_429_count += 1
                 elif status >= 500:
@@ -480,15 +580,17 @@ def http_get_json(
                 time.sleep(wait)
                 continue
 
+            if raise_on_failure and status == 404:
+                return None
             resp.raise_for_status()
             try:
                 return resp.json()
             except ValueError as e:
                 logger.warning("Non-JSON response url=%s status=%s body=%s", url, status, resp.text[:500])
-                last_exc = e
+                last_status, last_reason, last_transient = status, f"body is not JSON: {e}", False
                 break
         except (requests.Timeout, requests.ConnectionError) as e:
-            last_exc = e
+            last_status, last_reason, last_transient = None, f"{type(e).__name__}: {e}", True
             tel.api_retry_count += 1
             wait = min(backoff_seconds * (2 ** (attempt - 1)), 60.0)
             logger.warning(
@@ -502,12 +604,23 @@ def http_get_json(
             time.sleep(wait)
             continue
         except requests.RequestException as e:
-            last_exc = e
+            # raise_for_status on a status that is not retried (400, 403, 501, ...).
+            last_status = getattr(getattr(e, "response", None), "status_code", None)
+            last_reason, last_transient = f"{type(e).__name__}: {e}", False
             logger.warning("HTTP request error url=%s error=%s", url, e)
             break
 
-    if last_exc:
-        logger.debug("http_get_json failed url=%s last_exc=%s", url, last_exc)
+    else:
+        # The attempts ran out on transient failures: say so, rather than let
+        # callers read the None as "no results".
+        if last_status is not None:
+            logger.warning("HTTP %s on all %d attempts; giving up url=%s", last_status, max_retries, url)
+        else:
+            logger.warning("%s on all %d attempts; giving up url=%s", last_reason, max_retries, url)
+
+    if raise_on_failure:
+        raise HttpFetchFailed(url, last_reason or f"no answer after {max_retries} attempts", last_status,
+                              transient=last_transient)
     return None
 
 

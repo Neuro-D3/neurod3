@@ -875,7 +875,7 @@ class TestReasoningEffort:
         captured = {}
         self.recorder(monkeypatch, captured)
         C.classify_paper_reuse(PAPER, api_key='k')
-        assert captured['reasoning_effort'] == C.DEFAULT_REASONING_EFFORT
+        assert captured['reasoning_effort'] == 'high'
 
     @pytest.mark.parametrize('effort', ['low', 'medium', 'high', 'max'])
     def test_each_valid_effort_is_sent(self, monkeypatch, effort):
@@ -952,7 +952,7 @@ class TestModelRouting:
                      'evidence_quotes': [], 'reasoning': 'r'})))
 
         monkeypatch.setattr(C, '_session', lambda: Recorder())
-        C.classify_paper_reuse(PAPER, api_key='k')
+        C.classify_paper_reuse(PAPER, api_key='k', reasoning_effort='max')
         assert captured['reasoning_effort'] == 'max'
 
 

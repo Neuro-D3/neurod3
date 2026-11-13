@@ -58,6 +58,39 @@ def _parse_iso8601(dt_str: str) -> Optional[datetime]:
         return None
 
 
+def dandiset_asset_count(dandiset: Dict[str, Any]) -> Optional[int]:
+    """
+    Files in the dandiset's fullest version, draft or most recent published.
+
+    0 means empty, which marks the dandiset as junk. It follows find_reuse's
+    ``holds_data`` (src/shared/dandisets.py, 9e7dd3c): a dandiset is empty only
+    when both versions have no assets and no size, so one whose files are only in
+    its draft is not empty. When no version reports a count, or the counts are 0
+    but a size is reported, the count is unknown (None), which is never junk.
+    """
+    counts: List[int] = []
+    has_size = False
+    for key in ("most_recent_published_version", "draft_version"):
+        version = dandiset.get(key)
+        if not isinstance(version, dict):
+            continue
+        try:
+            if version.get("asset_count") is not None:
+                counts.append(int(version["asset_count"]))
+        except (TypeError, ValueError):
+            pass
+        try:
+            has_size = has_size or int(version.get("size") or 0) > 0
+        except (TypeError, ValueError):
+            pass
+    if not counts:
+        return None
+    best = max(counts)
+    if best == 0 and has_size:
+        return None
+    return best
+
+
 def parse_dandiset(dandiset: Dict[str, Any]) -> Dict[str, Any]:
     dataset_id = (
         str(dandiset.get("identifier", ""))
@@ -79,15 +112,11 @@ def parse_dandiset(dandiset: Dict[str, Any]) -> Dict[str, Any]:
     updated_at: Optional[datetime] = None
     url: str = ""
     version_id: Optional[str] = None
-    # Assets in the version shown; 0 = an empty dandiset (junk, like find_reuse).
-    asset_count: Optional[int] = None
+    # Files in the fullest version (draft or published); 0 = an empty dandiset.
+    asset_count: Optional[int] = dandiset_asset_count(dandiset)
 
     if version_obj:
         title = version_obj.get("name") or None
-        try:
-            asset_count = int(version_obj.get("asset_count")) if version_obj.get("asset_count") is not None else None
-        except (TypeError, ValueError):
-            asset_count = None
         updated_at = _parse_iso8601(version_obj.get("modified")) or root_modified
         version_id = version_obj.get("version") or None
 

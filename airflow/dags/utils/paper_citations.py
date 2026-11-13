@@ -14,14 +14,18 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import quote
 
 import requests
 
 from utils.find_reuse_core import (
+    CitationFetchError,
+    HttpFetchFailed,
+    OpenAlexError,
     Telemetry,
     http_get_json,
+    is_paper,
     normalize_doi,
     publication_year_from_date,
     strip_nul,
@@ -83,7 +87,13 @@ def get_openalex_paper_data(
     min_interval_seconds: float = 0.2,
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
+    raise_on_failure: bool = False,
 ) -> Dict[str, Any]:
+    """
+    A paper's OpenAlex record. Empty when OpenAlex has no such DOI; with
+    ``raise_on_failure`` a request OpenAlex did not answer raises OpenAlexError
+    instead of looking like a DOI it lacks.
+    """
     doi_norm = normalize_doi(doi)
     empty = {
         "publication_date": None,
@@ -99,15 +109,20 @@ def get_openalex_paper_data(
         return empty
 
     url = f"https://api.openalex.org/works/doi:{quote(doi_norm)}"
-    data = http_get_json(
-        session,
-        url,
-        timeout=20,
-        min_interval_seconds=min_interval_seconds,
-        max_retries=max_retries,
-        backoff_seconds=backoff_seconds,
-        telemetry=telemetry,
-    )
+    try:
+        data = http_get_json(
+            session,
+            url,
+            timeout=20,
+            min_interval_seconds=min_interval_seconds,
+            max_retries=max_retries,
+            backoff_seconds=backoff_seconds,
+            telemetry=telemetry,
+            raise_on_failure=raise_on_failure,
+        )
+    except HttpFetchFailed as e:
+        raise OpenAlexError(f"OpenAlex did not answer for {doi_norm}: {e.reason} (status={e.status})",
+                            transient=e.transient) from e
     if not data:
         return empty
 
@@ -154,6 +169,7 @@ def _lookup_published_version(
     min_interval_seconds: float = 0.2,
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
+    raise_on_failure: bool = False,
 ) -> Optional[str]:
     doi_norm = normalize_doi(preprint_doi)
     if not doi_norm or not doi_norm.lower().startswith("10.1101/"):
@@ -161,15 +177,24 @@ def _lookup_published_version(
 
     for server in ("biorxiv", "medrxiv"):
         url = f"https://api.biorxiv.org/pubs/{server}/{quote(doi_norm)}"
-        data = http_get_json(
-            session,
-            url,
-            timeout=_PAPER_METADATA_TIMEOUT,
-            min_interval_seconds=min_interval_seconds,
-            max_retries=max_retries,
-            backoff_seconds=backoff_seconds,
-            telemetry=telemetry,
-        )
+        try:
+            data = http_get_json(
+                session,
+                url,
+                timeout=_PAPER_METADATA_TIMEOUT,
+                min_interval_seconds=min_interval_seconds,
+                max_retries=max_retries,
+                backoff_seconds=backoff_seconds,
+                telemetry=telemetry,
+                raise_on_failure=raise_on_failure,
+            )
+        except HttpFetchFailed as e:
+            # Without the published version, its citers would be missing from a
+            # list that would still look complete.
+            raise CitationFetchError(
+                f"bioRxiv did not answer for {doi_norm} ({server}): {e.reason} (status={e.status})",
+                transient=e.transient,
+            ) from e
         if not isinstance(data, dict):
             continue
         collection = data.get("collection")
@@ -202,6 +227,7 @@ def _lookup_preprint_version(
     min_interval_seconds: float = 0.2,
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
+    raise_on_failure: bool = False,
 ) -> Optional[str]:
     published_norm = normalize_doi(published_doi)
     if not published_norm or published_norm.lower().startswith("10.1101/"):
@@ -214,6 +240,7 @@ def _lookup_preprint_version(
         min_interval_seconds=min_interval_seconds,
         max_retries=max_retries,
         backoff_seconds=backoff_seconds,
+        raise_on_failure=raise_on_failure,
     )
     title = paper.get("title")
     if not isinstance(title, str) or len(title.strip()) < 10:
@@ -228,15 +255,22 @@ def _lookup_preprint_version(
         "https://api.openalex.org/works"
         f"?filter={quote(filter_value)}&select=doi,title,id,publication_date&per_page=5"
     )
-    data = http_get_json(
-        session,
-        url,
-        timeout=20,
-        min_interval_seconds=min_interval_seconds,
-        max_retries=max_retries,
-        backoff_seconds=backoff_seconds,
-        telemetry=telemetry,
-    )
+    try:
+        data = http_get_json(
+            session,
+            url,
+            timeout=20,
+            min_interval_seconds=min_interval_seconds,
+            max_retries=max_retries,
+            backoff_seconds=backoff_seconds,
+            telemetry=telemetry,
+            raise_on_failure=raise_on_failure,
+        )
+    except HttpFetchFailed as e:
+        raise OpenAlexError(
+            f"OpenAlex did not answer the preprint search for {published_norm}: {e.reason} (status={e.status})",
+            transient=e.transient,
+        ) from e
     if not isinstance(data, dict):
         return None
     results = data.get("results")
@@ -267,7 +301,14 @@ def get_alternate_doi(
     min_interval_seconds: float = 0.2,
     max_retries: int = 6,
     backoff_seconds: float = 2.0,
+    raise_on_failure: bool = False,
 ) -> Optional[str]:
+    """
+    The other version of a paper: the published article for a preprint (bioRxiv),
+    the preprint for a published article (OpenAlex). None when there is none.
+    With ``raise_on_failure`` a source that did not answer raises
+    ``CitationFetchError`` instead of looking like "no other version".
+    """
     doi_norm = normalize_doi(doi)
     if not doi_norm:
         return None
@@ -279,6 +320,7 @@ def get_alternate_doi(
             min_interval_seconds=min_interval_seconds,
             max_retries=max_retries,
             backoff_seconds=backoff_seconds,
+            raise_on_failure=raise_on_failure,
         )
     return _lookup_preprint_version(
         session,
@@ -287,7 +329,67 @@ def get_alternate_doi(
         min_interval_seconds=min_interval_seconds,
         max_retries=max_retries,
         backoff_seconds=backoff_seconds,
+        raise_on_failure=raise_on_failure,
     )
+
+
+def iter_primary_versions(
+    session: requests.Session,
+    primary_doi: str,
+    openalex_id: Optional[str],
+    *,
+    telemetry: Telemetry,
+    min_interval_seconds: float = 0.2,
+    max_retries: int = 6,
+    backoff_seconds: float = 2.0,
+) -> Iterator[Tuple[str, str]]:
+    """
+    The versions of a primary paper whose citing papers are to be fetched, as
+    ``(doi, openalex_id)``: the paper itself first, then its other version
+    (preprint or published article) when it has one.
+
+    It is a generator so that the caller fetches and saves the paper's own
+    citing papers before the other version is looked up. That lookup is the
+    less dependable step (bioRxiv, or an OpenAlex title search), and when it
+    raises ``CitationFetchError`` the paper's own list is already saved; the
+    caller still marks the row failed, so the other version is tried again.
+    """
+    seen: set[str] = set()
+    if isinstance(openalex_id, str) and openalex_id.strip():
+        seen.add(f"{primary_doi}|{openalex_id}")
+        yield primary_doi, openalex_id
+
+    alternate_doi = get_alternate_doi(
+        session,
+        primary_doi,
+        telemetry=telemetry,
+        raise_on_failure=True,
+        min_interval_seconds=min_interval_seconds,
+        max_retries=max_retries,
+        backoff_seconds=backoff_seconds,
+    )
+    if not alternate_doi or alternate_doi == primary_doi:
+        return
+    alt_openalex_id = get_openalex_paper_data(
+        session,
+        alternate_doi,
+        telemetry=telemetry,
+        raise_on_failure=True,
+        min_interval_seconds=min_interval_seconds,
+        max_retries=max_retries,
+        backoff_seconds=backoff_seconds,
+    ).get("openalex_id")
+    if isinstance(alt_openalex_id, str) and alt_openalex_id and f"{alternate_doi}|{alt_openalex_id}" not in seen:
+        yield alternate_doi, alt_openalex_id
+
+
+class CitingPapers(list):
+    """
+    The list ``get_citing_papers`` returns. ``truncated`` is True when it
+    stopped at ``max_results`` while OpenAlex had more citing works to give.
+    """
+
+    truncated: bool = False
 
 
 def get_citing_papers(
@@ -307,8 +409,10 @@ def get_citing_papers(
 
     per_page = min(max(int(max_results or 0), 1), 200)
     cursor = "*"
-    out: List[Dict[str, Any]] = []
+    out: CitingPapers = CitingPapers()
     seen: set[str] = set()
+    works_read = 0          # results looked at, kept or not
+    total_count: Any = None  # OpenAlex's count of citing works (meta.count)
 
     while cursor and len(out) < max_results:
         filter_value = f"cites:{openalex_norm},publication_date:>{after_date}"
@@ -316,15 +420,25 @@ def get_citing_papers(
             "https://api.openalex.org/works"
             f"?filter={quote(filter_value)}&per_page={per_page}&cursor={quote(cursor)}"
         )
-        data = http_get_json(
-            session,
-            url,
-            timeout=30,
-            min_interval_seconds=min_interval_seconds,
-            max_retries=max_retries,
-            backoff_seconds=backoff_seconds,
-            telemetry=telemetry,
-        )
+        try:
+            data = http_get_json(
+                session,
+                url,
+                timeout=30,
+                min_interval_seconds=min_interval_seconds,
+                max_retries=max_retries,
+                backoff_seconds=backoff_seconds,
+                telemetry=telemetry,
+                raise_on_failure=True,
+            )
+        except HttpFetchFailed as e:
+            # The pages gathered so far are an incomplete list that would look
+            # complete; the caller marks this primary paper failed instead.
+            raise OpenAlexError(
+                f"OpenAlex did not answer for cites:{openalex_norm} after {len(out)} papers: "
+                f"{e.reason} (status={e.status})",
+                transient=e.transient,
+            ) from e
         if not isinstance(data, dict):
             break
         results = data.get("results")
@@ -332,9 +446,14 @@ def get_citing_papers(
             break
 
         for work in results:
+            works_read += 1
             if not isinstance(work, dict):
                 continue
             doi = normalize_doi(str(work.get("doi", "")).replace("https://doi.org/", ""))
+            if doi and not is_paper(doi):
+                # eLife assessment, OSF registration, NEMAR record: not a citing paper.
+                telemetry.non_paper_dois_skipped += 1
+                continue
             openalex_work_id = work.get("id") if isinstance(work.get("id"), str) else None
             dedupe_key = doi or normalize_openalex_id(openalex_work_id)
             if not dedupe_key or dedupe_key in seen:
@@ -381,10 +500,16 @@ def get_citing_papers(
                 break
 
         meta = data.get("meta")
+        if isinstance(meta, dict) and isinstance(meta.get("count"), int):
+            total_count = meta["count"]
         cursor = meta.get("next_cursor") if isinstance(meta, dict) else None
         if not isinstance(cursor, str) or not cursor.strip():
             break
 
+    if len(out) >= max_results:
+        # Stopped at the cap. Truncated unless every citing work was read; when
+        # OpenAlex gave no count, assume there was more.
+        out.truncated = works_read < total_count if isinstance(total_count, int) else True
     return out
 
 

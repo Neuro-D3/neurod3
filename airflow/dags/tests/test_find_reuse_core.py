@@ -164,6 +164,61 @@ class TestQuotaExhaustion:
         assert F.MAX_RETRY_AFTER_SECONDS == 300.0
 
 
+class ErrorResponse:
+    """A non-transient HTTP error: raise_for_status raises, as requests does."""
+
+    def __init__(self, status_code):
+        self.status_code = status_code
+        self.headers = {}
+        self.text = "boom"
+
+    def raise_for_status(self):
+        import requests
+        raise requests.HTTPError(f"{self.status_code} error")
+
+
+class TestServerErrorRetries:
+    URL = "https://api.biorxiv.org/pubs/biorxiv/10.1101/2024.02.06.578107"
+
+    def test_a_one_off_500_is_retried(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(F.time, "sleep", lambda s: slept.append(s))
+        tel = F.Telemetry()
+        session = SequenceSession([ThrottledResponse(500), FakeResponse({"collection": [1]})])
+        out = F.http_get_json(session, self.URL, min_interval_seconds=0, telemetry=tel)
+        assert out == {"collection": [1]}
+        assert session.calls == 2 and slept == [2.0]
+        assert tel.api_5xx_count == 1 and tel.api_retry_count == 1
+
+    def test_a_500_that_keeps_coming_back_is_given_up_after_four_retries(self, monkeypatch, caplog):
+        slept = []
+        monkeypatch.setattr(F.time, "sleep", lambda s: slept.append(s))
+        session = SequenceSession([ThrottledResponse(500) for _ in range(10)])
+        with caplog.at_level("WARNING"):
+            out = F.http_get_json(session, self.URL, min_interval_seconds=0, max_retries=6)
+        assert out is None
+        assert session.calls == 1 + F.SERVER_ERROR_MAX_RETRIES == 5
+        assert slept == [2.0, 4.0, 8.0, 16.0]
+        assert "giving up after 4 retries" in caplog.text
+
+    def test_other_server_errors_are_not_retried(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(F.time, "sleep", lambda s: slept.append(s))
+        session = SequenceSession([ErrorResponse(501), FakeResponse({"ok": 1})])
+        assert F.http_get_json(session, self.URL, min_interval_seconds=0) is None
+        assert session.calls == 1 and slept == []
+
+    def test_running_out_of_attempts_is_logged(self, monkeypatch, caplog):
+        monkeypatch.setattr(F.time, "sleep", lambda s: None)
+        session = SequenceSession([ThrottledResponse(503) for _ in range(3)])
+        with caplog.at_level("WARNING"):
+            assert F.http_get_json(session, self.URL, min_interval_seconds=0, max_retries=3) is None
+        assert "HTTP 503 on all 3 attempts; giving up" in caplog.text
+
+    def test_500_counts_as_transient(self):
+        assert 500 in F.TRANSIENT_STATUSES and F.SERVER_ERROR_MAX_RETRIES == 4
+
+
 class TestNormalizeDoi:
     """Junk seen in real OpenNeuro/DANDI descriptions must not become 'papers'."""
 
@@ -266,3 +321,143 @@ class TestHttpGetJsonUsesIt:
         session = FakeSession()
         F.http_get_json(session, "https://api.crossref.org/works/10.1/abc", min_interval_seconds=0)
         assert session.urls == ["https://api.crossref.org/works/10.1/abc"]
+
+
+# --- is_paper: DOIs that name something other than a paper (upstream 846cd49, 2472a23)
+
+@pytest.mark.parametrize("doi", [
+    "10.7554/eLife.88888.3.sa0",       # eLife assessment
+    "10.7554/elife.88888.sa3",         # author response
+    "10.17605/OSF.IO/PBU8X",           # OSF registration
+    "10.82901/nemar.ds004000",         # NEMAR dataset record
+])
+def test_is_paper_rejects_non_papers(doi):
+    from utils.find_reuse_core import is_paper
+    assert is_paper(doi) is False
+
+
+@pytest.mark.parametrize("doi", [
+    "10.7554/eLife.88888",
+    "10.7554/eLife.88888.3",
+    "10.1101/2024.04.23.590673",
+    "10.1038/s41586-023-06031-6",
+    "10.1016/j.neuron.2021.03.sa1x",   # .sa followed by more than digits
+    None,
+    "",
+])
+def test_is_paper_keeps_papers(doi):
+    from utils.find_reuse_core import is_paper
+    assert is_paper(doi) is True
+
+
+# --- raise_on_failure: a refusal must not look like "nothing found" (upstream OpenAlexError)
+
+class _StatusResponse:
+    def __init__(self, status, payload=None):
+        import requests as _rq
+        self.status_code = status
+        self.headers = {}
+        self.text = ""
+        self._payload = payload
+        self._rq = _rq
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("not json")
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            err = self._rq.HTTPError(f"HTTP {self.status_code}")
+            err.response = self
+            raise err
+
+
+class _ScriptedSession:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = 0
+
+    def get(self, url, timeout=None, headers=None, **kwargs):
+        self.calls += 1
+        return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+
+
+class TestRaiseOnFailure:
+    URL = "https://api.openalex.org/works?filter=cites:W1"
+
+    def test_default_still_returns_none_on_failure(self):
+        out = F.http_get_json(_ScriptedSession(_StatusResponse(501)), self.URL, min_interval_seconds=0)
+        assert out is None
+
+    def test_404_is_not_found_not_failure(self):
+        out = F.http_get_json(_ScriptedSession(_StatusResponse(404)), self.URL,
+                              min_interval_seconds=0, raise_on_failure=True)
+        assert out is None
+
+    def test_other_http_error_raises(self):
+        # 501 says the request is not supported: asked once, and not transient.
+        session = _ScriptedSession(_StatusResponse(501))
+        with pytest.raises(F.HttpFetchFailed) as ei:
+            F.http_get_json(session, self.URL, min_interval_seconds=0, raise_on_failure=True)
+        assert session.calls == 1
+        assert ei.value.status == 501 and ei.value.transient is False
+
+    def test_a_500_that_keeps_coming_back_raises_as_transient(self, monkeypatch):
+        monkeypatch.setattr(F.time, "sleep", lambda s: None)
+        session = _ScriptedSession(_StatusResponse(500))
+        with pytest.raises(F.HttpFetchFailed) as ei:
+            F.http_get_json(session, self.URL, min_interval_seconds=0, raise_on_failure=True)
+        assert session.calls == 1 + F.SERVER_ERROR_MAX_RETRIES
+        assert ei.value.status == 500 and ei.value.transient is True
+
+    def test_error_reports_the_last_attempt_only(self, monkeypatch):
+        # A timeout, then 503s: the error must not pair the timeout with status 503.
+        import requests
+        monkeypatch.setattr(F.time, "sleep", lambda s: None)
+
+        class Session:
+            calls = 0
+
+            def get(self, url, timeout=None, headers=None, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise requests.Timeout("slow")
+                return _StatusResponse(503)
+
+        with pytest.raises(F.HttpFetchFailed) as ei:
+            F.http_get_json(Session(), self.URL, min_interval_seconds=0, max_retries=3,
+                            backoff_seconds=0, raise_on_failure=True)
+        assert ei.value.status == 503 and ei.value.reason == "HTTP 503" and ei.value.transient is True
+
+    def test_timeouts_raise_as_transient_without_a_status(self, monkeypatch):
+        import requests
+        monkeypatch.setattr(F.time, "sleep", lambda s: None)
+
+        class Session:
+            def get(self, url, timeout=None, headers=None, **kwargs):
+                raise requests.Timeout("slow")
+
+        with pytest.raises(F.HttpFetchFailed) as ei:
+            F.http_get_json(Session(), self.URL, min_interval_seconds=0, max_retries=2,
+                            backoff_seconds=0, raise_on_failure=True)
+        assert ei.value.status is None and ei.value.transient is True and "Timeout" in ei.value.reason
+
+    def test_spent_retries_raise(self, monkeypatch):
+        monkeypatch.setattr(F.time, "sleep", lambda s: None)
+        session = _ScriptedSession(_StatusResponse(503))
+        with pytest.raises(F.HttpFetchFailed) as ei:
+            F.http_get_json(session, self.URL, min_interval_seconds=0, max_retries=3,
+                            backoff_seconds=0, raise_on_failure=True)
+        assert session.calls == 3 and ei.value.status == 503 and ei.value.transient is True
+
+    def test_non_json_body_raises(self):
+        with pytest.raises(F.HttpFetchFailed) as ei:
+            F.http_get_json(_ScriptedSession(_StatusResponse(200, payload=None)), self.URL,
+                            min_interval_seconds=0, raise_on_failure=True)
+        assert ei.value.status == 200 and ei.value.transient is False
+
+    def test_success_returns_the_body(self):
+        out = F.http_get_json(_ScriptedSession(_StatusResponse(200, {"results": []})), self.URL,
+                              min_interval_seconds=0, raise_on_failure=True)
+        assert out == {"results": []}

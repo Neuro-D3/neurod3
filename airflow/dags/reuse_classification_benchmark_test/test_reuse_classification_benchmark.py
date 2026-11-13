@@ -32,8 +32,15 @@ def key():
 class TestAnswerKey:
     def test_counts_match_header(self, key):
         pairs = key["pairs"]
-        assert key["counts"]["full"] == len(pairs) == 161
+        assert key["counts"]["full"] == len(pairs) == 648
         assert key["counts"]["smoke"] == sum(p["smoke"] for p in pairs) == 20
+
+    def test_only_clear_calls_on_papers(self, key):
+        # Non-paper DOIs are never classified by D3; ambiguous/unsure calls are not ground truth.
+        from utils.find_reuse_core import is_paper
+        for p in key["pairs"]:
+            assert is_paper(p["paper_doi"]), p["pair_id"]
+            assert p["human_call"] not in ("ambiguous_reuse", "unsure"), p["pair_id"]
 
     def test_pair_ids_are_unique(self, key):
         ids = [p["pair_id"] for p in key["pairs"]]

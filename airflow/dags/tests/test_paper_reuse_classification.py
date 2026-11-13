@@ -249,7 +249,7 @@ class TestDagShape:
     def test_default_params_follow_upstream(self):
         p = {k: (v.value if hasattr(v, "value") else v) for k, v in D.dag.params.items()}
         assert p["model"] == C.DEFAULT_MODEL
-        assert p["reasoning_effort"] == "max"
+        assert p["reasoning_effort"] == "high"
         assert p["temperature"] == 0.0
         assert p["max_tokens"] == C.DEFAULT_MAX_TOKENS
         assert p["max_input_chars"] == C.DEFAULT_MAX_INPUT_CHARS

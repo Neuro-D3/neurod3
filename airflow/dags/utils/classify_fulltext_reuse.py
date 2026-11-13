@@ -3,7 +3,9 @@ classify_fulltext_reuse.py - Classify data reuse from a paper's full text.
 
 Vendored from catalystneuro/find_reuse ``src/shared/classify_fulltext_reuse.py``
 at commit 3fac8ce14259e467fa40f9d7f0da96f19c1bd1d7 (2026-09-18) for use inside
-Airflow tasks. Local changes, kept deliberately small so future syncs are a
+Airflow tasks, and synced with upstream 049ed38 (2026-11-05): the only change to
+this module in between is the default reasoning effort, 'max' to 'high'
+(upstream d1d6493). Local changes, kept deliberately small so future syncs are a
 diff against that commit:
 
   - the CLI ``main()`` is dropped (the DAG is the entry point);
@@ -88,9 +90,11 @@ DEFAULT_PROVIDER = None
 # parameter. Left unset it runs at roughly the 'low' budget. Because the paper
 # itself is ~26k tokens and the thinking is a few hundred, raising this changes
 # the bill by about a tenth while giving the model materially more room on the
-# judgement calls that make up most of the disagreement between runs.
+# judgement calls that make up most of the disagreement between runs. 'high'
+# replaced 'max' as the default on 2026-10-22; results cached before then were
+# produced at 'max', and the cache does not record the effort.
 VALID_REASONING_EFFORTS = frozenset({'low', 'medium', 'high', 'max'})
-DEFAULT_REASONING_EFFORT = 'max'
+DEFAULT_REASONING_EFFORT = 'high'
 
 # The indirect pathway asks how a citing paper relates to a dataset it cites.
 VALID_CLASSIFICATIONS = frozenset({'REUSE', 'MENTION', 'NEITHER'})
