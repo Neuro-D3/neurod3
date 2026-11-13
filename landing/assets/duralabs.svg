@@ -1,0 +1,28 @@
+<svg width="184" height="112" viewBox="18 26 184 112" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="barGrad" x1="22" y1="0" x2="198" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3E3F42" stop-opacity="0.92" />
+      <stop offset="1" stop-color="#2D2E31" stop-opacity="0.92" />
+    </linearGradient>
+  </defs>
+
+  <path d="M26 56H72L67 69H22L26 56Z" fill="url(#barGrad)" />
+  <path d="M85 56H124L128 69H81L85 56Z" fill="url(#barGrad)" />
+  <path d="M136 56H198V69H140L136 56Z" fill="url(#barGrad)" />
+
+  <path d="M23 80H68L63 93H22L23 80Z" fill="url(#barGrad)" />
+  <path d="M83 80H130L134 93H79L83 80Z" fill="url(#barGrad)" />
+  <path d="M140 80H198V93H136L140 80Z" fill="url(#barGrad)" />
+
+  <path d="M22 103H64L56 116H22V103Z" fill="url(#barGrad)" />
+  <path d="M77 103H132L138 116H73L77 103Z" fill="url(#barGrad)" />
+  <path d="M145 103H198V114L182 116H151L145 103Z" fill="url(#barGrad)" />
+
+  <path
+    d="M25 129C47 129 58 113 69 84C76 64 83 30 96 30C109 30 116 63 123 88C132 118 141 132 159 132C172 132 183 126 196 124"
+    stroke="#8B8E92"
+    stroke-width="6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

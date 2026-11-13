@@ -159,6 +159,32 @@ terraform output -raw airflow_url    # https://<static-ip> — self-signed cert 
 
 ---
 
+## Custom domains and the landing page
+
+| Host | Serves | Cloudflare DNS (all **DNS only**, grey cloud) |
+|---|---|---|
+| `neuro.datareuse.org` | the frontend (`neuro-d3-frontend`) | `CNAME neuro → ghs.googlehosted.com` |
+| `datareuse.org` | the landing page (`neuro-d3-landing`, source in `landing/`) | the `A`/`AAAA` records from `terraform output landing_dns_records` |
+
+- **Ownership:** `datareuse.org` is CatalystNeuro's, on their Cloudflare account. Google
+  only maps a domain for an account that has verified it in Search Console
+  (`gcloud domains verify datareuse.org`, then a TXT record in Cloudflare).
+- **Keep the records grey.** Google issues and renews the certificates itself, which
+  fails behind Cloudflare's proxy. Issuance takes minutes to a few hours; check with
+  `gcloud beta run domain-mappings describe --domain <host> --region us-west1`.
+- **CORS:** the API must allow `https://neuro.datareuse.org` (`allowed_origins` in
+  `terraform.tfvars`).
+- **Landing page:** static `landing/index.html` served by nginx; scales to zero. The first
+  apply creates the service with Google's sample image; merging a change under
+  `landing/` (or running **Deploy to Staging** with `deploy_all`) builds and rolls out the
+  real page. Its figures come from the reuse paper draft and the preprint link is a
+  placeholder; the comment at the top of `index.html` says what to update.
+- **First-time setup:** `terraform apply`, then `terraform refresh` and
+  `terraform output landing_dns_records` once Google has processed the mapping, then add
+  those records in Cloudflare.
+
+---
+
 ## Persistence (what survives a VM rebuild)
 
 | State | Location | Durable? |

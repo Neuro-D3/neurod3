@@ -40,6 +40,12 @@ variable "frontend_image" {
   type        = string
 }
 
+variable "landing_image" {
+  description = "Image for the datareuse.org landing page on first create. Defaults to Google's public sample image because CI builds landing/ only after the service exists; later images come from the Deploy to Staging workflow."
+  type        = string
+  default     = "us-docker.pkg.dev/cloudrun/container/hello"
+}
+
 variable "airflow_image" {
   description = "Full image ref for the Airflow image the VM pulls (prefer a digest)."
   type        = string
