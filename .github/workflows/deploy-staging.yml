@@ -44,6 +44,7 @@ jobs:
     outputs:
       api: ${{ steps.filter.outputs.api }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      landing: ${{ steps.filter.outputs.landing }}
       airflow_image: ${{ steps.filter.outputs.airflow_image }}
       vm_sync: ${{ steps.filter.outputs.vm_sync }}
       deploy_all: ${{ steps.flags.outputs.deploy_all }}
@@ -57,6 +58,8 @@ jobs:
               - 'api/**'
             frontend:
               - 'frontend/**'
+            landing:
+              - 'landing/**'
             airflow_image:
               - 'airflow/Dockerfile'
               - 'airflow/requirements.txt'
@@ -141,6 +144,35 @@ jobs:
         run: |
           gcloud run services update neuro-d3-frontend \
             --image "${AR_REPO}/frontend:${{ github.sha }}" \
+            --region "${REGION}" --project "${PROJECT_ID}" --quiet
+
+  # ── Landing page (datareuse.org) → Cloud Run ───────────────────────────────
+  deploy-landing:
+    needs: changes
+    if: >-
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.landing == 'true' || needs.changes.outputs.deploy_all == 'true')
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+      - name: Build & push landing image
+        run: |
+          docker build -t "${AR_REPO}/landing:${{ github.sha }}" -t "${AR_REPO}/landing:staging" ./landing
+          docker push "${AR_REPO}/landing:${{ github.sha }}"
+          docker push "${AR_REPO}/landing:staging"
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run services update neuro-d3-landing \
+            --image "${AR_REPO}/landing:${{ github.sha }}" \
             --region "${REGION}" --project "${PROJECT_ID}" --quiet
 
   # ── Airflow: build image (if changed) + git-sync the VM, in one job ────────

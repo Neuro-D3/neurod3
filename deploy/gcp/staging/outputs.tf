@@ -8,6 +8,19 @@ output "frontend_url" {
   value       = google_cloud_run_v2_service.frontend.uri
 }
 
+output "landing_url" {
+  description = "Public run.app URL of the datareuse.org landing page."
+  value       = google_cloud_run_v2_service.landing.uri
+}
+
+output "landing_dns_records" {
+  description = "DNS records to add in Cloudflare for datareuse.org (all DNS only, grey cloud). Empty until Google has processed the mapping; re-run `terraform refresh` and `terraform output` after a minute."
+  value = [
+    for r in try(google_cloud_run_domain_mapping.landing.status[0].resource_records, []) :
+    "${r.type} ${r.name == "" ? "@" : r.name} ${r.rrdata}"
+  ]
+}
+
 output "sql_connection_name" {
   description = "Cloud SQL instance connection name (project:region:instance)."
   value       = google_sql_database_instance.pg.connection_name

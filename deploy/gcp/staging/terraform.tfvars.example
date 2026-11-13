@@ -12,6 +12,7 @@ ar_repo_id = "neuro-d3"
 api_image      = "us-west1-docker.pkg.dev/neuro-d3-staging/neuro-d3/api:latest"
 frontend_image = "us-west1-docker.pkg.dev/neuro-d3-staging/neuro-d3/frontend:latest"
 airflow_image  = "us-west1-docker.pkg.dev/neuro-d3-staging/neuro-d3/airflow:latest"
+# landing_image defaults to Google's sample image; CI rolls out the real one.
 
 # Cloud SQL
 # db-g1-small (1.7 GB): db-f1-micro (0.6 GB) runs out of memory. Production sizes
