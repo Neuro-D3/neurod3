@@ -9,6 +9,31 @@
       content="DataReuse reads every paper that cites a shared dataset and labels it reuse or mention. Neuroscience is in preview."
     />
     <title>DataReuse · Which papers reused the data?</title>
+    <link rel="icon" href="assets/dr-logo.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+    <!--
+      Link previews (iMessage, WhatsApp, Slack, LinkedIn, X). Without an og:image,
+      scrapers grab the first image on the page, which was the CatalystNeuro logo in
+      the footer. Absolute URLs are required. Source: assets/og-image.svg, rendered with
+      `rsvg-convert -w 1200 -h 630 og-image.svg -o og-image.png`.
+    -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="DataReuse" />
+    <meta property="og:url" content="https://datareuse.org/" />
+    <meta property="og:title" content="DataReuse · Which papers reused the data?" />
+    <meta
+      property="og:description"
+      content="DataReuse reads every paper that cites a shared dataset and labels it reuse or mention. Neuroscience is in preview."
+    />
+    <meta property="og:image" content="https://datareuse.org/assets/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="DataReuse logo with the line: Which papers reused the data?" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="DataReuse · Which papers reused the data?" />
+    <meta name="twitter:description" content="Every paper that cites a shared dataset, read and labelled as reuse or a mention." />
+    <meta name="twitter:image" content="https://datareuse.org/assets/og-image.png" />
     <!--
       Landing page for datareuse.org. Static on purpose: no build step, served by
       nginx (landing/Dockerfile). Colours are the NeuroD3 frontend's tokens

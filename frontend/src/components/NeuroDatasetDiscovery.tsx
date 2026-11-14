@@ -484,31 +484,39 @@ export default function NeuroDatasetDiscovery() {
 
       {/* Filter band */}
       <div className="border-b border-line bg-surface md:sticky md:top-[var(--masthead-h)] md:z-30">
-        <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-5 gap-y-2.5 px-4 py-2.5 sm:px-6 lg:px-8">
-          <div className="flex flex-wrap items-center gap-1.5">
+        {/*
+          Below md the band is a two-column grid: Source spans both columns as one
+          segmented control, Modality and Sort sit side by side with their labels above,
+          and the count and Refresh share the last row. From md up it is one wrapping row.
+        */}
+        <div className="mx-auto grid max-w-[1440px] grid-cols-2 gap-x-3 gap-y-3 px-4 py-3 sm:px-6 md:flex md:flex-wrap md:items-center md:gap-x-5 md:gap-y-2.5 md:py-2.5 lg:px-8">
+          <div className="col-span-2 flex min-w-0 flex-col gap-1.5 md:flex-row md:items-center">
             <Eyebrow className="mr-0.5">Source</Eyebrow>
-            {sourceChoices.map((s) => (
-              <Button
-                key={s}
-                size="sm"
-                variant={sourceFilter === s ? 'primary' : 'ghost'}
-                aria-pressed={sourceFilter === s}
-                onClick={() => setSourceFilter(s)}
-              >
-                {s === 'all' ? 'All' : s}
-              </Button>
-            ))}
+            <div className="flex overflow-hidden rounded-[5px] border border-line md:flex-wrap md:gap-1.5 md:overflow-visible md:rounded-none md:border-0">
+              {sourceChoices.map((s) => (
+                <Button
+                  key={s}
+                  size="sm"
+                  variant={sourceFilter === s ? 'primary' : 'ghost'}
+                  aria-pressed={sourceFilter === s}
+                  onClick={() => setSourceFilter(s)}
+                  className="min-w-0 grow max-md:!h-9 max-md:!rounded-none max-md:!border-0 max-md:!px-1.5 max-md:[&:not(:first-child)]:!border-l max-md:[&:not(:first-child)]:!border-line"
+                >
+                  {s === 'all' ? 'All' : s}
+                </Button>
+              ))}
+            </div>
           </div>
 
-          <div className="flex items-center gap-1.5" ref={modalityDropdownRef}>
+          <div className="flex min-w-0 flex-col gap-1.5 md:flex-row md:items-center" ref={modalityDropdownRef}>
             <Eyebrow className="mr-0.5">Modality</Eyebrow>
-            <div className="relative">
+            <div className="relative min-w-0">
               <button
                 type="button"
                 onClick={() => setModalityDropdownOpen((v) => !v)}
                 aria-expanded={modalityDropdownOpen}
                 aria-haspopup="listbox"
-                className={cx(INPUT_CLASS, 'flex h-8 w-44 items-center justify-between gap-2 text-left text-[13px]')}
+                className={cx(INPUT_CLASS, 'flex h-9 w-full items-center justify-between gap-2 text-left text-[13px] md:h-8 md:w-44')}
                 title={
                   selectedModalities.length
                     ? selectedModalities.map((m) => formatModalityToken(m)).join(', ')
@@ -528,7 +536,7 @@ export default function NeuroDatasetDiscovery() {
               </button>
 
               {modalityDropdownOpen && (
-                <div className="absolute left-0 z-50 mt-1.5 max-h-72 w-64 overflow-auto rounded-md border border-line bg-surface p-1.5 shadow-pop">
+                <div className="absolute left-0 z-50 mt-1.5 max-h-72 w-[min(16rem,calc(100vw-2rem))] overflow-auto rounded-md border border-line bg-surface p-1.5 shadow-pop">
                   <button
                     type="button"
                     onClick={() => setSelectedModalities([])}
@@ -570,7 +578,7 @@ export default function NeuroDatasetDiscovery() {
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex min-w-0 flex-col gap-1.5 md:flex-row md:items-center">
             <Eyebrow className="mr-0.5">Sort</Eyebrow>
             <select
               value={`${sortBy}-${sortOrder}`}
@@ -581,7 +589,7 @@ export default function NeuroDatasetDiscovery() {
                 setPage(1);
               }}
               aria-label="Sort datasets"
-              className={cx(INPUT_CLASS, 'h-8 text-[13px]')}
+              className={cx(INPUT_CLASS, 'h-9 w-full min-w-0 text-[13px] md:h-8 md:w-auto')}
             >
               <option value="reuse-desc">Most reused</option>
               <option value="published-desc">Newest first</option>
@@ -593,8 +601,8 @@ export default function NeuroDatasetDiscovery() {
             </select>
           </div>
 
-          <div className="ml-auto flex items-center gap-3">
-            <span className="flex items-center gap-2 text-[13px] text-muted" aria-live="polite">
+          <div className="col-span-2 flex items-center justify-between gap-3 border-t border-line-3 pt-3 md:ml-auto md:border-t-0 md:pt-0">
+            <span className="flex min-w-0 items-center gap-2 text-[13px] text-muted" aria-live="polite">
               {loading ? <Spinner /> : null}
               <span>
                 {firstLoad ? (
