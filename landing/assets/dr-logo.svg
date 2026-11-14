@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <title>DataReuse</title>
-  <rect width="64" height="64" rx="14" fill="#021242"/>
-  <g fill="none" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M11.5 19.5h4.5a12.5 12.5 0 0 1 0 25h-4.5z" stroke="#ffffff"/>
-    <path d="M36 44.5v-25h7.5a6.75 6.75 0 0 1 0 13.5H36" stroke="#ffffff"/>
-    <path d="M44 33l7.5 11.5" stroke="#86b3ea"/>
-  </g>
-</svg>

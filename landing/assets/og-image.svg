@@ -8,11 +8,18 @@
   <rect width="1200" height="630" fill="url(#dots)"/>
   <g transform="translate(96 175) scale(4.375)">
     <rect width="64" height="64" rx="14" fill="#0b1f5c" stroke="#1e2f63" stroke-width="0.5"/>
-    <g fill="none" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M11.5 19.5h4.5a12.5 12.5 0 0 1 0 25h-4.5z" stroke="#ffffff"/>
-      <path d="M36 44.5v-25h7.5a6.75 6.75 0 0 1 0 13.5H36" stroke="#ffffff"/>
-      <path d="M44 33l7.5 11.5" stroke="#86b3ea"/>
-    </g>
+  <g stroke-width="2.2" stroke-linecap="round">
+    <path d="M32 32L32 12M32 32L49.3 22M32 32L49.3 42M32 32L14.7 22" stroke="#86b3ea"/>
+    <path d="M32 32L32 52M32 32L14.7 42" stroke="#ea6733" stroke-dasharray="2.5 3.5"/>
+  </g>
+  <circle cx="32" cy="12" r="4.2" fill="#86b3ea"/>
+  <circle cx="49.3" cy="22" r="4.2" fill="#86b3ea"/>
+  <circle cx="49.3" cy="42" r="4.2" fill="#86b3ea"/>
+  <circle cx="14.7" cy="22" r="4.2" fill="#86b3ea"/>
+  <circle cx="32" cy="52" r="3.4" fill="#0b1f5c" stroke="#ea6733" stroke-width="2"/>
+  <circle cx="14.7" cy="42" r="3.4" fill="#0b1f5c" stroke="#ea6733" stroke-width="2"/>
+  <circle cx="32" cy="32" r="8" fill="#ffffff"/>
+  <circle cx="32" cy="32" r="3" fill="#0b1f5c"/>
   </g>
   <g font-family="Inter" fill="#ffffff">
     <text x="420" y="292" font-size="104" font-weight="800" letter-spacing="-3">DataReuse</text>
