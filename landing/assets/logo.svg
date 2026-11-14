@@ -1,16 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <title>DataReuse</title>
   <rect width="64" height="64" rx="14" fill="#021242"/>
-  <g stroke-width="2.2" stroke-linecap="round">
-    <path d="M32 32L32 12M32 32L49.3 22M32 32L49.3 42M32 32L14.7 22" stroke="#86b3ea"/>
-    <path d="M32 32L32 52M32 32L14.7 42" stroke="#ea6733" stroke-dasharray="2.5 3.5"/>
+  <g fill="none" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M19 50h-6V14h7" stroke="#86b3ea"/>
+    <path d="M45 14h6v36h-7" stroke="#ea6733"/>
   </g>
-  <circle cx="32" cy="12" r="4.2" fill="#86b3ea"/>
-  <circle cx="49.3" cy="22" r="4.2" fill="#86b3ea"/>
-  <circle cx="49.3" cy="42" r="4.2" fill="#86b3ea"/>
-  <circle cx="14.7" cy="22" r="4.2" fill="#86b3ea"/>
-  <circle cx="32" cy="52" r="3.4" fill="#021242" stroke="#ea6733" stroke-width="2"/>
-  <circle cx="14.7" cy="42" r="3.4" fill="#021242" stroke="#ea6733" stroke-width="2"/>
-  <circle cx="32" cy="32" r="8" fill="#ffffff"/>
-  <circle cx="32" cy="32" r="3" fill="#021242"/>
+  <path d="M19.5 9.6l6.4 4.4-6.4 4.4z" fill="#86b3ea"/>
+  <path d="M44.5 45.6l-6.4 4.4 6.4 4.4z" fill="#ea6733"/>
+  <g fill="none" stroke="#ffffff" stroke-width="3">
+    <ellipse cx="32" cy="23" rx="8.5" ry="3.3"/>
+    <path d="M23.5 23v18c0 1.8 3.8 3.3 8.5 3.3s8.5-1.5 8.5-3.3V23"/>
+    <path d="M23.5 32c0 1.8 3.8 3.3 8.5 3.3s8.5-1.5 8.5-3.3"/>
+  </g>
 </svg>
