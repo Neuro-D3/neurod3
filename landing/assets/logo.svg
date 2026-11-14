@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>DataReuse</title>
+  <rect width="64" height="64" rx="14" fill="#021242"/>
+  <g fill="none" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M19 50h-6V14h7" stroke="#86b3ea"/>
+    <path d="M45 14h6v36h-7" stroke="#ea6733"/>
+  </g>
+  <path d="M19.5 9.6l6.4 4.4-6.4 4.4z" fill="#86b3ea"/>
+  <path d="M44.5 45.6l-6.4 4.4 6.4 4.4z" fill="#ea6733"/>
+  <g fill="none" stroke="#ffffff" stroke-width="3">
+    <ellipse cx="32" cy="23" rx="8.5" ry="3.3"/>
+    <path d="M23.5 23v18c0 1.8 3.8 3.3 8.5 3.3s8.5-1.5 8.5-3.3V23"/>
+    <path d="M23.5 32c0 1.8 3.8 3.3 8.5 3.3s8.5-1.5 8.5-3.3"/>
+  </g>
+</svg>

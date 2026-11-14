@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.6" fill="#1e2f63"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" fill="#021242"/>
+  <rect width="1200" height="630" fill="url(#dots)"/>
+  <g transform="translate(96 175) scale(4.375)">
+    <rect width="64" height="64" rx="14" fill="#0b1f5c" stroke="#1e2f63" stroke-width="0.5"/>
+  <g fill="none" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M19 50h-6V14h7" stroke="#86b3ea"/>
+    <path d="M45 14h6v36h-7" stroke="#ea6733"/>
+  </g>
+  <path d="M19.5 9.6l6.4 4.4-6.4 4.4z" fill="#86b3ea"/>
+  <path d="M44.5 45.6l-6.4 4.4 6.4 4.4z" fill="#ea6733"/>
+  <g fill="none" stroke="#ffffff" stroke-width="3">
+    <ellipse cx="32" cy="23" rx="8.5" ry="3.3"/>
+    <path d="M23.5 23v18c0 1.8 3.8 3.3 8.5 3.3s8.5-1.5 8.5-3.3V23"/>
+    <path d="M23.5 32c0 1.8 3.8 3.3 8.5 3.3s8.5-1.5 8.5-3.3"/>
+  </g>
+  </g>
+  <g font-family="Inter" fill="#ffffff">
+    <text x="420" y="292" font-size="104" font-weight="800" letter-spacing="-3">DataReuse</text>
+    <text x="424" y="362" font-size="40" font-weight="500" fill="#c9d3e6">Which papers reused the data?</text>
+    <text x="424" y="430" font-size="22" font-weight="600" fill="#a9b6d3" letter-spacing="2.5">EVERY CITING PAPER, READ AND LABELLED</text>
+  </g>
+  <rect x="0" y="606" width="780" height="24" fill="#2977d5"/>
+  <rect x="780" y="606" width="420" height="24" fill="#ea6733"/>
+  <text x="1104" y="560" text-anchor="end" font-family="Inter" font-size="28" font-weight="600" fill="#a9b6d3">datareuse.org</text>
+</svg>
